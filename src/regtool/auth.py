@@ -2,12 +2,12 @@
 #-*- coding: utf-8 -*-
 
 """
-:mod: `twit2gml` - Twitter Network export to GML
-================================================
+:mod: `auth` - Module for OCI registry authentication 
+=====================================================
 
-    module:: twit2gml
+    module:: auth
     :platform: Unix, Windows
-    :synopsis: Main module for exporting Twitter network information to GML
+    :synopsis: Module implementing the authentication with OCI registries
     moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
