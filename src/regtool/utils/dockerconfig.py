@@ -23,8 +23,8 @@ log = logging.getLogger(__name__)
 
 def home_dir():
     """
-    Return the user's home directory using %USERPROFILE% on Windows or 
-    $HOME/getuid on Posix
+    Return the user's home directory using ``%USERPROFILE%`` on Windows or 
+    ``$HOME/getuid`` on Posix
     :returns: The aboslute path to the user's home directory
     :rtype: string
     """
@@ -35,8 +35,8 @@ def home_dir():
 
 def config_path_from_env():
     """
-    Return the value of the DOCKER_CONFIG environment variable
-    :returns: The DOCKER_CONFIG environment variable. None if it is not set
+    Return the value of the ``DOCKER_CONFIG`` environment variable
+    :returns: The ``DOCKER_CONFIG`` environment variable. None if it is not set
     :rtype: string
     """
     config_dir = os.environ.get('DOCKER_CONFIG')
@@ -47,8 +47,8 @@ def config_path_from_env():
 def get_config_file(config_path=None):
     """
     Return the path to the Docker configuration file if found. The search order
-    is: 1.) specified alternate path 2.) DOCKER_CONFIG environment variable
-    3.) default Docker config.json location
+    is: 1.) specified alternate path 2.) ``DOCKER_CONFIG`` environment variable
+    3.) default Docker ``config.json`` location
     :param config_path: Alternate path to Docker configuration file to look at 
         (default is None)
     :type config_path: str
@@ -75,8 +75,8 @@ def get_config_file(config_path=None):
 def load_config(config_path=None):
     """
     Loads the Docker configuration file if found. The search order
-    is: 1.) specified alternate path 2.) DOCKER_CONFIG environment variable
-    3.) default Docker config.json location
+    is: 1.) specified alternate path 2.) ``DOCKER_CONFIG`` environment variable
+    3.) default Docker ``config.json`` location
     :param config_path: Alternate path to Docker configuration file to look at 
         (default is None)
     :type config_path: str
