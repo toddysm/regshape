@@ -48,3 +48,17 @@ def get(store='desktop', registry=None):
     p = Popen(credstore_cmd, stdout=PIPE, stdin=PIPE, stderr=STDOUT)
     credentials_json, _ = p.communicate(input=registry.encode('utf-8'))
     return json.loads(credentials_json.decode('utf-8'))
+
+def erase(store='desktop', registry=None):
+    """
+    Erases the credentials stored in the credential store.
+    :param store: The type of the credential store. 
+        (default is ``desktop``, the default wrapper)
+    :type store: str
+    :param registry: The registry for which to obtain the credentials. Must be
+        the full DNS name. (default is ``None``)
+    :type store: str
+    """
+    credstore_cmd = [f"docker-credential-{store}", "erase"]
+    p = Popen(credstore_cmd, stdout=PIPE, stdin=PIPE, stderr=STDOUT)
+    credentials_json, _ = p.communicate(input=registry.encode('utf-8'))
