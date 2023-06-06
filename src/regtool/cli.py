@@ -22,9 +22,13 @@ def cli():
     pass
 
 @click.command()
-@click.option("--username", prompt="Username", help="Username for the registry.")
-@click.option("--password", prompt="Password", help="Password for the registry.")
-@click.option("--registry", prompt="Registry", help="The OCI registry to login to.")
+@click.option('-u','--username', required=True,
+              prompt='Username', help="Username for the registry.")
+@click.option('-p', '--password', required=True,
+              prompt='Password', help="Password for the registry.",
+              hide_input=True, confirmation_prompt=True)
+@click.option('-r', '--registry', required=True,
+              prompt='Registry', help="The OCI registry to login to.")
 def login(username, password=None, registry=None):
     """
     Authenticate with the OCI registry. This command requires Docker credential
