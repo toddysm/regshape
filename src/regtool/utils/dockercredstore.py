@@ -33,6 +33,7 @@ def list(store='desktop'):
     try:
         p = Popen(credstore_cmd, stdout=PIPE, stdin=PIPE, stderr=STDOUT)
     except FileNotFoundError as e:
+        log.error(e)
         raise AuthError("Error while listing credentials", f"docker-credential-{store} cannot be found")
     credentials_json, _ = p.communicate()
     return json.loads(credentials_json.decode('utf-8'))
@@ -54,6 +55,7 @@ def get(store='desktop', registry=None):
     try:
         p = Popen(credstore_cmd, stdout=PIPE, stdin=PIPE, stderr=STDOUT)
     except FileNotFoundError as e:
+        log.error(e)
         raise AuthError("Error while getting credentials", f"docker-credential-{store} cannot be found")
     credentials_json, _ = p.communicate(input=registry.encode('utf-8'))
     return json.loads(credentials_json.decode('utf-8'))
@@ -73,6 +75,7 @@ def erase(store='desktop', registry=None):
     try:
         p = Popen(credstore_cmd, stdout=PIPE, stdin=PIPE, stderr=STDOUT)
     except FileNotFoundError as e:
+        log.error(e)
         raise AuthError("Error while erasing credentials", f"docker-credential-{store} cannot be found")
     p.communicate(input=registry.encode('utf-8'))
 
@@ -94,6 +97,7 @@ def store(store='desktop', registry=None, credentials=None):
     try:
         p = Popen(credstore_cmd, stdout=PIPE, stdin=PIPE, stderr=STDOUT)
     except FileNotFoundError as e:
+        log.error(e)
         raise AuthError("Error while storing credentials", f"docker-credential-{store} cannot be found")
     credentials['ServerURL'] = registry
     credentials_json = json.dumps(credentials)
