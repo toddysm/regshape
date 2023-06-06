@@ -14,6 +14,7 @@
 import json
 import logging
 
+from .. import errors
 from subprocess import PIPE, STDOUT, Popen
 
 log = logging.getLogger(__name__)
@@ -26,9 +27,13 @@ def list(store='desktop'):
     :type store: str
     :returns: The list of credentials
     :rtype: dict
+    :raises AuthError: If Docker credential helpers are not configured
     """
     credstore_cmd = [f"docker-credential-{store}", "list"]
-    p = Popen(credstore_cmd, stdout=PIPE, stdin=PIPE, stderr=STDOUT)
+    try:
+        p = Popen(credstore_cmd, stdout=PIPE, stdin=PIPE, stderr=STDOUT)
+    except FileNotFoundError as e:
+        raise AuthError("Error while listing credentials", f"docker-credential-{store} cannot be found")
     credentials_json, _ = p.communicate()
     return json.loads(credentials_json.decode('utf-8'))
 
@@ -43,9 +48,13 @@ def get(store='desktop', registry=None):
     :type store: str
     :returns: The credentials
     :rtype: dict
+    :raises AuthError: If Docker credential helpers are not configured
     """
     credstore_cmd = [f"docker-credential-{store}", "get"]
-    p = Popen(credstore_cmd, stdout=PIPE, stdin=PIPE, stderr=STDOUT)
+    try:
+        p = Popen(credstore_cmd, stdout=PIPE, stdin=PIPE, stderr=STDOUT)
+    except FileNotFoundError as e:
+        raise AuthError("Error while getting credentials", f"docker-credential-{store} cannot be found")
     credentials_json, _ = p.communicate(input=registry.encode('utf-8'))
     return json.loads(credentials_json.decode('utf-8'))
 
@@ -58,9 +67,13 @@ def erase(store='desktop', registry=None):
     :param registry: The registry for which to obtain the credentials. Must be
         the full DNS name. (default is ``None``)
     :type store: str
+    :raises AuthError: If Docker credential helpers are not configured
     """
     credstore_cmd = [f"docker-credential-{store}", "erase"]
-    p = Popen(credstore_cmd, stdout=PIPE, stdin=PIPE, stderr=STDOUT)
+    try:
+        p = Popen(credstore_cmd, stdout=PIPE, stdin=PIPE, stderr=STDOUT)
+    except FileNotFoundError as e:
+        raise AuthError("Error while erasing credentials", f"docker-credential-{store} cannot be found")
     p.communicate(input=registry.encode('utf-8'))
 
 def store(store='desktop', registry=None, credentials=None):
@@ -74,10 +87,14 @@ def store(store='desktop', registry=None, credentials=None):
     :type store: str
     :param credentials: The credentials to store. Uses ``Username`` and ``Secret``
         as keys.
-    :type credentials: dict 
+    :type credentials: dict
+    :raises AuthError: If Docker credential helpers are not configured
     """
     credstore_cmd = [f"docker-credential-{store}", "store"]
-    p = Popen(credstore_cmd, stdout=PIPE, stdin=PIPE, stderr=STDOUT)
+    try:
+        p = Popen(credstore_cmd, stdout=PIPE, stdin=PIPE, stderr=STDOUT)
+    except FileNotFoundError as e:
+        raise AuthError("Error while storing credentials", f"docker-credential-{store} cannot be found")
     credentials['ServerURL'] = registry
     credentials_json = json.dumps(credentials)
     p.communicate(input=credentials_json.encode('utf-8'))
