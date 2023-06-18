@@ -14,7 +14,7 @@
 import json
 import logging
 
-from .. import errors
+from regtool.errors import *
 from subprocess import PIPE, STDOUT, Popen
 
 log = logging.getLogger(__name__)

@@ -15,7 +15,7 @@ import json
 import logging
 import os
 
-from ..constants import IS_WINDOWS_PLATFORM
+from regtool.constants import IS_WINDOWS_PLATFORM
 
 DOCKER_CONFIG_FILENAME = os.path.join('.docker', 'config.json')
 
