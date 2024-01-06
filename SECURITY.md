@@ -1,5 +1,5 @@
-# RegistryTool Security Process and Policy
-This document provides the details on the RegistryTool security policy and details the process surrounding security handling including a how to report a security vulnerability. 
+# RegShape Security Process and Policy
+This document provides the details on the RegShape security policy and details the process surrounding security handling including a how to report a security vulnerability. 
 
 * [Reporting a Vulnerability](#reporting-a-vulnerability)
     * [When To Send a Report](#when-to-send-a-report)
@@ -11,14 +11,14 @@ This document provides the details on the RegistryTool security policy and detai
 
 ## Reporting a Vulnerability
 
-I am extremely grateful for security researchers and users who report vulnerabilities to the RegistryTool project. All reports are thouroughly investigated and discussed with the person or organization that have reported it.
+I am extremely grateful for security researchers and users who report vulnerabilities to the RegShape project. All reports are thouroughly investigated and discussed with the person or organization that have reported it.
 
 To make a report plese use the GitHub Security Vulnerability Disclosure process:
 
-- [RegistryTool CLI Vulnerability Report](https://github.com/toddysm/registrytool/security/advisories/new)
+- [RegShape Vulnerability Report](https://github.com/toddysm/regshape/security/advisories/new)
 
 ### When To Send a Report
-You think you have found a vulnerability in the RegistryTool or a dependency of the RegistryTool. 
+You think you have found a vulnerability in the RegShape or a dependency of the RegShape. 
 
 ### What To Include In a Report
 The more details are included in the report, the easier will be for me to understand the vulnerability and provide mitigations. The vulnerability disclosure template requires the following information:
@@ -38,15 +38,15 @@ The more details are included in the report, the easier will be for me to unders
 Feel free to include anything else that you deem relevant for better understanding of the vulnerability.
 
 ### When Not To Send a Report
-- If a vulnerability has been found in an application that uses the RegistryTool. Instead, contact the maintaners of the respective application.
+- If a vulnerability has been found in an application that uses the RegShape. Instead, contact the maintaners of the respective application.
 - You are looking for help applying security updates.
 
-For guidance on securing the RegistryTool, please see the [documentation](https://github.com/toddysm/registrytool/docs).
+For guidance on securing the RegShape, please see the [documentation](https://github.com/toddysm/regshape/docs).
 
 ### Security Vulnerability Response
 Each report will be reviewed and receipt acknowledged within 3 business days. This will set off the security review process detailed below.
 
-Any vulnerability information shared with me stays within the RegistrYTool project itslef and will not be shared with others unless it is necessary to fix the issue. Information is shared only on a need to know basis.
+Any vulnerability information shared with me stays within the RegShape project itslef and will not be shared with others unless it is necessary to fix the issue. Information is shared only on a need to know basis.
 
 I ask that vulnerability reporter(s) act in good faith by not disclosing the issue to others. And I strive to act in good faith by acting swiftly, and by justly crediting the vulnerability reporter(s) in writing.
 
@@ -65,7 +65,7 @@ Disclosures will be published on the same day as a release fixing the vulnerabil
 
 Here are the links to security advisories:
 
-- [RegistryTool CLI Security Advisories](https://github.com/toddysm/registrytool/security/advisories)
+- [RegShape Security Advisories](https://github.com/toddysm/regshape/security/advisories)
 
 ## Credits
 We would like to give credit to the [Helm Community](https://github.com/helm/community) for using their security process and policy as an example.
