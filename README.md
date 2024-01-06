@@ -7,7 +7,7 @@ RegShape (from REGistry reSHAPE) is a CLI tool and a Python library for manipula
 artifacts in an [OCI](https://opencoutnaiers.org) registry. While there are many other tools that can do this
 (see [ORAS](https://oras.land), [regclient](https://github.com/regclient/regclient)
 or Google's [crane](https://github.com/google/go-containerregistry/tree/main/cmd/crane)), 
-the goal of RegShape is to provide a flexibility to manipulate the artifacts with 
+the goal of RegShape is to provide a flexibility to manipulate the requests with 
 an intention to break the consistency of the artifacts.
 
 You should be able to use RegShape similarly to the tools above, but you can also
