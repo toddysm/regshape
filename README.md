@@ -4,7 +4,7 @@
  ![GitHub pull requests](https://img.shields.io/github/issues-pr-raw/toddysm/regshape?link=https%3A%2F%2Fgithub.com%2Ftoddysm%2Fregshape%2Fpulls)
 
 RegShape (from REGistry reSHAPE) is a CLI tool and a Python library for manipulating 
-artifacts in an OCI registry. While there are many other tools that can do this
+artifacts in an [OCI](https://opencoutnaiers.org) registry. While there are many other tools that can do this
 (see [ORAS](https://oras.land), [regclient](https://github.com/regclient/regclient)
 or Google's [crane](https://github.com/google/go-containerregistry/tree/main/cmd/crane)), 
 the goal of RegShape is to provide a flexibility to manipulate the artifacts with 
