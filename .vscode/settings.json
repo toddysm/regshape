@@ -1,0 +1,10 @@
+{
+    "python.testing.pytestArgs": [
+        "src", "-v"
+    ],
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true,
+    "terminal.integrated.env.osx": {
+        "PYTHONPATH": "${workspaceFolder}${pathSeparator}src${pathSeparator}"
+    }
+}
