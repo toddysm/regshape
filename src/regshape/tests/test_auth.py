@@ -10,7 +10,7 @@
     moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
-from regshape.lib.auth import dockercredstore
+from regshape.libs.auth import dockercredstore
 
 def test_credstore_access():
     assert dockercredstore.list() != None
