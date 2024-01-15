@@ -52,4 +52,4 @@ def signin(
     }
 
     # Make a request to the `realm` with `service` and `scope` endpoint to get the token
-    response = requests.get(parts['realm'], params=params, auth=('toddysm', 'in%mff77amlkw028kj*'))
+    response = requests.get(parts['realm'], params=params, auth=('username', 'password'))
