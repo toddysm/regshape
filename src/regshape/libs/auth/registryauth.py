@@ -15,6 +15,7 @@ import json
 import logging
 import requests
 
+from regshape.libs.decorators.telemetry import executiontime_decorator
 from regshape.libs.errors import AuthError
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
@@ -124,6 +125,7 @@ def _get_auth_token(
 
     return token
 
+@executiontime_decorator
 def authenticate(
         auth_header: str,
         username: Optional[str] = None,
