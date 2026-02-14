@@ -906,8 +906,10 @@ def track_time(func: Callable) -> Callable:
     Output format:
         [TIMING] <module>.<qualname> completed in <duration>s
 
-    When --time-methods is not enabled, this decorator is a zero-cost passthrough
-    (the wrapper still executes but skips the timing logic).
+    When --time-methods is not enabled, this decorator acts as a lightweight
+    passthrough: calls still go through the wrapper, incur a single boolean
+    check, and then immediately dispatch to the original function without
+    executing any timing logic.
 
     Usage:
         @track_time
