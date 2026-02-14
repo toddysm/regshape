@@ -13,7 +13,8 @@ This document defines the overall architecture for RegShape, a Python CLI tool a
 - [5. Break Mode Architecture](#5-break-mode-architecture)
 - [6. Error Handling Strategy](#6-error-handling-strategy)
 - [7. CLI Command Structure](#7-cli-command-structure)
-- [8. Implementation Sequence](#8-implementation-sequence)
+- [8. Telemetry Decorators](#8-telemetry-decorators)
+- [9. Implementation Sequence](#9-implementation-sequence)
 - [Open Questions](#open-questions)
 
 ---
@@ -52,7 +53,7 @@ RegShape is organized into three layers. Each layer depends only on the layers b
 |  src/regshape/libs/breakmode/   (break mode config)    |
 |  src/regshape/libs/errors.py    (existing)             |
 |  src/regshape/libs/constants.py (existing)             |
-|  src/regshape/libs/decorators/  (existing)             |
+|  src/regshape/libs/decorators/  (telemetry decorators)  |
 +-------------------------------------------------------+
 ```
 
@@ -739,7 +740,10 @@ regshape [GLOBAL OPTIONS] <command-group> <command> [OPTIONS] [ARGS]
 | `--password` | `-p` | string | none | Password for authentication |
 | `--insecure` | | flag | false | Allow HTTP (no TLS) |
 | `--json` | | flag | false | Output as JSON |
-| `--verbose` | `-v` | flag | false | Verbose output (includes timing, debug info) |
+| `--verbose` | `-v` | flag | false | Verbose output |
+| `--time-methods` | | flag | false | Print execution time for individual method calls |
+| `--time-scenarios` | | flag | false | Print execution time for multi-step workflows |
+| `--debug-calls` | | flag | false | Print request/response headers for each HTTP call |
 | `--break` | | flag | false | Enable break mode |
 | `--break-rules` | | string | none | Path to break mode rules file |
 | `--log-file` | | string | none | Path for request/response log output |
@@ -794,14 +798,24 @@ The CLI `main.py` constructs a `RegistryClient` from global options and stores i
 @click.option("--insecure", is_flag=True, help="Allow HTTP")
 @click.option("--json", "output_json", is_flag=True, help="JSON output")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
+@click.option("--time-methods", is_flag=True, help="Print execution time for individual method calls")
+@click.option("--time-scenarios", is_flag=True, help="Print execution time for multi-step workflows")
+@click.option("--debug-calls", is_flag=True, help="Print request/response headers for HTTP calls")
 @click.option("--break", "break_mode", is_flag=True, help="Enable break mode")
 @click.option("--break-rules", type=click.Path(exists=True), help="Break rules file")
 @click.option("--log-file", type=click.Path(), help="Request/response log file")
 @click.pass_context
 def regshape(ctx, registry, username, password, insecure, output_json,
-             verbose, break_mode, break_rules, log_file):
+             verbose, time_methods, time_scenarios, debug_calls,
+             break_mode, break_rules, log_file):
     """RegShape - OCI registry manipulation tool."""
     ctx.ensure_object(dict)
+    # ... configure telemetry ...
+    configure_telemetry(TelemetryConfig(
+        time_methods_enabled=time_methods,
+        time_scenarios_enabled=time_scenarios,
+        debug_calls_enabled=debug_calls,
+    ))
     # ... construct TransportConfig and RegistryClient ...
     ctx.obj["client"] = RegistryClient(config)
     ctx.obj["output_json"] = output_json
@@ -810,7 +824,171 @@ def regshape(ctx, registry, username, password, insecure, output_json,
 
 ---
 
-## 8. Implementation Sequence
+## 8. Telemetry Decorators
+
+RegShape provides three decorator-based telemetry capabilities for measuring execution time, tracking multi-step workflows, and inspecting HTTP call details. All three are implemented in `libs/decorators/` and are controlled by dedicated CLI flags.
+
+### Module Structure
+
+```
+src/regshape/libs/decorators/
+├── __init__.py          # Exports: track_time, track_scenario, debug_call
+├── timing.py            # @track_time decorator
+├── scenario.py          # @track_scenario decorator
+└── call_details.py      # @debug_call decorator
+```
+
+### CLI Flags
+
+Three new global flags control telemetry output. They are independent of each other and of `--verbose`.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--time-methods` | flag | false | Print execution time for individual method calls |
+| `--time-scenarios` | flag | false | Print execution time for multi-step workflows |
+| `--debug-calls` | flag | false | Print request/response headers for each HTTP call |
+
+These flags are set in the Click context by `cli/main.py` and propagated to the decorators via a context-var configuration object.
+
+```python
+@click.option("--time-methods", is_flag=True, help="Print execution time for individual method calls")
+@click.option("--time-scenarios", is_flag=True, help="Print execution time for multi-step workflows")
+@click.option("--debug-calls", is_flag=True, help="Print request/response headers for HTTP calls")
+```
+
+### TelemetryConfig
+
+A simple configuration object that the decorators read at runtime.
+
+```python
+@dataclass
+class TelemetryConfig:
+    """Runtime configuration for telemetry decorators.
+
+    :param time_methods_enabled: When True, @track_time prints per-method timing info.
+    :param time_scenarios_enabled: When True, @track_scenario prints per-scenario timing info.
+    :param debug_calls_enabled: When True, @debug_call prints request/response headers.
+    :param output: Writable stream for telemetry output (defaults to stderr).
+    """
+    time_methods_enabled: bool = False
+    time_scenarios_enabled: bool = False
+    debug_calls_enabled: bool = False
+    output: IO = field(default_factory=lambda: sys.stderr)
+```
+
+The active `TelemetryConfig` is stored in a module-level context variable so decorators can access it without threading configuration through every function signature.
+
+```python
+# src/regshape/libs/decorators/__init__.py
+from contextvars import ContextVar
+
+_telemetry_config: ContextVar[TelemetryConfig] = ContextVar(
+    'telemetry_config', default=TelemetryConfig()
+)
+
+def configure_telemetry(config: TelemetryConfig) -> None:
+    """Set the active telemetry configuration."""
+    _telemetry_config.set(config)
+
+def get_telemetry_config() -> TelemetryConfig:
+    """Get the active telemetry configuration."""
+    return _telemetry_config.get()
+```
+
+### Decorator: `@track_time`
+
+Measures and prints the execution time of a single function or method.
+
+```python
+def track_time(func: Callable) -> Callable:
+    """Decorator that prints execution time when --time-methods is enabled.
+
+    Output format:
+        [TIMING] <module>.<qualname> completed in <duration>s
+
+    When --time-methods is not enabled, this decorator is a zero-cost passthrough
+    (the wrapper still executes but skips the timing logic).
+
+    Usage:
+        @track_time
+        def get_manifest(client, repo, reference): ...
+    """
+```
+
+Applied to individual functions in the domain operations layer (e.g., `get_manifest`, `put_blob`, `delete_tag`) and any other function where per-call timing is valuable.
+
+### Decorator: `@track_scenario`
+
+Measures and prints the execution time of a multi-step workflow. A scenario is a logical operation that may involve multiple HTTP calls (e.g., a chunked blob upload is POST + N×PATCH + PUT).
+
+```python
+def track_scenario(name: str) -> Callable:
+    """Decorator that prints execution time for a named multi-step workflow
+    when --time-scenarios is enabled.
+
+    :param name: Human-readable scenario name (e.g., ``"chunked blob upload"``).
+
+    Output format:
+        [SCENARIO] <name> completed in <duration>s
+
+    Usage:
+        @track_scenario("chunked blob upload")
+        def upload_blob_chunked(client, repo, stream, chunk_size): ...
+    """
+```
+
+Applied to higher-level workflow functions that orchestrate multiple operations. The distinction from `@track_time` is semantic: `@track_time` is for atomic operations, `@track_scenario` is for named workflows that compose multiple atomic operations.
+
+### Decorator: `@debug_call`
+
+Prints request and response headers for an HTTP call. This decorator is designed to wrap functions that make HTTP requests via the transport layer.
+
+```python
+def debug_call(func: Callable) -> Callable:
+    """Decorator that prints request/response headers when --debug-calls is enabled.
+
+    Expects the decorated function to return a RegistryResponse (or an object
+    with a ``headers`` attribute and a corresponding request).
+
+    Output format:
+        [CALL] <method> <url>
+        [REQUEST HEADERS]
+          Header-Name: value
+          ...
+        [RESPONSE HEADERS] <status_code>
+          Header-Name: value
+          ...
+
+    Usage:
+        @debug_call
+        def request(self, method, path, ...): ...
+    """
+```
+
+Applied to `RegistryClient.request()` (or the inner transport call) so that every HTTP round-trip can be inspected. The decorator extracts request details from the function arguments and response details from the return value.
+
+### Where Decorators Are Applied
+
+| Decorator | Applied To | Layer |
+|-----------|-----------|-------|
+| `@track_time` | Individual domain operation functions (`get_manifest`, `head_blob`, `list_tags`, etc.) | Domain Operations |
+| `@track_scenario` | Multi-step workflow functions (`upload_blob_chunked`, `upload_blob_monolithic`, `mount_blob`, etc.) | Domain Operations |
+| `@debug_call` | `RegistryClient.request()` | Foundation (Transport) |
+
+### Output Destination
+
+All telemetry output goes to **stderr** so it does not interfere with the structured output on stdout (plain text or JSON). This ensures that piping `regshape manifest get ... --json` to another tool works correctly even when `--timing` or `--debug-calls` is active.
+
+### Design Principles
+
+1. **Zero-cost when disabled.** When the corresponding CLI flag is not set, decorators check the config and return immediately without any timing or I/O overhead beyond the boolean check.
+2. **Separate from logging middleware.** The `LoggingMiddleware` in the transport layer is for recording full request/response pairs (potentially to a file) for break mode analysis. The `@debug_call` decorator is for interactive inspection during CLI use.
+3. **Composable.** A function can have both `@track_time` and `@debug_call` applied simultaneously.
+4. **No side effects on return values.** Decorators never modify the arguments or return values of the decorated function.
+
+---
+
+## 9. Implementation Sequence
 
 The recommended order for implementing RegShape, based on dependencies.
 
@@ -818,32 +996,33 @@ The recommended order for implementing RegShape, based on dependencies.
 
 1. **`libs/models/`** -- Data models (Descriptor, ImageManifest, ImageIndex, media type constants, OciErrorResponse). No external dependencies.
 2. **`libs/errors.py`** -- Extend the existing error hierarchy with all RegistryError subtypes.
-3. **`libs/transport/`** -- RegistryClient, RegistryRequest, RegistryResponse, middleware protocol, AuthMiddleware (wiring in existing `libs/auth/`), LoggingMiddleware.
+3. **`libs/decorators/`** -- TelemetryConfig, `@track_time`, `@track_scenario`, `@debug_call` decorators. No dependencies beyond standard library.
+4. **`libs/transport/`** -- RegistryClient, RegistryRequest, RegistryResponse, middleware protocol, AuthMiddleware (wiring in existing `libs/auth/`), LoggingMiddleware. Apply `@debug_call` to `RegistryClient.request()`.
 
 ### Phase 2: Domain Operations
 
-4. **`libs/manifests/`** -- GET/HEAD/PUT/DELETE manifest operations. First domain module; validates the transport layer works end-to-end.
-5. **`libs/blobs/`** -- GET/HEAD/DELETE blob, plus monolithic upload, chunked upload, and cross-repo mount.
-6. **`libs/tags/`** -- Tag listing with pagination.
-7. **`libs/referrers/`** -- Referrer listing with filtering.
-8. **`libs/catalog/`** -- Catalog listing with pagination.
+5. **`libs/manifests/`** -- GET/HEAD/PUT/DELETE manifest operations. First domain module; validates the transport layer works end-to-end. Apply `@track_time` to individual operations and `@track_scenario` to multi-step workflows.
+6. **`libs/blobs/`** -- GET/HEAD/DELETE blob, plus monolithic upload, chunked upload, and cross-repo mount. Apply `@track_time` to atomic operations, `@track_scenario` to `upload_blob_chunked`, `upload_blob_monolithic`, and `mount_blob`.
+7. **`libs/tags/`** -- Tag listing with pagination.
+8. **`libs/referrers/`** -- Referrer listing with filtering.
+9. **`libs/catalog/`** -- Catalog listing with pagination.
 
 ### Phase 3: CLI
 
-9. **`cli/main.py`** -- Top-level group, global options, client construction.
-10. **`cli/manifest.py`** through **`cli/catalog.py`** -- Command groups wired to domain operations.
-11. **`cli/formatting.py`** -- Plain text and JSON output helpers.
+10. **`cli/main.py`** -- Top-level group, global options (including `--timing` and `--debug-calls`), client construction, `TelemetryConfig` setup via `configure_telemetry()`.
+11. **`cli/manifest.py`** through **`cli/catalog.py`** -- Command groups wired to domain operations.
+12. **`cli/formatting.py`** -- Plain text and JSON output helpers.
 
 ### Phase 4: Break Mode
 
-12. **`libs/breakmode/`** -- BreakModeConfig, BreakRule, rule factories, BreakModeMiddleware.
-13. **CLI `--break` wiring** -- Loading break rules from file, injecting BreakModeConfig into TransportConfig.
+13. **`libs/breakmode/`** -- BreakModeConfig, BreakRule, rule factories, BreakModeMiddleware.
+14. **CLI `--break` wiring** -- Loading break rules from file, injecting BreakModeConfig into TransportConfig.
 
 ### Phase 5: Polish
 
-14. Pagination helpers (for tags, catalog, referrers).
-15. Docker config credential auto-discovery in CLI (using existing `libs/auth/dockerconfig.py` and `libs/auth/dockercredstore.py`).
-16. Comprehensive test suite with mocked HTTP responses.
+15. Pagination helpers (for tags, catalog, referrers).
+16. Docker config credential auto-discovery in CLI (using existing `libs/auth/dockerconfig.py` and `libs/auth/dockercredstore.py`).
+17. Comprehensive test suite with mocked HTTP responses.
 
 ---
 
