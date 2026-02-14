@@ -977,7 +977,7 @@ Applied to `RegistryClient.request()` (or the inner transport call) so that ever
 
 ### Output Destination
 
-All telemetry output goes to **stderr** so it does not interfere with the structured output on stdout (plain text or JSON). This ensures that piping `regshape manifest get ... --json` to another tool works correctly even when `--timing` or `--debug-calls` is active.
+All telemetry output goes to **stderr** so it does not interfere with the structured output on stdout (plain text or JSON). This ensures that piping `regshape manifest get ... --json` to another tool works correctly even when `--time-methods`, `--time-scenarios`, or `--debug-calls` is active.
 
 ### Design Principles
 
