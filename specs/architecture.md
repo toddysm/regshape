@@ -47,7 +47,7 @@ RegShape is organized into three layers. Each layer depends only on the layers b
           v
 +-------------------------------------------------------+
 |                Foundation Layer                         |
-|  src/regshape/libs/transport/   (HTTP client + midware)|
+|  src/regshape/libs/transport/   (HTTP client + middleware)|
 |  src/regshape/libs/auth/        (existing)             |
 |  src/regshape/libs/models/      (data models)          |
 |  src/regshape/libs/breakmode/   (break mode config)    |
