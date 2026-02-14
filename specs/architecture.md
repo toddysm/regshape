@@ -1009,7 +1009,7 @@ The recommended order for implementing RegShape, based on dependencies.
 
 ### Phase 3: CLI
 
-10. **`cli/main.py`** -- Top-level group, global options (including `--timing` and `--debug-calls`), client construction, `TelemetryConfig` setup via `configure_telemetry()`.
+10. **`cli/main.py`** -- Top-level group, global options (including `--time-methods`, `--time-scenarios`, and `--debug-calls`), client construction, `TelemetryConfig` setup via `configure_telemetry()`.
 11. **`cli/manifest.py`** through **`cli/catalog.py`** -- Command groups wired to domain operations.
 12. **`cli/formatting.py`** -- Plain text and JSON output helpers.
 
