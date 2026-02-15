@@ -759,11 +759,11 @@ regshape
 │   ├── put <image-ref> [--file <path>]      # PUT /v2/<name>/manifests/<ref>
 │   └── delete <image-ref>                   # DELETE /v2/<name>/manifests/<ref>
 ├── blob
-│   ├── get <repo> <digest> [--output <path>]  # GET /v2/<name>/blobs/<digest>
-│   ├── head <repo> <digest>                   # HEAD /v2/<name>/blobs/<digest>
-│   ├── delete <repo> <digest>                 # DELETE /v2/<name>/blobs/<digest>
-│   ├── upload <repo> <file> [--chunked]       # POST + PUT (or POST + PATCH + PUT)
-│   └── mount <repo> <digest> --from <source>  # POST with mount param
+│   ├── get <repo> <digest> [--output <path>]           # GET /v2/<name>/blobs/<digest>
+│   ├── head <repo> <digest>                            # HEAD /v2/<name>/blobs/<digest>
+│   ├── delete <repo> <digest>                          # DELETE /v2/<name>/blobs/<digest>
+│   ├── upload <repo> <file> [--chunked] [--chunk-size <bytes>]  # POST + PUT (or POST + PATCH + PUT)
+│   └── mount <repo> <digest> --from <source>           # POST with mount param
 ├── tag
 │   └── list <repo> [--limit N] [--last <tag>] # GET /v2/<name>/tags/list
 ├── referrer
