@@ -269,10 +269,10 @@ Arrows indicate "depends on" (imports from).
 
 1. **CLI modules** depend on domain operations modules and `libs/models/`. They never import from `libs/transport/` directly (the `RegistryClient` is constructed in CLI setup and passed down).
 2. **Domain operations modules** (manifests, blobs, tags, referrers, catalog) depend on `libs/transport/` and `libs/models/`. They do not depend on each other (except blobs may be referenced by manifests via model types).
-3. **Transport** depends on `libs/auth/`, `libs/breakmode/`, `libs/errors.py`, and `libs/decorators/`.
-4. **Models** depends only on `libs/constants.py` and standard library.
+3. **Transport** depends on `libs/models/` (for `RegistryRequest` / `RegistryResponse` types), `libs/auth/`, `libs/breakmode/`, `libs/errors.py`, and `libs/decorators/`.
+4. **Models** (including `RegistryRequest` / `RegistryResponse` types) depend only on `libs/constants.py` and the standard library.
 5. **Auth** depends on `libs/errors.py`, `libs/constants.py`, `libs/decorators/`.
-6. **Break mode** depends on `libs/models/` (for `RegistryRequest` types) and `libs/errors.py`.
+6. **Break mode** depends on `libs/models/` (including `RegistryRequest` / `RegistryResponse` types) and `libs/errors.py`.
 
 The dependency graph is a DAG with no circular dependencies.
 
