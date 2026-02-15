@@ -983,7 +983,7 @@ All telemetry output goes to **stderr** so it does not interfere with the struct
 
 ### Design Principles
 
-1. **Zero-cost when disabled.** When the corresponding CLI flag is not set, decorators check the config and return immediately without any timing or I/O overhead beyond the boolean check.
+1. **Minimal overhead when disabled.** When the corresponding CLI flag is not set, decorators perform only a lightweight wrapper call and configuration check, skipping all timing and I/O work.
 2. **Separate from logging middleware.** The `LoggingMiddleware` in the transport layer is for recording full request/response pairs (potentially to a file) for break mode analysis. The `@debug_call` decorator is for interactive inspection during CLI use.
 3. **Composable.** A function can have both `@track_time` and `@debug_call` applied simultaneously.
 4. **No side effects on return values.** Decorators never modify the arguments or return values of the decorated function.
