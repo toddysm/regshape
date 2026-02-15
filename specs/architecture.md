@@ -877,7 +877,7 @@ class TelemetryConfig:
     time_methods_enabled: bool = False
     time_scenarios_enabled: bool = False
     debug_calls_enabled: bool = False
-    output: IO = field(default_factory=lambda: sys.stderr)
+    output: IO = field(default=sys.stderr)
 ```
 
 The active `TelemetryConfig` is stored in a module-level context variable so decorators can access it without threading configuration through every function signature.
