@@ -210,11 +210,15 @@ Internal representations that flow through the middleware pipeline.
 ```python
 @dataclass
 class RegistryRequest:
-    """Internal representation of an outgoing HTTP request."""
+    """Internal representation of an outgoing HTTP request.
+
+    `body` may be either a fully-buffered bytes object or an iterable of
+    bytes chunks for streaming large payloads.
+    """
     method: str
     url: str
     headers: dict
-    body: Optional[bytes] = None
+    body: Optional[bytes | Iterable[bytes]] = None
     stream: bool = False
 
 @dataclass
