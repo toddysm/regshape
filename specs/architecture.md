@@ -1023,7 +1023,7 @@ The recommended order for implementing RegShape, based on dependencies.
 ### Phase 5: Polish
 
 15. Pagination helpers (for tags, catalog, referrers).
-16. Docker config credential auto-discovery in CLI (using existing `libs/auth/dockerconfig.py` and `libs/auth/dockercredstore.py`).
+16. Docker config credential auto-discovery in CLI, building on the auth helpers in `libs/auth/dockerconfig.py` and `libs/auth/dockercredstore.py` once those modules are implemented.
 17. Comprehensive test suite with mocked HTTP responses.
 
 ---
