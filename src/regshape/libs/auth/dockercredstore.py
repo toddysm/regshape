@@ -48,7 +48,7 @@ def list(store='desktop'):
 def get(store='desktop', registry=None):
     """
     Lists the credentials stored in the credential store.
-    :param store: The type of the credential store. 
+    :param store: The type of the credential store.
         (default is ``desktop``, the default wrapper)
     :type store: str
     :param registry: The registry for which to obtain the credentials. Must be
@@ -58,6 +58,8 @@ def get(store='desktop', registry=None):
     :rtype: dict
     :raises AuthError: If Docker credential helpers are not configured
     """
+    if registry is None:
+        raise AuthError("Registry must be specified", "registry parameter is required")
     credstore_cmd = [f"docker-credential-{store}", "get"]
     try:
         p = Popen(credstore_cmd, stdout=PIPE, stdin=PIPE, stderr=STDOUT)
@@ -77,7 +79,7 @@ def get(store='desktop', registry=None):
 def erase(store='desktop', registry=None):
     """
     Erases the credentials stored in the credential store.
-    :param store: The type of the credential store. 
+    :param store: The type of the credential store.
         (default is ``desktop``, the default wrapper)
     :type store: str
     :param registry: The registry for which to obtain the credentials. Must be
@@ -85,6 +87,8 @@ def erase(store='desktop', registry=None):
     :type store: str
     :raises AuthError: If Docker credential helpers are not configured
     """
+    if registry is None:
+        raise AuthError("Registry must be specified", "registry parameter is required")
     credstore_cmd = [f"docker-credential-{store}", "erase"]
     try:
         p = Popen(credstore_cmd, stdout=PIPE, stdin=PIPE, stderr=STDOUT)
@@ -99,7 +103,7 @@ def erase(store='desktop', registry=None):
 def store(store='desktop', registry=None, credentials=None):
     """
     stores the credentials in the credential store.
-    :param store: The type of the credential store. 
+    :param store: The type of the credential store.
         (default is ``desktop``, the default wrapper)
     :type store: str
     :param registry: The registry for which to obtain the credentials. Must be
@@ -110,12 +114,15 @@ def store(store='desktop', registry=None, credentials=None):
     :type credentials: dict
     :raises AuthError: If Docker credential helpers are not configured
     """
+    if registry is None:
+        raise AuthError("Registry must be specified", "registry parameter is required")
+    if credentials is None:
+        raise AuthError("Credentials must be specified", "credentials parameter is required")
     credstore_cmd = [f"docker-credential-{store}", "store"]
     try:
+        payload = json.dumps({'ServerURL': registry, **credentials})
         p = Popen(credstore_cmd, stdout=PIPE, stdin=PIPE, stderr=STDOUT)
-        p.communicate(input=registry.encode('utf-8'))
-        credentials_json = json.dumps(credentials)
-        p.communicate(input=credentials_json.encode('utf-8'))
+        p.communicate(input=payload.encode('utf-8'))
     except FileNotFoundError as e:
         log.error(e)
         raise AuthError("Error while storing credentials", f"docker-credential-{store} cannot be found")

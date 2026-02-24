@@ -91,6 +91,16 @@ class TestParseAuthHeader:
         result = registryauth._parse_auth_header(header)
         assert result['scheme'] == 'Bearer'
 
+    def test_realm_url_with_query_param_containing_equals(self):
+        """A realm URL with ?key=value must not be split on the inner '='."""
+        header = (
+            'Bearer realm="https://auth.example.com/token?service=reg",'
+            'service="registry.example.com"'
+        )
+        result = registryauth._parse_auth_header(header)
+        assert result['realm'] == 'https://auth.example.com/token?service=reg'
+        assert result['service'] == 'registry.example.com'
+
 
 # ===========================================================================
 # registryauth._get_basic_auth
@@ -195,14 +205,6 @@ class TestAuthenticate:
         result = registryauth.authenticate(header, 'alice', 's3cr3t')
         assert result == base64.b64encode(b'alice:s3cr3t').decode('utf-8')
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason=(
-            "Bug: _get_auth_token() returns the full token response dict; "
-            "authenticate() should extract and return only the token string. "
-            "Remove xfail once the return-type bug in _get_auth_token is fixed."
-        ),
-    )
     def test_bearer_scheme_returns_token_string(self):
         header = _bearer_header(scope='repository:library/ubuntu:pull')
         with patch('regshape.libs.auth.registryauth.requests.get') as mock_get:
@@ -367,6 +369,10 @@ class TestCredstoreGet:
             with pytest.raises(AuthError):
                 dockercredstore.get(registry='https://registry.example.com')
 
+    def test_raises_auth_error_when_registry_is_none(self):
+        with pytest.raises(AuthError):
+            dockercredstore.get(registry=None)
+
 
 class TestCredstoreErase:
 
@@ -387,19 +393,13 @@ class TestCredstoreErase:
             with pytest.raises(AuthError):
                 dockercredstore.erase(registry='https://registry.example.com')
 
+    def test_raises_auth_error_when_registry_is_none(self):
+        with pytest.raises(AuthError):
+            dockercredstore.erase(registry=None)
+
 
 class TestCredstoreStore:
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason=(
-            "Bug: store() calls p.communicate() twice (first registry, then "
-            "credentials_json), but communicate() terminates the process on the "
-            "first call. The docker-credential-* protocol expects a single JSON "
-            "payload with ServerURL, Username, and Secret. "
-            "Remove xfail once the bug is fixed."
-        ),
-    )
     def test_sends_credentials_as_single_json_payload(self):
         """
         The docker-credential-* store protocol expects exactly one communicate()
@@ -428,3 +428,11 @@ class TestCredstoreStore:
                     registry='https://registry.example.com',
                     credentials={'Username': 'u', 'Secret': 'p'},
                 )
+
+    def test_raises_auth_error_when_registry_is_none(self):
+        with pytest.raises(AuthError):
+            dockercredstore.store(registry=None, credentials={'Username': 'u', 'Secret': 'p'})
+
+    def test_raises_auth_error_when_credentials_is_none(self):
+        with pytest.raises(AuthError):
+            dockercredstore.store(registry='https://registry.example.com', credentials=None)
