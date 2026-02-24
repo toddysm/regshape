@@ -15,10 +15,8 @@ import json
 import logging
 import requests
 
-from regshape.libs.decorators.telemetry import executiontime_decorator
 from regshape.libs.errors import AuthError
 from typing import Optional
-from urllib.parse import parse_qs, urlparse
 
 log = logging.getLogger(__name__)
 
@@ -39,7 +37,7 @@ def _parse_auth_header(auth_header: str) -> dict:
 
     params = params.split(",")
     params = [param.replace('"', '') for param in params]
-    params = [param.split('=') for param in params]
+    params = [param.split('=', 1) for param in params]
     auth_header = dict(params)
     auth_header['scheme'] = scheme
 
@@ -67,14 +65,14 @@ def _get_auth_token(
     Signs into an OCI registry using the token authentication method. See
     https://distribution.github.io/distribution/spec/auth/token/ for more.
 
-    :param url: The URL to the registry resource
-    :type url: str
+    :param auth_header: The parsed authentication header dictionary
+    :type auth_header: dict
     :param username: The username to use for authentication
     :type username: str
     :param password: The password to use for authentication
     :type password: str
-    :return: The authentication token
-    :rtype: dict
+    :return: The bearer token string
+    :rtype: str
     """
 
     # Ensure realm is present
@@ -113,19 +111,36 @@ def _get_auth_token(
     query_params = {key: auth_header[key] for key in param_keys}
 
     # Make a request to the `realm` with `service` and `scope` endpoint to get the token
-    if username and password:
-        # Make a request with authentication
-        response = requests.get(realm, params=query_params, auth=(f'{username}', f'{password}'))
-    else:
-        # Make an anonymous request
-        response = requests.get(realm, params=query_params)
+    try:
+        if username and password:
+            response = requests.get(realm, params=query_params, auth=(username, password))
+        else:
+            response = requests.get(realm, params=query_params)
+    except requests.exceptions.ConnectionError as e:
+        log.error(e)
+        raise AuthError("Token request failed", f"Unable to connect to {realm}")
+    except requests.exceptions.Timeout as e:
+        log.error(e)
+        raise AuthError("Token request failed", f"Connection to {realm} timed out")
+    except requests.exceptions.RequestException as e:
+        log.error(e)
+        raise AuthError("Token request failed", f"Request to {realm} failed: {e}")
 
     # Parse the response
-    token = json.loads(response.text)
+    if response.status_code != 200:
+        log.error(f"Token request failed with status {response.status_code}")
+        raise AuthError("Token request failed", f"Status code: {response.status_code}")
+
+    token_response = json.loads(response.text)
+
+    # OCI spec allows either 'token' or 'access_token'; prefer 'access_token'
+    token = token_response.get('access_token') or token_response.get('token')
+    if not token:
+        log.error("Token response missing both 'access_token' and 'token' fields")
+        raise AuthError("Token response missing token field")
 
     return token
 
-@executiontime_decorator
 def authenticate(
         auth_header: str,
         username: Optional[str] = None,
