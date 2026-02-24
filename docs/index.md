@@ -1,5 +1,13 @@
 # RegShape Overview
 
+![RegShape](../docs/_static/regshape.png)
+
+[![PyPI version](https://badge.fury.io/py/regshape.svg)](https://badge.fury.io/py/regshape)
+[![Build Status](https://travis-ci.com/containersolutions/regshape.svg?branch=main)](https://travis-ci.com/containersolutions/regshape)
+[![codecov](https://codecov.io/gh/containersolutions/regshape/branch/main/graph/badge.svg?token=ZQZQZQZQZQ)](https://codecov.io/gh/containersolutions/regshape)
+[![Documentation Status](https://readthedocs.org/projects/regshape/badge/?version=latest)](https://regshape.readthedocs.io/en/latest/?badge=latest)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)]
+
 RegShape (from REGistry reSHAPE) is a CLI tool and a Python library for manipulating 
 artifacts in an [OCI](https://opencoutnaiers.org) registry. While there are many other tools that can do this
 (see [ORAS](https://oras.land), [regclient](https://github.com/regclient/regclient)
