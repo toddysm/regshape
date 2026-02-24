@@ -24,6 +24,7 @@ import base64
 import json
 import os
 import pytest
+import requests
 from unittest.mock import MagicMock, patch
 
 from regshape.libs.auth import dockerconfig, dockercredstore, registryauth
@@ -192,6 +193,34 @@ class TestGetAuthToken:
         header = {'scheme': 'Bearer', 'realm': 'https://auth.example.com/token'}
         with pytest.raises(AuthError):
             registryauth._get_auth_token(header)
+
+    def test_raises_auth_error_on_non_200_status(self):
+        header = self._header()
+        with patch('regshape.libs.auth.registryauth.requests.get') as mock_get:
+            mock_get.return_value = MagicMock(status_code=401, text='{"errors":[]}')
+            with pytest.raises(AuthError):
+                registryauth._get_auth_token(header, 'user', 'wrongpass')
+
+    def test_raises_auth_error_on_connection_error(self):
+        header = self._header()
+        with patch('regshape.libs.auth.registryauth.requests.get',
+                   side_effect=requests.exceptions.ConnectionError):
+            with pytest.raises(AuthError):
+                registryauth._get_auth_token(header)
+
+    def test_raises_auth_error_on_timeout(self):
+        header = self._header()
+        with patch('regshape.libs.auth.registryauth.requests.get',
+                   side_effect=requests.exceptions.Timeout):
+            with pytest.raises(AuthError):
+                registryauth._get_auth_token(header)
+
+    def test_raises_auth_error_on_generic_request_exception(self):
+        header = self._header()
+        with patch('regshape.libs.auth.registryauth.requests.get',
+                   side_effect=requests.exceptions.RequestException):
+            with pytest.raises(AuthError):
+                registryauth._get_auth_token(header)
 
 
 # ===========================================================================

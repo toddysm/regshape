@@ -111,12 +111,20 @@ def _get_auth_token(
     query_params = {key: auth_header[key] for key in param_keys}
 
     # Make a request to the `realm` with `service` and `scope` endpoint to get the token
-    if username and password:
-        # Make a request with authentication
-        response = requests.get(realm, params=query_params, auth=(f'{username}', f'{password}'))
-    else:
-        # Make an anonymous request
-        response = requests.get(realm, params=query_params)
+    try:
+        if username and password:
+            response = requests.get(realm, params=query_params, auth=(username, password))
+        else:
+            response = requests.get(realm, params=query_params)
+    except requests.exceptions.ConnectionError as e:
+        log.error(e)
+        raise AuthError("Token request failed", f"Unable to connect to {realm}")
+    except requests.exceptions.Timeout as e:
+        log.error(e)
+        raise AuthError("Token request failed", f"Connection to {realm} timed out")
+    except requests.exceptions.RequestException as e:
+        log.error(e)
+        raise AuthError("Token request failed", f"Request to {realm} failed: {e}")
 
     # Parse the response
     if response.status_code != 200:
