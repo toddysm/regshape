@@ -22,6 +22,7 @@ import base64
 import json
 import os
 import tempfile
+from urllib.parse import urlparse
 
 import pytest
 import requests
@@ -383,7 +384,7 @@ class TestAuthLoginCommand:
         token_resp.text = json.dumps({"token": "abc123"})
 
         def fake_requests_get(url, **kwargs):
-            if "auth.example.com" in url:
+            if urlparse(url).hostname == "auth.example.com":
                 return token_resp
             if kwargs.get("headers", {}).get("Authorization"):
                 return ok_after_token
@@ -415,7 +416,7 @@ class TestAuthLoginCommand:
         token_resp.text = json.dumps({"token": "bad-token"})
 
         def fake_requests_get(url, **kwargs):
-            if "auth.example.com" in url:
+            if urlparse(url).hostname == "auth.example.com":
                 return token_resp
             return challenge_resp if not kwargs.get("headers") else unauthorized_retry
 
