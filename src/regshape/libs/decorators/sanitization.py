@@ -23,6 +23,18 @@ SENSITIVE_HEADERS: frozenset[str] = frozenset({
     "set-cookie",
 })
 
+# Known HTTP authentication scheme names (RFC 7235 / IANA registry).
+# Only schemes in this list are preserved when redacting auth headers.
+# Comparison is case-insensitive; extend as new schemes are encountered.
+_AUTH_SCHEMES: frozenset[str] = frozenset({
+    "basic",
+    "bearer",
+    "digest",
+    "ntlm",
+    "negotiate",
+    "aws4-hmac-sha256",
+})
+
 
 def redact_header_value(name: str, value: str) -> str:
     """
@@ -30,8 +42,17 @@ def redact_header_value(name: str, value: str) -> str:
 
     ``Authorization`` and ``Proxy-Authorization`` headers retain the scheme
     token (e.g., ``Bearer``, ``Basic``) for diagnostic utility while the
-    credentials are replaced with ``<redacted>``.  ``Cookie`` and
-    ``Set-Cookie`` values are fully replaced.
+    credentials are replaced with ``<redacted>``.
+
+    The scheme token is only preserved when **both** conditions hold:
+
+    * The value contains a space separator (i.e. it is not a bare token).
+    * The extracted scheme matches a name in ``_AUTH_SCHEMES``
+      (case-insensitive).
+
+    If either condition fails the entire value is replaced with
+    ``<redacted>`` so that bare credentials are never leaked.
+    ``Cookie`` and ``Set-Cookie`` values are always fully redacted.
 
     Non-sensitive headers are returned unchanged.
 
@@ -48,8 +69,12 @@ def redact_header_value(name: str, value: str) -> str:
     if name_lower in ("cookie", "set-cookie"):
         return "<redacted>"
     # authorization / proxy-authorization: keep only the scheme token.
-    scheme, _, _ = value.partition(" ")
-    if scheme:
+    # Security: require (a) a real space separator so that a bare credential
+    # with no space is never treated as a scheme, and (b) the token must be
+    # a known auth scheme name so that an unknown/long credential token is
+    # not exposed even when a space happens to be present.
+    scheme, sep, _ = value.partition(" ")
+    if sep and scheme.lower() in _AUTH_SCHEMES:
         return f"{scheme} <redacted>"
     return "<redacted>"
 

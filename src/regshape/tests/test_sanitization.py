@@ -99,10 +99,29 @@ class TestRedactHeaderValue:
         assert result == "Bearer <redacted>"
 
     def test_authorization_scheme_only_no_space(self):
-        """A value with no space (scheme token only, no credentials) is fully redacted."""
+        """A bare credential with no space must NOT leak the token as the scheme."""
         result = redact_header_value("Authorization", "Bearer")
-        # partition(" ") gives ("Bearer", "", "") — scheme is non-empty → "Bearer <redacted>"
-        assert result == "Bearer <redacted>"
+        # No space separator → scheme cannot be safely identified → fully redacted.
+        assert result == "<redacted>"
+
+    def test_authorization_unknown_scheme_with_space_fully_redacted(self):
+        """An unknown scheme token is never preserved, even when a space is present."""
+        result = redact_header_value("Authorization", "UnknownScheme token123")
+        assert result == "<redacted>"
+        assert "UnknownScheme" not in result
+        assert "token123" not in result
+
+    def test_authorization_bare_token_no_space_fully_redacted(self):
+        """A raw credential with no space must be fully redacted (regression test)."""
+        result = redact_header_value("Authorization", "abc123secrettoken")
+        assert result == "<redacted>"
+        assert "abc123secrettoken" not in result
+
+    def test_authorization_known_scheme_case_insensitive_in_allowlist(self):
+        """aws4-hmac-sha256 is in the allowlist and its scheme token is preserved."""
+        result = redact_header_value("Authorization", "AWS4-HMAC-SHA256 Credential=xyz")
+        assert result == "AWS4-HMAC-SHA256 <redacted>"
+        assert "Credential=xyz" not in result
 
     def test_authorization_empty_value_fully_redacted(self):
         """An empty Authorization value falls through to the final <redacted>."""
@@ -129,6 +148,17 @@ class TestRedactHeaderValue:
     def test_proxy_authorization_empty_value_fully_redacted(self):
         result = redact_header_value("Proxy-Authorization", "")
         assert result == "<redacted>"
+
+    def test_proxy_authorization_bare_token_no_space_fully_redacted(self):
+        """Bare credential without a space must not leak via scheme extraction."""
+        result = redact_header_value("Proxy-Authorization", "secrettoken")
+        assert result == "<redacted>"
+        assert "secrettoken" not in result
+
+    def test_proxy_authorization_unknown_scheme_fully_redacted(self):
+        result = redact_header_value("Proxy-Authorization", "CustomScheme token")
+        assert result == "<redacted>"
+        assert "CustomScheme" not in result
 
     # --- Cookie header ---------------------------------------------------
 
