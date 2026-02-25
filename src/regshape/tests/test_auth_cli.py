@@ -19,6 +19,7 @@ Test categories:
 """
 
 import base64
+import contextlib
 import json
 import os
 import tempfile
@@ -604,9 +605,9 @@ class TestAuthLoginTelemetry:
 
     def test_time_scenarios_writes_to_stderr_not_stdout(self):
         """--time-scenarios emits [SCENARIO] to stderr; stdout stays clean."""
-        with self._ok_patches()[0], self._ok_patches()[1], \
-             self._ok_patches()[2], self._ok_patches()[3], \
-             self._ok_patches()[4], self._ok_patches()[5]:
+        with contextlib.ExitStack() as stack:
+            for p in self._ok_patches():
+                stack.enter_context(p)
             result = self._runner().invoke(
                 regshape,
                 ["--time-scenarios", "auth", "login",
@@ -618,9 +619,9 @@ class TestAuthLoginTelemetry:
 
     def test_time_methods_writes_to_stderr_not_stdout(self):
         """--time-methods emits [TIMING] to stderr; stdout stays clean."""
-        with self._ok_patches()[0], self._ok_patches()[1], \
-             self._ok_patches()[2], self._ok_patches()[3], \
-             self._ok_patches()[4], self._ok_patches()[5]:
+        with contextlib.ExitStack() as stack:
+            for p in self._ok_patches():
+                stack.enter_context(p)
             result = self._runner().invoke(
                 regshape,
                 ["--time-methods", "auth", "login",
@@ -633,9 +634,9 @@ class TestAuthLoginTelemetry:
 
     def test_debug_calls_writes_to_stderr_not_stdout(self):
         """--debug-calls emits [CALL] block to stderr; stdout stays clean."""
-        with self._ok_patches()[0], self._ok_patches()[1], \
-             self._ok_patches()[2], self._ok_patches()[3], \
-             self._ok_patches()[4], self._ok_patches()[5]:
+        with contextlib.ExitStack() as stack:
+            for p in self._ok_patches():
+                stack.enter_context(p)
             result = self._runner().invoke(
                 regshape,
                 ["--debug-calls", "auth", "login",
@@ -683,9 +684,9 @@ class TestAuthLoginTelemetry:
 
     def test_json_stdout_not_contaminated_by_telemetry(self):
         """With --json, stdout is valid JSON even when all telemetry flags active."""
-        with self._ok_patches()[0], self._ok_patches()[1], \
-             self._ok_patches()[2], self._ok_patches()[3], \
-             self._ok_patches()[4], self._ok_patches()[5]:
+        with contextlib.ExitStack() as stack:
+            for p in self._ok_patches():
+                stack.enter_context(p)
             result = self._runner().invoke(
                 regshape,
                 ["--json", "--time-scenarios", "--time-methods", "--debug-calls",
