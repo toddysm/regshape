@@ -571,3 +571,132 @@ class TestAuthLogoutCommand:
                 ["auth", "logout", "-r", REGISTRY],
             )
         assert result.exit_code == 1
+
+
+# ===========================================================================
+# TestAuthLoginTelemetry
+# ===========================================================================
+
+class TestAuthLoginTelemetry:
+    """Verify that telemetry flags emit output to stderr and do not
+    contaminate stdout (including structured --json output)."""
+
+    def _runner(self):
+        # Click 8.3+ separates stdout/stderr in Result automatically.
+        # result.stdout (or result.output) = stdout only
+        # result.stderr = stderr only
+        return CliRunner()
+
+    def _ok_patches(self):
+        """Context managers that make a login call succeed without I/O."""
+        return (
+            patch("regshape.libs.auth.credentials.dockerconfig.load_config",
+                  return_value=None),
+            patch("regshape.libs.auth.credentials.dockerconfig.get_config_file",
+                  return_value=None),
+            patch("regshape.libs.auth.credentials.dockerconfig.home_dir",
+                  return_value="/tmp"),
+            patch("regshape.libs.auth.credentials.dockerconfig.DOCKER_CONFIG_FILENAME",
+                  os.path.join(".docker", "config.json")),
+            patch("requests.get", return_value=_make_response(200)),
+            patch("regshape.libs.auth.credentials.store_credentials"),
+        )
+
+    def test_time_scenarios_writes_to_stderr_not_stdout(self):
+        """--time-scenarios emits [SCENARIO] to stderr; stdout stays clean."""
+        with self._ok_patches()[0], self._ok_patches()[1], \
+             self._ok_patches()[2], self._ok_patches()[3], \
+             self._ok_patches()[4], self._ok_patches()[5]:
+            result = self._runner().invoke(
+                regshape,
+                ["--time-scenarios", "auth", "login",
+                 "-r", REGISTRY, "-u", "alice", "-p", "s3cr3t"],
+            )
+        assert result.exit_code == 0, result.output
+        assert "[SCENARIO] auth login" in result.stderr
+        assert "[SCENARIO]" not in result.stdout
+
+    def test_time_methods_writes_to_stderr_not_stdout(self):
+        """--time-methods emits [TIMING] to stderr; stdout stays clean."""
+        with self._ok_patches()[0], self._ok_patches()[1], \
+             self._ok_patches()[2], self._ok_patches()[3], \
+             self._ok_patches()[4], self._ok_patches()[5]:
+            result = self._runner().invoke(
+                regshape,
+                ["--time-methods", "auth", "login",
+                 "-r", REGISTRY, "-u", "alice", "-p", "s3cr3t"],
+            )
+        assert result.exit_code == 0, result.output
+        assert "[TIMING]" in result.stderr
+        assert "_verify_credentials" in result.stderr
+        assert "[TIMING]" not in result.stdout
+
+    def test_debug_calls_writes_to_stderr_not_stdout(self):
+        """--debug-calls emits [CALL] block to stderr; stdout stays clean."""
+        with self._ok_patches()[0], self._ok_patches()[1], \
+             self._ok_patches()[2], self._ok_patches()[3], \
+             self._ok_patches()[4], self._ok_patches()[5]:
+            result = self._runner().invoke(
+                regshape,
+                ["--debug-calls", "auth", "login",
+                 "-r", REGISTRY, "-u", "alice", "-p", "s3cr3t"],
+            )
+        assert result.exit_code == 0, result.output
+        assert "[CALL]" in result.stderr
+        assert "[RESPONSE HEADERS]" in result.stderr
+        assert "[CALL]" not in result.stdout
+
+    def test_debug_calls_redacts_authorization_header(self):
+        """--debug-calls never logs the raw Bearer token or password."""
+        challenge_resp = _make_response(401, www_auth=BEARER_CHALLENGE)
+        ok_resp = _make_response(200)
+        token_resp = MagicMock()
+        token_resp.status_code = 200
+        token_resp.text = json.dumps({"token": "super-secret-token"})
+
+        def fake_get(url, **kwargs):
+            if urlparse(url).hostname == "auth.example.com":
+                return token_resp
+            if kwargs.get("headers", {}).get("Authorization"):
+                return ok_resp
+            return challenge_resp
+
+        with patch("regshape.libs.auth.credentials.dockerconfig.load_config",
+                   return_value=None), \
+             patch("regshape.libs.auth.credentials.dockerconfig.get_config_file",
+                   return_value=None), \
+             patch("regshape.libs.auth.credentials.dockerconfig.home_dir",
+                   return_value="/tmp"), \
+             patch("regshape.libs.auth.credentials.dockerconfig.DOCKER_CONFIG_FILENAME",
+                   os.path.join(".docker", "config.json")), \
+             patch("requests.get", side_effect=fake_get), \
+             patch("regshape.libs.auth.credentials.store_credentials"):
+            result = self._runner().invoke(
+                regshape,
+                ["--debug-calls", "auth", "login",
+                 "-r", REGISTRY, "-u", "alice", "-p", "mypassword"],
+            )
+        assert result.exit_code == 0, result.output
+        assert "mypassword" not in result.stderr
+        assert "super-secret-token" not in result.stderr
+        assert "<redacted>" in result.stderr
+
+    def test_json_stdout_not_contaminated_by_telemetry(self):
+        """With --json, stdout is valid JSON even when all telemetry flags active."""
+        with self._ok_patches()[0], self._ok_patches()[1], \
+             self._ok_patches()[2], self._ok_patches()[3], \
+             self._ok_patches()[4], self._ok_patches()[5]:
+            result = self._runner().invoke(
+                regshape,
+                ["--json", "--time-scenarios", "--time-methods", "--debug-calls",
+                 "auth", "login", "-r", REGISTRY, "-u", "alice", "-p", "s3cr3t"],
+            )
+        assert result.exit_code == 0, result.output
+        # stdout must be parseable as JSON — telemetry must not have bled in
+        data = json.loads(result.stdout)
+        assert data["status"] == "success"
+        assert data["registry"] == REGISTRY
+        # all telemetry lines present on stderr
+        assert "[SCENARIO] auth login" in result.stderr
+        assert "[TIMING]" in result.stderr
+        assert "[CALL]" in result.stderr
