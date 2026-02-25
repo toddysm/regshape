@@ -19,7 +19,7 @@ import requests
 
 from regshape.libs.auth import registryauth
 from regshape.libs.auth.credentials import erase_credentials, resolve_credentials, store_credentials
-from regshape.libs.decorators import get_telemetry_config
+from regshape.libs.decorators import get_telemetry_config, redact_headers
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.decorators.timing import track_time
 from regshape.libs.errors import AuthError
@@ -164,36 +164,6 @@ def logout(ctx, registry, docker_config):
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-# Headers whose values must never appear in logs.
-_SENSITIVE_HEADERS: frozenset = frozenset({
-    "authorization",
-    "proxy-authorization",
-    "cookie",
-    "set-cookie",
-})
-
-def _redact_header_value(name: str, value: str) -> str:
-    """
-    Return a safe representation of a header value for logging.
-
-    For sensitive headers such as Authorization and Cookie, the clear-text
-    secret is never returned. For Authorization-like headers, only the
-    authentication scheme (e.g., "Bearer", "Basic") is preserved.
-    """
-    name_lower = name.lower()
-    # Fully redact cookies and set-cookie headers
-    if name_lower in ("cookie", "set-cookie"):
-        return "<redacted>"
-    # For Authorization-style headers, keep only the scheme
-    if name_lower in ("authorization", "proxy-authorization"):
-        # Typical format: "Scheme credentials"
-        scheme, _, _ = value.partition(" ")
-        if scheme:
-            return f"{scheme} <redacted>"
-        return "<redacted>"
-    # Non-sensitive header: return as-is
-    return value
-
 @track_time
 def _verify_credentials(registry: str, username: str, password: str, insecure: bool = False) -> None:
     """
@@ -277,10 +247,7 @@ def _debug_http(telemetry, method: str, url: str, req_headers: dict, response) -
     # Callers are responsible for sanitizing request headers before passing
     # them here (no tainted data should reach this function). Response headers
     # are sanitized here since callers pass the raw response object.
-    safe_resp = {
-        k: _redact_header_value(k, v)
-        for k, v in response.headers.items()
-    }
+    safe_resp = redact_headers(dict(response.headers))
     print(f"[CALL] {method} {url}", file=out)
     print("[REQUEST HEADERS]", file=out)
     for key, value in req_headers.items():

@@ -16,6 +16,8 @@
 import functools
 import inspect
 
+from regshape.libs.decorators.sanitization import redact_headers
+
 
 def debug_call(func):
     """
@@ -66,14 +68,16 @@ def debug_call(func):
         result = func(*args, **kwargs)
 
         out = config.output
+        safe_req = redact_headers(req_headers)
         print(f"[CALL] {method} {path}", file=out)
         print("[REQUEST HEADERS]", file=out)
-        for key, value in req_headers.items():
+        for key, value in safe_req.items():
             print(f"  {key}: {value}", file=out)
 
         if hasattr(result, 'status_code') and hasattr(result, 'headers'):
+            safe_resp = redact_headers(dict(result.headers))
             print(f"[RESPONSE HEADERS] {result.status_code}", file=out)
-            for key, value in result.headers.items():
+            for key, value in safe_resp.items():
                 print(f"  {key}: {value}", file=out)
 
         return result
