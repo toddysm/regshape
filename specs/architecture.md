@@ -823,10 +823,11 @@ RegShape provides three decorator-based telemetry capabilities for measuring exe
 
 ```
 src/regshape/libs/decorators/
-├── __init__.py          # Exports: track_time, track_scenario, debug_call
-├── timing.py            # @track_time decorator
-├── scenario.py          # @track_scenario decorator
-└── call_details.py      # @debug_call decorator
+├── __init__.py          # Exports: track_time, track_scenario, debug_call, telemetry_options, …
+├── timing.py            # @track_time decorator — accumulates into TelemetryConfig.method_timings
+├── scenario.py          # @track_scenario decorator — renders telemetry block + clears timings
+├── call_details.py      # @debug_call decorator, format_curl_debug, http_request
+└── output.py            # print_telemetry_block, flush_telemetry — single rendering path
 ```
 
 ### CLI Flags
@@ -867,15 +868,22 @@ A simple configuration object that the decorators read at runtime.
 class TelemetryConfig:
     """Runtime configuration for telemetry decorators.
 
-    :param time_methods_enabled: When True, @track_time prints per-method timing info.
-    :param time_scenarios_enabled: When True, @track_scenario prints per-scenario timing info.
-    :param debug_calls_enabled: When True, @debug_call prints request/response headers.
+    :param time_methods_enabled: When True, @track_time accumulates per-method
+        timing entries into method_timings.
+    :param time_scenarios_enabled: When True, @track_scenario renders the
+        telemetry summary block at the end of the decorated workflow.
+    :param debug_calls_enabled: When True, @debug_call prints each HTTP
+        round-trip in curl -v style.
     :param output: Writable stream for telemetry output (defaults to stderr).
+    :param method_timings: Ordered list of (qualname, elapsed) pairs accumulated
+        by @track_time. Consumed and cleared by @track_scenario, or by
+        flush_telemetry() for commands with no scenario wrapper.
     """
     time_methods_enabled: bool = False
     time_scenarios_enabled: bool = False
     debug_calls_enabled: bool = False
     output: IO = field(default=sys.stderr)
+    method_timings: list[tuple[str, float]] = field(default_factory=list)
 ```
 
 The active `TelemetryConfig` is stored in a module-level context variable so decorators can access it without threading configuration through every function signature.
@@ -903,10 +911,11 @@ Measures and prints the execution time of a single function or method.
 
 ```python
 def track_time(func: Callable) -> Callable:
-    """Decorator that prints execution time when --time-methods is enabled.
+    """Decorator that accumulates per-method execution time into
+    TelemetryConfig.method_timings when --time-methods is enabled.
 
-    Output format:
-        [TIMING] <module>.<qualname> completed in <duration>s
+    Does not emit any output itself. Entries are rendered as part of the
+    telemetry block by @track_scenario or by flush_telemetry().
 
     When --time-methods is not enabled, this decorator acts as a lightweight
     passthrough: calls still go through the wrapper, incur a single boolean
@@ -927,13 +936,32 @@ Measures and prints the execution time of a multi-step workflow. A scenario is a
 
 ```python
 def track_scenario(name: str) -> Callable:
-    """Decorator that prints execution time for a named multi-step workflow
-    when --time-scenarios is enabled.
+    """Decorator that renders a telemetry summary block when --time-scenarios
+    is enabled, incorporating any method timings accumulated by @track_time
+    during the workflow.
 
     :param name: Human-readable scenario name (e.g., ``"chunked blob upload"``).
 
-    Output format:
-        [SCENARIO] <name> completed in <duration>s
+    Output format (all three flags active)::
+
+        ── telemetry ──────────────────────────────────────────────────────
+          scenario  auth login                                    0.523s
+            method  _verify_credentials                           0.231s
+            method  store_credentials                             0.045s
+        ───────────────────────────────────────────────────────────────────
+
+    With --time-scenarios only (no --time-methods)::
+
+        ── telemetry ──────────────────────────────────────────────────────
+          scenario  auth login                                    0.523s
+        ───────────────────────────────────────────────────────────────────
+
+    With --time-methods only (flush_telemetry() renders on command exit)::
+
+        ── telemetry ──────────────────────────────────────────────────────
+            method  _verify_credentials                           0.231s
+            method  store_credentials                             0.045s
+        ───────────────────────────────────────────────────────────────────
 
     Usage:
         @track_scenario("chunked blob upload")
@@ -941,7 +969,7 @@ def track_scenario(name: str) -> Callable:
     """
 ```
 
-Applied to higher-level workflow functions that orchestrate multiple operations. The distinction from `@track_time` is semantic: `@track_time` is for atomic operations, `@track_scenario` is for named workflows that compose multiple atomic operations.
+Applied to higher-level workflow functions that orchestrate multiple operations. The distinction from `@track_time` is semantic: `@track_time` is for atomic operations, `@track_scenario` is for named workflows that compose multiple atomic operations. After rendering the block, `method_timings` is cleared so each scenario produces exactly one block.
 
 ### Decorator: `@debug_call`
 

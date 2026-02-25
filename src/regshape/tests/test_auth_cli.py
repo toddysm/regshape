@@ -608,7 +608,7 @@ class TestAuthLoginTelemetry:
         )
 
     def test_time_scenarios_writes_to_stderr_not_stdout(self):
-        """--time-scenarios emits [SCENARIO] to stderr; stdout stays clean."""
+        """--time-scenarios emits telemetry block to stderr; stdout stays clean."""
         with contextlib.ExitStack() as stack:
             for p in self._ok_patches():
                 stack.enter_context(p)
@@ -618,11 +618,12 @@ class TestAuthLoginTelemetry:
                  "-r", REGISTRY, "-u", "alice", "-p", "s3cr3t"],
             )
         assert result.exit_code == 0, result.output
-        assert "[SCENARIO] auth login" in result.stderr
-        assert "[SCENARIO]" not in result.stdout
+        assert "── telemetry" in result.stderr
+        assert "auth login" in result.stderr
+        assert "── telemetry" not in result.stdout
 
     def test_time_methods_writes_to_stderr_not_stdout(self):
-        """--time-methods emits [TIMING] to stderr; stdout stays clean."""
+        """--time-methods emits telemetry block to stderr; stdout stays clean."""
         with contextlib.ExitStack() as stack:
             for p in self._ok_patches():
                 stack.enter_context(p)
@@ -632,9 +633,9 @@ class TestAuthLoginTelemetry:
                  "-r", REGISTRY, "-u", "alice", "-p", "s3cr3t"],
             )
         assert result.exit_code == 0, result.output
-        assert "[TIMING]" in result.stderr
+        assert "── telemetry" in result.stderr
         assert "_verify_credentials" in result.stderr
-        assert "[TIMING]" not in result.stdout
+        assert "── telemetry" not in result.stdout
 
     def test_debug_calls_writes_to_stderr_not_stdout(self):
         """--debug-calls emits curl -v style block to stderr; stdout stays clean."""
@@ -705,7 +706,8 @@ class TestAuthLoginTelemetry:
         data = json.loads(result.stdout)
         assert data["status"] == "success"
         assert data["registry"] == REGISTRY
-        # all telemetry lines present on stderr
-        assert "[SCENARIO] auth login" in result.stderr
-        assert "[TIMING]" in result.stderr
+        # all telemetry present on stderr inside a single block
+        assert "── telemetry" in result.stderr
+        assert "auth login" in result.stderr
+        assert "_verify_credentials" in result.stderr
         assert "> GET" in result.stderr
