@@ -16,7 +16,7 @@
 from typing import Dict
 
 # Headers whose values must never appear in logs.
-SENSITIVE_HEADERS: frozenset = frozenset({
+SENSITIVE_HEADERS: frozenset[str] = frozenset({
     "authorization",
     "proxy-authorization",
     "cookie",
