@@ -345,7 +345,7 @@ class TestAuthLoginCommand:
                    return_value="/tmp"), \
              patch("regshape.libs.auth.credentials.dockerconfig.DOCKER_CONFIG_FILENAME",
                    os.path.join(".docker", "config.json")), \
-             patch("requests.get", return_value=ok_resp), \
+             patch("requests.request", return_value=ok_resp), \
              patch("regshape.libs.auth.credentials.store_credentials"):
             result = self._runner().invoke(
                 regshape,
@@ -365,7 +365,7 @@ class TestAuthLoginCommand:
                    return_value="/tmp"), \
              patch("regshape.libs.auth.credentials.dockerconfig.DOCKER_CONFIG_FILENAME",
                    os.path.join(".docker", "config.json")), \
-             patch("requests.get", return_value=ok_resp), \
+             patch("requests.request", return_value=ok_resp), \
              patch("regshape.libs.auth.credentials.store_credentials"):
             result = self._runner().invoke(
                 regshape,
@@ -384,12 +384,13 @@ class TestAuthLoginCommand:
         token_resp.status_code = 200
         token_resp.text = json.dumps({"token": "abc123"})
 
-        def fake_requests_get(url, **kwargs):
-            if urlparse(url).hostname == "auth.example.com":
-                return token_resp
+        def fake_registry_request(method, url, **kwargs):
             if kwargs.get("headers", {}).get("Authorization"):
                 return ok_after_token
             return challenge_resp
+
+        def fake_token_get(url, **kwargs):
+            return token_resp
 
         with patch("regshape.libs.auth.credentials.dockerconfig.load_config",
                    return_value=None), \
@@ -399,7 +400,8 @@ class TestAuthLoginCommand:
                    return_value="/tmp"), \
              patch("regshape.libs.auth.credentials.dockerconfig.DOCKER_CONFIG_FILENAME",
                    os.path.join(".docker", "config.json")), \
-             patch("requests.get", side_effect=fake_requests_get), \
+             patch("requests.request", side_effect=fake_registry_request), \
+             patch("requests.get", side_effect=fake_token_get), \
              patch("regshape.libs.auth.credentials.store_credentials"):
             result = self._runner().invoke(
                 regshape,
@@ -416,14 +418,16 @@ class TestAuthLoginCommand:
         token_resp.status_code = 200
         token_resp.text = json.dumps({"token": "bad-token"})
 
-        def fake_requests_get(url, **kwargs):
-            if urlparse(url).hostname == "auth.example.com":
-                return token_resp
+        def fake_registry_request(method, url, **kwargs):
             return challenge_resp if not kwargs.get("headers") else unauthorized_retry
+
+        def fake_token_get(url, **kwargs):
+            return token_resp
 
         with patch("regshape.libs.auth.credentials.dockerconfig.load_config",
                    return_value=None), \
-             patch("requests.get", side_effect=fake_requests_get):
+             patch("requests.request", side_effect=fake_registry_request), \
+             patch("requests.get", side_effect=fake_token_get):
             result = self._runner().invoke(
                 regshape,
                 ["auth", "login", "-r", REGISTRY, "-u", "alice", "-p", "wrong"],
@@ -433,7 +437,7 @@ class TestAuthLoginCommand:
     def test_login_connection_error(self):
         with patch("regshape.libs.auth.credentials.dockerconfig.load_config",
                    return_value=None), \
-             patch("requests.get",
+             patch("requests.request",
                    side_effect=requests.exceptions.ConnectionError("refused")):
             result = self._runner().invoke(
                 regshape,
@@ -452,7 +456,7 @@ class TestAuthLoginCommand:
                    return_value="/tmp"), \
              patch("regshape.libs.auth.credentials.dockerconfig.DOCKER_CONFIG_FILENAME",
                    os.path.join(".docker", "config.json")), \
-             patch("requests.get", return_value=ok_resp), \
+             patch("requests.request", return_value=ok_resp), \
              patch("regshape.libs.auth.credentials.store_credentials"):
             result = self._runner().invoke(
                 regshape,
@@ -478,7 +482,7 @@ class TestAuthLoginCommand:
         ok_resp = _make_response(200)
         captured_urls = []
 
-        def fake_get(url, **kwargs):
+        def fake_request(method, url, **kwargs):
             captured_urls.append(url)
             return ok_resp
 
@@ -490,7 +494,7 @@ class TestAuthLoginCommand:
                    return_value="/tmp"), \
              patch("regshape.libs.auth.credentials.dockerconfig.DOCKER_CONFIG_FILENAME",
                    os.path.join(".docker", "config.json")), \
-             patch("requests.get", side_effect=fake_get), \
+             patch("requests.request", side_effect=fake_request), \
              patch("regshape.libs.auth.credentials.store_credentials"):
             result = self._runner().invoke(
                 regshape,
@@ -509,7 +513,7 @@ class TestAuthLoginCommand:
                    return_value=config), \
              patch("regshape.libs.auth.credentials.dockerconfig.get_config_file",
                    return_value="/tmp/config.json"), \
-             patch("requests.get", return_value=ok_resp), \
+             patch("requests.request", return_value=ok_resp), \
              patch("regshape.libs.auth.credentials.store_credentials"):
             result = self._runner().invoke(
                 regshape,
@@ -599,7 +603,7 @@ class TestAuthLoginTelemetry:
                   return_value="/tmp"),
             patch("regshape.libs.auth.credentials.dockerconfig.DOCKER_CONFIG_FILENAME",
                   os.path.join(".docker", "config.json")),
-            patch("requests.get", return_value=_make_response(200)),
+            patch("requests.request", return_value=_make_response(200)),
             patch("regshape.libs.auth.credentials.store_credentials"),
         )
 
@@ -633,7 +637,7 @@ class TestAuthLoginTelemetry:
         assert "[TIMING]" not in result.stdout
 
     def test_debug_calls_writes_to_stderr_not_stdout(self):
-        """--debug-calls emits [CALL] block to stderr; stdout stays clean."""
+        """--debug-calls emits curl -v style block to stderr; stdout stays clean."""
         with contextlib.ExitStack() as stack:
             for p in self._ok_patches():
                 stack.enter_context(p)
@@ -643,9 +647,9 @@ class TestAuthLoginTelemetry:
                  "-r", REGISTRY, "-u", "alice", "-p", "s3cr3t"],
             )
         assert result.exit_code == 0, result.output
-        assert "[CALL]" in result.stderr
-        assert "[RESPONSE HEADERS]" in result.stderr
-        assert "[CALL]" not in result.stdout
+        assert "> GET" in result.stderr
+        assert "< HTTP/1.1" in result.stderr
+        assert "> GET" not in result.stdout
 
     def test_debug_calls_redacts_authorization_header(self):
         """--debug-calls never logs the raw Bearer token or password."""
@@ -655,12 +659,13 @@ class TestAuthLoginTelemetry:
         token_resp.status_code = 200
         token_resp.text = json.dumps({"token": "super-secret-token"})
 
-        def fake_get(url, **kwargs):
-            if urlparse(url).hostname == "auth.example.com":
-                return token_resp
+        def fake_registry_request(method, url, **kwargs):
             if kwargs.get("headers", {}).get("Authorization"):
                 return ok_resp
             return challenge_resp
+
+        def fake_token_get(url, **kwargs):
+            return token_resp
 
         with patch("regshape.libs.auth.credentials.dockerconfig.load_config",
                    return_value=None), \
@@ -670,7 +675,8 @@ class TestAuthLoginTelemetry:
                    return_value="/tmp"), \
              patch("regshape.libs.auth.credentials.dockerconfig.DOCKER_CONFIG_FILENAME",
                    os.path.join(".docker", "config.json")), \
-             patch("requests.get", side_effect=fake_get), \
+             patch("requests.request", side_effect=fake_registry_request), \
+             patch("requests.get", side_effect=fake_token_get), \
              patch("regshape.libs.auth.credentials.store_credentials"):
             result = self._runner().invoke(
                 regshape,
@@ -681,6 +687,7 @@ class TestAuthLoginTelemetry:
         assert "mypassword" not in result.stderr
         assert "super-secret-token" not in result.stderr
         assert "<redacted>" in result.stderr
+        assert "> GET" in result.stderr
 
     def test_json_stdout_not_contaminated_by_telemetry(self):
         """With --json, stdout is valid JSON even when all telemetry flags active."""
@@ -701,4 +708,4 @@ class TestAuthLoginTelemetry:
         # all telemetry lines present on stderr
         assert "[SCENARIO] auth login" in result.stderr
         assert "[TIMING]" in result.stderr
-        assert "[CALL]" in result.stderr
+        assert "> GET" in result.stderr

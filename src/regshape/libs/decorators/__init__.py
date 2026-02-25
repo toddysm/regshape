@@ -127,9 +127,9 @@ def telemetry_options(func: Callable) -> Callable:
 # because that name is already bound by the time Python executes those imports,
 # the circular reference resolves cleanly.
 from regshape.libs.decorators.sanitization import SENSITIVE_HEADERS, redact_header_value, redact_headers  # noqa: E402
-from regshape.libs.decorators.timing import track_time          # noqa: E402
-from regshape.libs.decorators.scenario import track_scenario    # noqa: E402
-from regshape.libs.decorators.call_details import debug_call    # noqa: E402
+from regshape.libs.decorators.timing import track_time                                          # noqa: E402
+from regshape.libs.decorators.scenario import track_scenario                                    # noqa: E402
+from regshape.libs.decorators.call_details import debug_call, format_curl_debug, http_request  # noqa: E402
 
 __all__ = [
     'TelemetryConfig',
@@ -142,4 +142,6 @@ __all__ = [
     'track_time',
     'track_scenario',
     'debug_call',
+    'format_curl_debug',
+    'http_request',
 ]

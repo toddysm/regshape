@@ -949,19 +949,25 @@ Prints request and response headers for an HTTP call. This decorator is designed
 
 ```python
 def debug_call(func: Callable) -> Callable:
-    """Decorator that prints request/response headers when --debug-calls is enabled.
+    """Decorator that prints each HTTP round-trip in curl -v style when
+    --debug-calls is enabled.
 
     Expects the decorated function to return a RegistryResponse (or an object
-    with a ``headers`` attribute and a corresponding request).
+    with ``status_code``, ``reason``, and ``headers`` attributes). When ``self``
+    exposes ``config.base_url`` (or a top-level ``base_url`` attribute), the
+    relative path is prepended with the base URL so the ``* Connected to`` line
+    always carries the correct host and port.
 
-    Output format:
-        [CALL] <method> <url>
-        [REQUEST HEADERS]
-          Header-Name: value
-          ...
-        [RESPONSE HEADERS] <status_code>
-          Header-Name: value
-          ...
+    Output format (curl -v style)::
+
+        * Connected to registry.example.com port 443
+        > GET /v2/ HTTP/1.1
+        > Host: registry.example.com
+        > User-Agent: regshape/0.1
+        >
+        < HTTP/1.1 401 Unauthorized
+        < Www-Authenticate: Bearer realm="https://auth.example.com/token"
+        <
 
     Usage:
         @debug_call
@@ -969,7 +975,20 @@ def debug_call(func: Callable) -> Callable:
     """
 ```
 
+The shared :func:`format_curl_debug` helper (also exported from `libs/decorators/__init__.py`) implements the formatting logic. All HTTP debug output goes through this single function regardless of call site.
+
 Applied to `RegistryClient.request()` (or the inner transport call) so that every HTTP round-trip can be inspected. The decorator extracts request details from the function arguments and response details from the return value.
+
+For HTTP calls that cannot go through `RegistryClient` (such as the temporary direct `requests` calls in `cli/auth.py` prior to the transport layer being implemented), the shared `http_request(url, method, headers, **kwargs)` helper in `libs/decorators/call_details.py` (exported from `libs/decorators/`) should be used instead of calling `requests.get` / `requests.request` directly. It is already decorated with `@debug_call`, so any call site that imports and uses it gets `--debug-calls` output for free:
+
+```python
+# Any CLI command that needs a raw HTTP call before RegistryClient exists:
+from regshape.libs.decorators import http_request
+
+response = http_request(url, "GET", headers=auth_headers, timeout=10)
+```
+
+This ensures there is no manual debug logging code anywhere in `cli/`; the decorator is the single mechanism for all HTTP debug output. Once `RegistryClient` is implemented, `http_request` is retired and `@debug_call` is applied directly to `RegistryClient.request()`.
 
 ### Where Decorators Are Applied
 
