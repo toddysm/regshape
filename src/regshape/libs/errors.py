@@ -26,3 +26,9 @@ class AuthError(RegShapeError):
     Error caused by authentication failure.
     """
     pass
+
+class ManifestError(RegShapeError):
+    """
+    Error caused by a malformed, unknown, or unprocessable manifest.
+    """
+    pass
