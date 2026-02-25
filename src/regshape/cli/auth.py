@@ -219,4 +219,4 @@ def _error(output_json: bool, registry: str, reason: str) -> None:
             err=True,
         )
     else:
-        click.echo(f"Error: Login failed for {registry}: {reason}", err=True)
+        click.echo(f"Error for {registry}: {reason}", err=True)

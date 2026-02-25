@@ -41,9 +41,11 @@ regshape auth logout [OPTIONS] --registry <registry>
 ### Behavior
 
 1. Resolve credentials from flags (or prompt interactively if omitted).
-2. Issue `GET /v2/` via `RegistryClient` (so `AuthMiddleware` handles the
-   full Bearer challenge/401-retry cycle automatically — required for Docker Hub
-   and other token-based registries).
+2. Issue `GET /v2/` using a direct HTTP request with the `requests` library
+   so that the full Bearer challenge/401-retry cycle is executed automatically
+   (required for Docker Hub and other token-based registries).
+   > **Note:** This will migrate to `RegistryClient` (via `AuthMiddleware`) once
+   > the `libs/transport/` layer is implemented.
 3. If the final response is `200` or `401` on retry, treat as credential failure.
 4. On success, persist credentials:
    - If the registry has a `credHelpers` entry in `~/.docker/config.json`,

@@ -12,6 +12,7 @@
 """
 
 import base64
+import binascii
 import json
 import logging
 import os
@@ -138,6 +139,7 @@ def store_credentials(
     try:
         with open(config_file, "w") as f:
             json.dump(config, f, indent=2)
+        os.chmod(config_file, 0o600)
         log.debug("Stored credentials for %s in %s", registry, config_file)
     except OSError as e:
         log.error("Failed to write docker config: %s", e)
@@ -253,7 +255,7 @@ def _get_auth_from_config(
         username, _, password = decoded.partition(":")
         if username and password:
             return username, password
-    except Exception as e:
+    except (UnicodeDecodeError, binascii.Error) as e:
         log.debug("Failed to decode auth entry for %s: %s", registry, e)
 
     return None
