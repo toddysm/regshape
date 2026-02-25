@@ -28,9 +28,17 @@ def track_scenario(name: str):
 
     When disabled, the decorator is a lightweight passthrough.
 
-    Output format::
+    Renders a telemetry summary block on completion, including any method
+    timings accumulated by ``@track_time`` during the scenario::
 
-        [SCENARIO] <name> completed in <duration>s
+        ── telemetry ──────────────────────────────────────────────────────
+          scenario  auth login                                    0.523s
+            method  _verify_credentials                           0.231s
+            method  store_credentials                             0.045s
+        ───────────────────────────────────────────────────────────────────
+
+    After rendering, :attr:`~TelemetryConfig.method_timings` is cleared so
+    that each scenario produces exactly one block.
 
     :param name: Human-readable scenario name (e.g., ``"chunked blob upload"``)
     :type name: str
@@ -42,16 +50,17 @@ def track_scenario(name: str):
         def wrapper(*args, **kwargs):
             # Import here to avoid circular import at module load time
             from regshape.libs.decorators import get_telemetry_config
+            from regshape.libs.decorators.output import print_telemetry_block
             config = get_telemetry_config()
             if not config.time_scenarios_enabled:
                 return func(*args, **kwargs)
             start = time.perf_counter()
             result = func(*args, **kwargs)
             elapsed = time.perf_counter() - start
-            print(
-                f"[SCENARIO] {name} completed in {elapsed:.3f}s",
-                file=config.output,
+            print_telemetry_block(
+                name, elapsed, list(config.method_timings), config.output
             )
+            config.method_timings.clear()
             return result
         return wrapper
     return decorator

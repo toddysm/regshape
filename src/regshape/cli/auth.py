@@ -19,7 +19,8 @@ import requests
 
 from regshape.libs.auth import registryauth
 from regshape.libs.auth.credentials import erase_credentials, resolve_credentials, store_credentials
-from regshape.libs.decorators import TelemetryConfig, get_telemetry_config, redact_headers
+from regshape.libs.decorators import telemetry_options
+from regshape.libs.decorators.call_details import http_request
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.decorators.timing import track_time
 from regshape.libs.errors import AuthError
@@ -32,6 +33,7 @@ def auth():
 
 
 @auth.command("login")
+@telemetry_options
 @click.option(
     "--registry",
     "-r",
@@ -129,6 +131,7 @@ def login(ctx, registry, username, password, password_stdin, docker_config):
 
 
 @auth.command("logout")
+@telemetry_options
 @click.option(
     "--registry",
     "-r",
@@ -186,11 +189,9 @@ def _verify_credentials(registry: str, username: str, password: str, insecure: b
     """
     scheme = "http" if insecure else "https"
     url = f"{scheme}://{registry}/v2/"
-    telemetry = get_telemetry_config()
 
     # First request — expect a challenge or immediate success
-    response = requests.get(url, timeout=10)
-    _debug_http(telemetry, "GET", url, {}, response)
+    response = http_request(url, "GET", timeout=10)
 
     if response.status_code == 200:
         return  # No auth required (unusual but valid)
@@ -204,10 +205,7 @@ def _verify_credentials(registry: str, username: str, password: str, insecure: b
         auth_scheme = www_auth.split(" ")[0]
         auth_headers = {"Authorization": f"{auth_scheme} {auth_value}"}
 
-        retry = requests.get(url, headers=auth_headers, timeout=10)
-        # auth_scheme comes from the server's WWW-Authenticate header (not
-        # derived from the password), so this dict contains no tainted data.
-        _debug_http(telemetry, "GET", url, {"Authorization": f"{auth_scheme} <redacted>"}, retry)
+        retry = http_request(url, "GET", headers=auth_headers, timeout=10)
         if retry.status_code == 200:
             return
         raise AuthError(
@@ -227,34 +225,3 @@ def _error(output_json: bool, registry: str, reason: str) -> None:
         )
     else:
         click.echo(f"Error for {registry}: {reason}", err=True)
-
-
-def _debug_http(telemetry: TelemetryConfig, method: str, url: str, req_headers: dict, response) -> None:
-    """Print request/response details to stderr when ``--debug-calls`` is active.
-
-    Follows the same general output format as the ``@debug_call`` decorator so
-    that auth calls appear consistently alongside future ``RegistryClient``
-    calls, but deliberately redacts sensitive ``Authorization`` header values
-    for CLI authentication flows.
-
-    :param telemetry: Active :class:`~regshape.libs.decorators.TelemetryConfig`.
-    :param method: HTTP method string (e.g., ``"GET"``).
-    :param url: Full request URL.
-    :param req_headers: Request headers dict (sensitive values such as
-        ``Authorization`` are redacted before logging).
-    :param response: ``requests.Response`` object.
-    """
-    if not telemetry.debug_calls_enabled:
-        return
-    out = telemetry.output
-    # Sanitize both request and response headers before logging to avoid
-    # leaking sensitive information such as Authorization tokens.
-    safe_req = redact_headers(dict(req_headers))
-    safe_resp = redact_headers(dict(response.headers))
-    print(f"[CALL] {method} {url}", file=out)
-    print("[REQUEST HEADERS]", file=out)
-    for key, value in safe_req.items():
-        print(f"  {key}: {value}", file=out)
-    print(f"[RESPONSE HEADERS] {response.status_code}", file=out)
-    for key, value in safe_resp.items():
-        print(f"  {key}: {value}", file=out)

@@ -18,15 +18,18 @@ import time
 
 def track_time(func):
     """
-    Decorator that prints execution time when ``--time-methods`` is enabled.
+    Decorator that accumulates per-method execution time into
+    :attr:`~regshape.libs.decorators.TelemetryConfig.method_timings` when
+    ``--time-methods`` is enabled.
+
+    Entries are rendered as part of the telemetry summary block emitted by
+    ``@track_scenario`` at the end of the enclosing workflow, or by
+    :func:`~regshape.libs.decorators.output.flush_telemetry` for commands
+    that have no scenario wrapper.
 
     When disabled, the decorator is a lightweight passthrough: it performs
     a single boolean check and immediately dispatches to the original function
     without executing any timing logic.
-
-    Output format::
-
-        [TIMING] <module>.<qualname> completed in <duration>s
 
     :param func: The function to wrap
     :type func: callable
@@ -43,9 +46,6 @@ def track_time(func):
         start = time.perf_counter()
         result = func(*args, **kwargs)
         elapsed = time.perf_counter() - start
-        print(
-            f"[TIMING] {func.__module__}.{func.__qualname__} completed in {elapsed:.3f}s",
-            file=config.output,
-        )
+        config.method_timings.append((func.__qualname__, elapsed))
         return result
     return wrapper

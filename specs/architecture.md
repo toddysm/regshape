@@ -745,9 +745,6 @@ regshape [GLOBAL OPTIONS] <command-group> <command> [OPTIONS] [ARGS]
 | `--insecure` | | flag | false | Allow HTTP (no TLS) |
 | `--json` | | flag | false | Output as JSON |
 | `--verbose` | `-v` | flag | false | Verbose output |
-| `--time-methods` | | flag | false | Print execution time for individual method calls |
-| `--time-scenarios` | | flag | false | Print execution time for multi-step workflows |
-| `--debug-calls` | | flag | false | Print request/response headers for each HTTP call |
 | `--break` | | flag | false | Enable break mode |
 | `--break-rules` | | string | none | Path to break mode rules file |
 | `--log-file` | | string | none | Path for request/response log output |
@@ -802,24 +799,14 @@ The CLI `main.py` constructs a `RegistryClient` from global options and stores i
 @click.option("--insecure", is_flag=True, help="Allow HTTP")
 @click.option("--json", "output_json", is_flag=True, help="JSON output")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
-@click.option("--time-methods", is_flag=True, help="Print execution time for individual method calls")
-@click.option("--time-scenarios", is_flag=True, help="Print execution time for multi-step workflows")
-@click.option("--debug-calls", is_flag=True, help="Print request/response headers for HTTP calls")
 @click.option("--break", "break_mode", is_flag=True, help="Enable break mode")
 @click.option("--break-rules", type=click.Path(exists=True), help="Break rules file")
 @click.option("--log-file", type=click.Path(), help="Request/response log file")
 @click.pass_context
 def regshape(ctx, registry, username, password, insecure, output_json,
-             verbose, time_methods, time_scenarios, debug_calls,
-             break_mode, break_rules, log_file):
+             verbose, break_mode, break_rules, log_file):
     """RegShape - OCI registry manipulation tool."""
     ctx.ensure_object(dict)
-    # ... configure telemetry ...
-    configure_telemetry(TelemetryConfig(
-        time_methods_enabled=time_methods,
-        time_scenarios_enabled=time_scenarios,
-        debug_calls_enabled=debug_calls,
-    ))
     # ... construct TransportConfig and RegistryClient ...
     ctx.obj["client"] = RegistryClient(config)
     ctx.obj["output_json"] = output_json
@@ -836,15 +823,20 @@ RegShape provides three decorator-based telemetry capabilities for measuring exe
 
 ```
 src/regshape/libs/decorators/
-├── __init__.py          # Exports: track_time, track_scenario, debug_call
-├── timing.py            # @track_time decorator
-├── scenario.py          # @track_scenario decorator
-└── call_details.py      # @debug_call decorator
+├── __init__.py          # Exports: track_time, track_scenario, debug_call, telemetry_options, …
+├── timing.py            # @track_time decorator — accumulates into TelemetryConfig.method_timings
+├── scenario.py          # @track_scenario decorator — renders telemetry block + clears timings
+├── call_details.py      # @debug_call decorator, format_curl_debug, http_request
+└── output.py            # print_telemetry_block, flush_telemetry — single rendering path
 ```
 
 ### CLI Flags
 
-Three new global flags control telemetry output. They are independent of each other and of `--verbose`.
+Three leaf-command flags control telemetry output. They are independent of each other and of `--verbose`, and they appear **after** the subcommand name so the command reads naturally:
+
+```
+regshape auth login --time-methods -r registry.example.com
+```
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -852,13 +844,20 @@ Three new global flags control telemetry output. They are independent of each ot
 | `--time-scenarios` | flag | false | Print execution time for multi-step workflows |
 | `--debug-calls` | flag | false | Print request/response headers for each HTTP call |
 
-These flags are set in the Click context by `cli/main.py` and propagated to the decorators via a context-var configuration object.
+These flags are applied to every leaf command via the centralized `@telemetry_options` decorator defined in `libs/decorators/__init__.py`. The decorator adds the three Click options **and** automatically calls `configure_telemetry()` before the command body runs, so individual command implementations do not need to handle telemetry setup themselves.
 
 ```python
-@click.option("--time-methods", is_flag=True, help="Print execution time for individual method calls")
-@click.option("--time-scenarios", is_flag=True, help="Print execution time for multi-step workflows")
-@click.option("--debug-calls", is_flag=True, help="Print request/response headers for HTTP calls")
+# Applied once per leaf command; no per-command telemetry boilerplate needed.
+@some_group.command("name")
+@telemetry_options
+@click.option("--registry", "-r", required=True, ...)
+...
+def my_command(ctx, registry, ...):
+    # configure_telemetry() has already been called by @telemetry_options
+    ...
 ```
+
+`telemetry_options` is defined in `libs/decorators/__init__.py` and exported alongside `track_time`, `track_scenario`, and `debug_call`.
 
 ### TelemetryConfig
 
@@ -869,15 +868,22 @@ A simple configuration object that the decorators read at runtime.
 class TelemetryConfig:
     """Runtime configuration for telemetry decorators.
 
-    :param time_methods_enabled: When True, @track_time prints per-method timing info.
-    :param time_scenarios_enabled: When True, @track_scenario prints per-scenario timing info.
-    :param debug_calls_enabled: When True, @debug_call prints request/response headers.
+    :param time_methods_enabled: When True, @track_time accumulates per-method
+        timing entries into method_timings.
+    :param time_scenarios_enabled: When True, @track_scenario renders the
+        telemetry summary block at the end of the decorated workflow.
+    :param debug_calls_enabled: When True, @debug_call prints each HTTP
+        round-trip in curl -v style.
     :param output: Writable stream for telemetry output (defaults to stderr).
+    :param method_timings: Ordered list of (qualname, elapsed) pairs accumulated
+        by @track_time. Consumed and cleared by @track_scenario, or by
+        flush_telemetry() for commands with no scenario wrapper.
     """
     time_methods_enabled: bool = False
     time_scenarios_enabled: bool = False
     debug_calls_enabled: bool = False
     output: IO = field(default=sys.stderr)
+    method_timings: list[tuple[str, float]] = field(default_factory=list)
 ```
 
 The active `TelemetryConfig` is stored in a module-level context variable so decorators can access it without threading configuration through every function signature.
@@ -905,10 +911,11 @@ Measures and prints the execution time of a single function or method.
 
 ```python
 def track_time(func: Callable) -> Callable:
-    """Decorator that prints execution time when --time-methods is enabled.
+    """Decorator that accumulates per-method execution time into
+    TelemetryConfig.method_timings when --time-methods is enabled.
 
-    Output format:
-        [TIMING] <module>.<qualname> completed in <duration>s
+    Does not emit any output itself. Entries are rendered as part of the
+    telemetry block by @track_scenario or by flush_telemetry().
 
     When --time-methods is not enabled, this decorator acts as a lightweight
     passthrough: calls still go through the wrapper, incur a single boolean
@@ -929,13 +936,32 @@ Measures and prints the execution time of a multi-step workflow. A scenario is a
 
 ```python
 def track_scenario(name: str) -> Callable:
-    """Decorator that prints execution time for a named multi-step workflow
-    when --time-scenarios is enabled.
+    """Decorator that renders a telemetry summary block when --time-scenarios
+    is enabled, incorporating any method timings accumulated by @track_time
+    during the workflow.
 
     :param name: Human-readable scenario name (e.g., ``"chunked blob upload"``).
 
-    Output format:
-        [SCENARIO] <name> completed in <duration>s
+    Output format (all three flags active)::
+
+        ── telemetry ──────────────────────────────────────────────────────
+          scenario  auth login                                    0.523s
+            method  _verify_credentials                           0.231s
+            method  store_credentials                             0.045s
+        ───────────────────────────────────────────────────────────────────
+
+    With --time-scenarios only (no --time-methods)::
+
+        ── telemetry ──────────────────────────────────────────────────────
+          scenario  auth login                                    0.523s
+        ───────────────────────────────────────────────────────────────────
+
+    With --time-methods only (flush_telemetry() renders on command exit)::
+
+        ── telemetry ──────────────────────────────────────────────────────
+            method  _verify_credentials                           0.231s
+            method  store_credentials                             0.045s
+        ───────────────────────────────────────────────────────────────────
 
     Usage:
         @track_scenario("chunked blob upload")
@@ -943,7 +969,7 @@ def track_scenario(name: str) -> Callable:
     """
 ```
 
-Applied to higher-level workflow functions that orchestrate multiple operations. The distinction from `@track_time` is semantic: `@track_time` is for atomic operations, `@track_scenario` is for named workflows that compose multiple atomic operations.
+Applied to higher-level workflow functions that orchestrate multiple operations. The distinction from `@track_time` is semantic: `@track_time` is for atomic operations, `@track_scenario` is for named workflows that compose multiple atomic operations. After rendering the block, `method_timings` is cleared so each scenario produces exactly one block.
 
 ### Decorator: `@debug_call`
 
@@ -951,19 +977,25 @@ Prints request and response headers for an HTTP call. This decorator is designed
 
 ```python
 def debug_call(func: Callable) -> Callable:
-    """Decorator that prints request/response headers when --debug-calls is enabled.
+    """Decorator that prints each HTTP round-trip in curl -v style when
+    --debug-calls is enabled.
 
     Expects the decorated function to return a RegistryResponse (or an object
-    with a ``headers`` attribute and a corresponding request).
+    with ``status_code``, ``reason``, and ``headers`` attributes). When ``self``
+    exposes ``config.base_url`` (or a top-level ``base_url`` attribute), the
+    relative path is prepended with the base URL so the ``* Connected to`` line
+    always carries the correct host and port.
 
-    Output format:
-        [CALL] <method> <url>
-        [REQUEST HEADERS]
-          Header-Name: value
-          ...
-        [RESPONSE HEADERS] <status_code>
-          Header-Name: value
-          ...
+    Output format (curl -v style)::
+
+        * Connected to registry.example.com port 443
+        > GET /v2/ HTTP/1.1
+        > Host: registry.example.com
+        > User-Agent: regshape/0.1
+        >
+        < HTTP/1.1 401 Unauthorized
+        < Www-Authenticate: Bearer realm="https://auth.example.com/token"
+        <
 
     Usage:
         @debug_call
@@ -971,7 +1003,20 @@ def debug_call(func: Callable) -> Callable:
     """
 ```
 
+The shared :func:`format_curl_debug` helper (also exported from `libs/decorators/__init__.py`) implements the formatting logic. All HTTP debug output goes through this single function regardless of call site.
+
 Applied to `RegistryClient.request()` (or the inner transport call) so that every HTTP round-trip can be inspected. The decorator extracts request details from the function arguments and response details from the return value.
+
+For HTTP calls that cannot go through `RegistryClient` (such as the temporary direct `requests` calls in `cli/auth.py` prior to the transport layer being implemented), the shared `http_request(url, method, headers, **kwargs)` helper in `libs/decorators/call_details.py` (exported from `libs/decorators/`) should be used instead of calling `requests.get` / `requests.request` directly. It is already decorated with `@debug_call`, so any call site that imports and uses it gets `--debug-calls` output for free:
+
+```python
+# Any CLI command that needs a raw HTTP call before RegistryClient exists:
+from regshape.libs.decorators import http_request
+
+response = http_request(url, "GET", headers=auth_headers, timeout=10)
+```
+
+This ensures there is no manual debug logging code anywhere in `cli/`; the decorator is the single mechanism for all HTTP debug output. Once `RegistryClient` is implemented, `http_request` is retired and `@debug_call` is applied directly to `RegistryClient.request()`.
 
 ### Where Decorators Are Applied
 
