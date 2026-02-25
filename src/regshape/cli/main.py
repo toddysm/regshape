@@ -16,6 +16,7 @@ import click
 
 from regshape.cli.auth import auth
 from regshape.libs.auth.credentials import resolve_credentials
+from regshape.libs.decorators import TelemetryConfig, configure_telemetry
 
 
 @click.group()
@@ -96,6 +97,13 @@ def regshape(
     ctx.obj["break_mode"] = break_mode
     ctx.obj["break_rules"] = break_rules
     ctx.obj["log_file"] = log_file
+
+    # Activate telemetry decorators based on CLI flags.
+    configure_telemetry(TelemetryConfig(
+        time_methods_enabled=time_methods,
+        time_scenarios_enabled=time_scenarios,
+        debug_calls_enabled=debug_calls,
+    ))
 
     # RegistryClient will be constructed lazily by subcommands that need it,
     # once the transport layer (libs/transport/) is implemented.
