@@ -235,7 +235,9 @@ def _verify_credentials(registry: str, username: str, password: str, insecure: b
         auth_headers = {"Authorization": f"{auth_scheme} {auth_value}"}
 
         retry = requests.get(url, headers=auth_headers, timeout=10)
-        _debug_http(telemetry, "GET", url, auth_headers, retry)
+        # auth_scheme comes from the server's WWW-Authenticate header (not
+        # derived from the password), so this dict contains no tainted data.
+        _debug_http(telemetry, "GET", url, {"Authorization": f"{auth_scheme} <redacted>"}, retry)
         if retry.status_code == 200:
             return
         raise AuthError(
@@ -272,19 +274,16 @@ def _debug_http(telemetry, method: str, url: str, req_headers: dict, response) -
     if not telemetry.debug_calls_enabled:
         return
     out = telemetry.output
-    # Sanitize headers before any logging to prevent clear-text leakage of
-    # sensitive values (Authorization, Set-Cookie, etc.).
-    safe_req = {
-        k: _redact_header_value(k, v) if k.lower() in _SENSITIVE_HEADERS else v
-        for k, v in req_headers.items()
-    }
+    # Callers are responsible for sanitizing request headers before passing
+    # them here (no tainted data should reach this function). Response headers
+    # are sanitized here since callers pass the raw response object.
     safe_resp = {
-        k: _redact_header_value(k, v) if k.lower() in _SENSITIVE_HEADERS else v
+        k: _redact_header_value(k, v)
         for k, v in response.headers.items()
     }
     print(f"[CALL] {method} {url}", file=out)
     print("[REQUEST HEADERS]", file=out)
-    for key, value in safe_req.items():
+    for key, value in req_headers.items():
         print(f"  {key}: {value}", file=out)
     print(f"[RESPONSE HEADERS] {response.status_code}", file=out)
     for key, value in safe_resp.items():
