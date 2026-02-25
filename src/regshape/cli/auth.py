@@ -232,8 +232,10 @@ def _error(output_json: bool, registry: str, reason: str) -> None:
 def _debug_http(telemetry, method: str, url: str, req_headers: dict, response) -> None:
     """Print request/response details to stderr when ``--debug-calls`` is active.
 
-    Mirrors the output format of the ``@debug_call`` decorator so that auth
-    calls appear consistently alongside future ``RegistryClient`` calls.
+    Follows the same general output format as the ``@debug_call`` decorator so
+    that auth calls appear consistently alongside future ``RegistryClient``
+    calls, but deliberately redacts sensitive ``Authorization`` header values
+    for CLI authentication flows.
 
     :param telemetry: Active :class:`~regshape.libs.decorators.TelemetryConfig`.
     :param method: HTTP method string (e.g., ``"GET"``).
