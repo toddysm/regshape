@@ -745,9 +745,6 @@ regshape [GLOBAL OPTIONS] <command-group> <command> [OPTIONS] [ARGS]
 | `--insecure` | | flag | false | Allow HTTP (no TLS) |
 | `--json` | | flag | false | Output as JSON |
 | `--verbose` | `-v` | flag | false | Verbose output |
-| `--time-methods` | | flag | false | Print execution time for individual method calls |
-| `--time-scenarios` | | flag | false | Print execution time for multi-step workflows |
-| `--debug-calls` | | flag | false | Print request/response headers for each HTTP call |
 | `--break` | | flag | false | Enable break mode |
 | `--break-rules` | | string | none | Path to break mode rules file |
 | `--log-file` | | string | none | Path for request/response log output |
@@ -802,24 +799,14 @@ The CLI `main.py` constructs a `RegistryClient` from global options and stores i
 @click.option("--insecure", is_flag=True, help="Allow HTTP")
 @click.option("--json", "output_json", is_flag=True, help="JSON output")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
-@click.option("--time-methods", is_flag=True, help="Print execution time for individual method calls")
-@click.option("--time-scenarios", is_flag=True, help="Print execution time for multi-step workflows")
-@click.option("--debug-calls", is_flag=True, help="Print request/response headers for HTTP calls")
 @click.option("--break", "break_mode", is_flag=True, help="Enable break mode")
 @click.option("--break-rules", type=click.Path(exists=True), help="Break rules file")
 @click.option("--log-file", type=click.Path(), help="Request/response log file")
 @click.pass_context
 def regshape(ctx, registry, username, password, insecure, output_json,
-             verbose, time_methods, time_scenarios, debug_calls,
-             break_mode, break_rules, log_file):
+             verbose, break_mode, break_rules, log_file):
     """RegShape - OCI registry manipulation tool."""
     ctx.ensure_object(dict)
-    # ... configure telemetry ...
-    configure_telemetry(TelemetryConfig(
-        time_methods_enabled=time_methods,
-        time_scenarios_enabled=time_scenarios,
-        debug_calls_enabled=debug_calls,
-    ))
     # ... construct TransportConfig and RegistryClient ...
     ctx.obj["client"] = RegistryClient(config)
     ctx.obj["output_json"] = output_json
@@ -844,7 +831,11 @@ src/regshape/libs/decorators/
 
 ### CLI Flags
 
-Three new global flags control telemetry output. They are independent of each other and of `--verbose`.
+Three leaf-command flags control telemetry output. They are independent of each other and of `--verbose`, and they appear **after** the subcommand name so the command reads naturally:
+
+```
+regshape auth login --time-methods -r registry.example.com
+```
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -852,13 +843,20 @@ Three new global flags control telemetry output. They are independent of each ot
 | `--time-scenarios` | flag | false | Print execution time for multi-step workflows |
 | `--debug-calls` | flag | false | Print request/response headers for each HTTP call |
 
-These flags are set in the Click context by `cli/main.py` and propagated to the decorators via a context-var configuration object.
+These flags are applied to every leaf command via the centralized `@telemetry_options` decorator defined in `libs/decorators/__init__.py`. The decorator adds the three Click options **and** automatically calls `configure_telemetry()` before the command body runs, so individual command implementations do not need to handle telemetry setup themselves.
 
 ```python
-@click.option("--time-methods", is_flag=True, help="Print execution time for individual method calls")
-@click.option("--time-scenarios", is_flag=True, help="Print execution time for multi-step workflows")
-@click.option("--debug-calls", is_flag=True, help="Print request/response headers for HTTP calls")
+# Applied once per leaf command; no per-command telemetry boilerplate needed.
+@some_group.command("name")
+@telemetry_options
+@click.option("--registry", "-r", required=True, ...)
+...
+def my_command(ctx, registry, ...):
+    # configure_telemetry() has already been called by @telemetry_options
+    ...
 ```
+
+`telemetry_options` is defined in `libs/decorators/__init__.py` and exported alongside `track_time`, `track_scenario`, and `debug_call`.
 
 ### TelemetryConfig
 

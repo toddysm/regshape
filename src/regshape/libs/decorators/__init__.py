@@ -16,11 +16,14 @@
     moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
+import functools
 import sys
+
+import click
 
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import IO
+from typing import Callable, IO
 
 
 @dataclass
@@ -72,6 +75,53 @@ def get_telemetry_config() -> TelemetryConfig:
     return _telemetry_config.get()
 
 
+def telemetry_options(func: Callable) -> Callable:
+    """
+    Click decorator that attaches ``--time-methods``, ``--time-scenarios``,
+    and ``--debug-calls`` options to a leaf command and automatically calls
+    :func:`configure_telemetry` before the command body executes.
+
+    Apply this decorator on leaf commands so that the three telemetry flags
+    appear after the subcommand name on the command line, e.g.::
+
+        regshape auth login --time-methods --time-scenarios -r registry.example.com
+
+    The three parameters are consumed by the wrapper and never forwarded to
+    the original function, so the command callback does not need to declare
+    them.
+
+    :param func: The Click command callback to decorate.
+    :return: Wrapped callback with telemetry options registered.
+    """
+    @click.option(
+        "--debug-calls",
+        is_flag=True,
+        default=False,
+        help="Print request/response headers for each HTTP call.",
+    )
+    @click.option(
+        "--time-scenarios",
+        is_flag=True,
+        default=False,
+        help="Print execution time for multi-step workflows.",
+    )
+    @click.option(
+        "--time-methods",
+        is_flag=True,
+        default=False,
+        help="Print execution time for individual method calls.",
+    )
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        configure_telemetry(TelemetryConfig(
+            time_methods_enabled=kwargs.pop("time_methods", False),
+            time_scenarios_enabled=kwargs.pop("time_scenarios", False),
+            debug_calls_enabled=kwargs.pop("debug_calls", False),
+        ))
+        return func(*args, **kwargs)
+    return wrapper
+
+
 # Sub-module imports come after the definitions above.
 # The three decorator modules import `get_telemetry_config` from this package;
 # because that name is already bound by the time Python executes those imports,
@@ -85,6 +135,7 @@ __all__ = [
     'TelemetryConfig',
     'configure_telemetry',
     'get_telemetry_config',
+    'telemetry_options',
     'SENSITIVE_HEADERS',
     'redact_header_value',
     'redact_headers',

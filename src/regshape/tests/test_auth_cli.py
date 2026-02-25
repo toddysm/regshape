@@ -610,7 +610,7 @@ class TestAuthLoginTelemetry:
                 stack.enter_context(p)
             result = self._runner().invoke(
                 regshape,
-                ["--time-scenarios", "auth", "login",
+                ["auth", "login", "--time-scenarios",
                  "-r", REGISTRY, "-u", "alice", "-p", "s3cr3t"],
             )
         assert result.exit_code == 0, result.output
@@ -624,7 +624,7 @@ class TestAuthLoginTelemetry:
                 stack.enter_context(p)
             result = self._runner().invoke(
                 regshape,
-                ["--time-methods", "auth", "login",
+                ["auth", "login", "--time-methods",
                  "-r", REGISTRY, "-u", "alice", "-p", "s3cr3t"],
             )
         assert result.exit_code == 0, result.output
@@ -639,7 +639,7 @@ class TestAuthLoginTelemetry:
                 stack.enter_context(p)
             result = self._runner().invoke(
                 regshape,
-                ["--debug-calls", "auth", "login",
+                ["auth", "login", "--debug-calls",
                  "-r", REGISTRY, "-u", "alice", "-p", "s3cr3t"],
             )
         assert result.exit_code == 0, result.output
@@ -674,7 +674,7 @@ class TestAuthLoginTelemetry:
              patch("regshape.libs.auth.credentials.store_credentials"):
             result = self._runner().invoke(
                 regshape,
-                ["--debug-calls", "auth", "login",
+                ["auth", "login", "--debug-calls",
                  "-r", REGISTRY, "-u", "alice", "-p", "mypassword"],
             )
         assert result.exit_code == 0, result.output
@@ -689,8 +689,9 @@ class TestAuthLoginTelemetry:
                 stack.enter_context(p)
             result = self._runner().invoke(
                 regshape,
-                ["--json", "--time-scenarios", "--time-methods", "--debug-calls",
-                 "auth", "login", "-r", REGISTRY, "-u", "alice", "-p", "s3cr3t"],
+                ["--json", "auth", "login",
+                 "--time-scenarios", "--time-methods", "--debug-calls",
+                 "-r", REGISTRY, "-u", "alice", "-p", "s3cr3t"],
             )
         assert result.exit_code == 0, result.output
         # stdout must be parseable as JSON — telemetry must not have bled in

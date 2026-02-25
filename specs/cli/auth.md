@@ -37,6 +37,9 @@ regshape auth logout [OPTIONS] --registry <registry>
 | `--password`        | `-p`  | string | prompt (hidden)| Password (overrides global `--password`) |
 | `--password-stdin`  |       | flag   | false          | Read password from stdin instead of prompting |
 | `--docker-config`   |       | path   | none           | Alternate Docker config file path |
+| `--time-methods`    |       | flag   | false          | Print execution time for individual method calls |
+| `--time-scenarios`  |       | flag   | false          | Print execution time for multi-step workflows |
+| `--debug-calls`     |       | flag   | false          | Print request/response headers for each HTTP call |
 
 ### Behavior
 
@@ -74,6 +77,9 @@ echo "$MY_TOKEN" | regshape auth login -r registry.example.com -u alice --passwo
 
 # JSON output
 regshape --json auth login -r registry.example.com -u alice -p s3cr3t
+
+# Telemetry: log scenario timing and HTTP call details
+regshape auth login -r registry.example.com --time-scenarios --debug-calls
 ```
 
 ### Output Format
@@ -106,6 +112,9 @@ Error: Login failed for registry.example.com: <reason>
 |-------------------|-------|--------|----------|-------------|
 | `--registry`      | `-r`  | string | required | Registry hostname |
 | `--docker-config` |       | path   | none     | Alternate Docker config file path |
+| `--time-methods`  |       | flag   | false    | Print execution time for individual method calls |
+| `--time-scenarios`|       | flag   | false    | Print execution time for multi-step workflows |
+| `--debug-calls`   |       | flag   | false    | Print request/response headers for each HTTP call |
 
 ### Behavior
 

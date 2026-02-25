@@ -16,7 +16,6 @@ import click
 
 from regshape.cli.auth import auth
 from regshape.libs.auth.credentials import resolve_credentials
-from regshape.libs.decorators import TelemetryConfig, configure_telemetry
 
 
 @click.group()
@@ -26,24 +25,6 @@ from regshape.libs.decorators import TelemetryConfig, configure_telemetry
 @click.option("--insecure", is_flag=True, default=False, help="Allow HTTP (no TLS).")
 @click.option("--json", "output_json", is_flag=True, default=False, help="Output as JSON.")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Verbose output.")
-@click.option(
-    "--time-methods",
-    is_flag=True,
-    default=False,
-    help="Print execution time for individual method calls.",
-)
-@click.option(
-    "--time-scenarios",
-    is_flag=True,
-    default=False,
-    help="Print execution time for multi-step workflows.",
-)
-@click.option(
-    "--debug-calls",
-    is_flag=True,
-    default=False,
-    help="Print request/response headers for each HTTP call.",
-)
 @click.option("--break", "break_mode", is_flag=True, default=False, help="Enable break mode.")
 @click.option(
     "--break-rules",
@@ -66,9 +47,6 @@ def regshape(
     insecure,
     output_json,
     verbose,
-    time_methods,
-    time_scenarios,
-    debug_calls,
     break_mode,
     break_rules,
     log_file,
@@ -91,19 +69,9 @@ def regshape(
     ctx.obj["insecure"] = insecure
     ctx.obj["output_json"] = output_json
     ctx.obj["verbose"] = verbose
-    ctx.obj["time_methods"] = time_methods
-    ctx.obj["time_scenarios"] = time_scenarios
-    ctx.obj["debug_calls"] = debug_calls
     ctx.obj["break_mode"] = break_mode
     ctx.obj["break_rules"] = break_rules
     ctx.obj["log_file"] = log_file
-
-    # Activate telemetry decorators based on CLI flags.
-    configure_telemetry(TelemetryConfig(
-        time_methods_enabled=time_methods,
-        time_scenarios_enabled=time_scenarios,
-        debug_calls_enabled=debug_calls,
-    ))
 
     # RegistryClient will be constructed lazily by subcommands that need it,
     # once the transport layer (libs/transport/) is implemented.

@@ -19,7 +19,7 @@ import requests
 
 from regshape.libs.auth import registryauth
 from regshape.libs.auth.credentials import erase_credentials, resolve_credentials, store_credentials
-from regshape.libs.decorators import TelemetryConfig, get_telemetry_config, redact_headers
+from regshape.libs.decorators import TelemetryConfig, get_telemetry_config, redact_headers, telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.decorators.timing import track_time
 from regshape.libs.errors import AuthError
@@ -32,6 +32,7 @@ def auth():
 
 
 @auth.command("login")
+@telemetry_options
 @click.option(
     "--registry",
     "-r",
@@ -129,6 +130,7 @@ def login(ctx, registry, username, password, password_stdin, docker_config):
 
 
 @auth.command("logout")
+@telemetry_options
 @click.option(
     "--registry",
     "-r",
