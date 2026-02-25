@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "regshape"
+version = "0.1.0"
+description = "CLI tool and Python library for manipulating artifacts in OCI registries"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+    "click>=8.1.0",
+    "requests>=2.31.0",
+]
+
+[project.scripts]
+regshape = "regshape.cli.main:regshape"
+
+[tool.setuptools.packages.find]
+where = ["src"]
