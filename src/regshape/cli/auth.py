@@ -172,6 +172,28 @@ _SENSITIVE_HEADERS: frozenset = frozenset({
     "set-cookie",
 })
 
+def _redact_header_value(name: str, value: str) -> str:
+    """
+    Return a safe representation of a header value for logging.
+
+    For sensitive headers such as Authorization and Cookie, the clear-text
+    secret is never returned. For Authorization-like headers, only the
+    authentication scheme (e.g., "Bearer", "Basic") is preserved.
+    """
+    name_lower = name.lower()
+    # Fully redact cookies and set-cookie headers
+    if name_lower in ("cookie", "set-cookie"):
+        return "<redacted>"
+    # For Authorization-style headers, keep only the scheme
+    if name_lower in ("authorization", "proxy-authorization"):
+        # Typical format: "Scheme credentials"
+        scheme, _, _ = value.partition(" ")
+        if scheme:
+            return f"{scheme} <redacted>"
+        return "<redacted>"
+    # Non-sensitive header: return as-is
+    return value
+
 @track_time
 def _verify_credentials(registry: str, username: str, password: str, insecure: bool = False) -> None:
     """
@@ -253,11 +275,11 @@ def _debug_http(telemetry, method: str, url: str, req_headers: dict, response) -
     # Sanitize headers before any logging to prevent clear-text leakage of
     # sensitive values (Authorization, Set-Cookie, etc.).
     safe_req = {
-        k: ("<redacted>" if k.lower() in _SENSITIVE_HEADERS else v)
+        k: _redact_header_value(k, v) if k.lower() in _SENSITIVE_HEADERS else v
         for k, v in req_headers.items()
     }
     safe_resp = {
-        k: ("<redacted>" if k.lower() in _SENSITIVE_HEADERS else v)
+        k: _redact_header_value(k, v) if k.lower() in _SENSITIVE_HEADERS else v
         for k, v in response.headers.items()
     }
     print(f"[CALL] {method} {url}", file=out)
