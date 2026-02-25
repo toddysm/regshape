@@ -240,19 +240,20 @@ def _debug_http(telemetry: TelemetryConfig, method: str, url: str, req_headers: 
     :param telemetry: Active :class:`~regshape.libs.decorators.TelemetryConfig`.
     :param method: HTTP method string (e.g., ``"GET"``).
     :param url: Full request URL.
-    :param req_headers: Request headers dict (``Authorization`` values are redacted).
+    :param req_headers: Request headers dict (sensitive values such as
+        ``Authorization`` are redacted before logging).
     :param response: ``requests.Response`` object.
     """
     if not telemetry.debug_calls_enabled:
         return
     out = telemetry.output
-    # Callers are responsible for sanitizing request headers before passing
-    # them here (no tainted data should reach this function). Response headers
-    # are sanitized here since callers pass the raw response object.
+    # Sanitize both request and response headers before logging to avoid
+    # leaking sensitive information such as Authorization tokens.
+    safe_req = redact_headers(dict(req_headers))
     safe_resp = redact_headers(dict(response.headers))
     print(f"[CALL] {method} {url}", file=out)
     print("[REQUEST HEADERS]", file=out)
-    for key, value in req_headers.items():
+    for key, value in safe_req.items():
         print(f"  {key}: {value}", file=out)
     print(f"[RESPONSE HEADERS] {response.status_code}", file=out)
     for key, value in safe_resp.items():
