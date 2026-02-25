@@ -164,6 +164,14 @@ def logout(ctx, registry, docker_config):
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+# Headers whose values must never appear in logs.
+_SENSITIVE_HEADERS: frozenset = frozenset({
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+})
+
 @track_time
 def _verify_credentials(registry: str, username: str, password: str, insecure: bool = False) -> None:
     """
@@ -242,11 +250,20 @@ def _debug_http(telemetry, method: str, url: str, req_headers: dict, response) -
     if not telemetry.debug_calls_enabled:
         return
     out = telemetry.output
+    # Sanitize headers before any logging to prevent clear-text leakage of
+    # sensitive values (Authorization, Set-Cookie, etc.).
+    safe_req = {
+        k: ("<redacted>" if k.lower() in _SENSITIVE_HEADERS else v)
+        for k, v in req_headers.items()
+    }
+    safe_resp = {
+        k: ("<redacted>" if k.lower() in _SENSITIVE_HEADERS else v)
+        for k, v in response.headers.items()
+    }
     print(f"[CALL] {method} {url}", file=out)
     print("[REQUEST HEADERS]", file=out)
-    for key, value in req_headers.items():
-        redacted = "<redacted>" if key.lower() == "authorization" else value
-        print(f"  {key}: {redacted}", file=out)
+    for key, value in safe_req.items():
+        print(f"  {key}: {value}", file=out)
     print(f"[RESPONSE HEADERS] {response.status_code}", file=out)
-    for key, value in response.headers.items():
+    for key, value in safe_resp.items():
         print(f"  {key}: {value}", file=out)
