@@ -64,13 +64,18 @@ def login(ctx, registry, username, password, password_stdin, docker_config):
     ~/.docker/config.json.  If both flags are omitted and no stored credentials
     are found, the command prompts interactively.
 
-    Verification is performed by issuing GET /v2/ through the transport layer
-    so that the full Bearer challenge/401-retry cycle is executed automatically
-    (required for Docker Hub and similar token-based registries).
+    Verification is performed by issuing a direct HTTP GET to ``/v2/`` using
+    the ``requests`` client so that the full Bearer challenge/401-retry cycle
+    is executed automatically (required for Docker Hub and similar token-based
+    registries). This will migrate to ``RegistryClient`` once the transport
+    layer is available.
     """
     output_json = ctx.obj.get("output_json", False) if ctx.obj else False
+    insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     # --- Resolve password ---------------------------------------------------
+    if password_stdin and password is not None:
+        raise click.UsageError("--password and --password-stdin are mutually exclusive")
     if password_stdin:
         password = click.get_text_stream("stdin").read().strip()
 
@@ -92,7 +97,7 @@ def login(ctx, registry, username, password, password_stdin, docker_config):
 
     # --- Verify against registry --------------------------------------------
     try:
-        _verify_credentials(registry, resolved_username, resolved_password)
+        _verify_credentials(registry, resolved_username, resolved_password, insecure=insecure)
     except AuthError as e:
         _error(output_json, registry, str(e))
         sys.exit(1)
@@ -155,7 +160,7 @@ def logout(ctx, registry, docker_config):
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _verify_credentials(registry: str, username: str, password: str) -> None:
+def _verify_credentials(registry: str, username: str, password: str, insecure: bool = False) -> None:
     """
     Verify *username* and *password* against *registry* by issuing
     ``GET /v2/`` and completing the full Bearer challenge cycle.
@@ -164,13 +169,17 @@ def _verify_credentials(registry: str, username: str, password: str) -> None:
     :func:`~regshape.libs.auth.registryauth.authenticate` helper so that the
     ``RegistryClient`` (not yet constructed at CLI setup time) is not required.
 
+    The URL scheme defaults to HTTPS but switches to HTTP when *insecure* is
+    ``True`` (set via the global ``--insecure`` flag).
+
     :param registry: Registry hostname.
     :param username: Username to verify.
     :param password: Password to verify.
+    :param insecure: When ``True``, use HTTP instead of HTTPS.
     :raises AuthError: If authentication is rejected.
     :raises requests.exceptions.RequestException: On connection errors.
     """
-    scheme = "https"
+    scheme = "http" if insecure else "https"
     url = f"{scheme}://{registry}/v2/"
 
     # First request — expect a challenge or immediate success

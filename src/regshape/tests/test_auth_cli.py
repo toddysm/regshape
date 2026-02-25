@@ -461,6 +461,45 @@ class TestAuthLoginCommand:
         assert result.exit_code == 0, result.output
         assert "Login succeeded." in result.output
 
+    def test_login_password_and_stdin_mutually_exclusive(self):
+        """Supplying both --password and --password-stdin is an error."""
+        result = self._runner().invoke(
+            regshape,
+            ["auth", "login", "-r", REGISTRY, "-u", "alice",
+             "-p", "secret", "--password-stdin"],
+            input="token\n",
+        )
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output
+
+    def test_login_insecure_uses_http(self):
+        """--insecure causes _verify_credentials to use http:// scheme."""
+        ok_resp = _make_response(200)
+        captured_urls = []
+
+        def fake_get(url, **kwargs):
+            captured_urls.append(url)
+            return ok_resp
+
+        with patch("regshape.libs.auth.credentials.dockerconfig.load_config",
+                   return_value=None), \
+             patch("regshape.libs.auth.credentials.dockerconfig.get_config_file",
+                   return_value=None), \
+             patch("regshape.libs.auth.credentials.dockerconfig.home_dir",
+                   return_value="/tmp"), \
+             patch("regshape.libs.auth.credentials.dockerconfig.DOCKER_CONFIG_FILENAME",
+                   os.path.join(".docker", "config.json")), \
+             patch("requests.get", side_effect=fake_get), \
+             patch("regshape.libs.auth.credentials.store_credentials"):
+            result = self._runner().invoke(
+                regshape,
+                ["--insecure", "auth", "login", "-r", REGISTRY, "-u", "u", "-p", "p"],
+            )
+        assert result.exit_code == 0, result.output
+        assert captured_urls[0].startswith("http://"), (
+            f"Expected http:// scheme, got: {captured_urls[0]}"
+        )
+
     def test_login_uses_stored_credentials(self):
         """login resolves stored credentials when flags are omitted."""
         config = _auth_config(REGISTRY, "stored_user", "stored_pass")
