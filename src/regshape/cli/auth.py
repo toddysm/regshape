@@ -19,7 +19,7 @@ import requests
 
 from regshape.libs.auth import registryauth
 from regshape.libs.auth.credentials import erase_credentials, resolve_credentials, store_credentials
-from regshape.libs.decorators import get_telemetry_config, redact_headers
+from regshape.libs.decorators import TelemetryConfig, get_telemetry_config, redact_headers
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.decorators.timing import track_time
 from regshape.libs.errors import AuthError
@@ -229,7 +229,7 @@ def _error(output_json: bool, registry: str, reason: str) -> None:
         click.echo(f"Error for {registry}: {reason}", err=True)
 
 
-def _debug_http(telemetry, method: str, url: str, req_headers: dict, response) -> None:
+def _debug_http(telemetry: TelemetryConfig, method: str, url: str, req_headers: dict, response) -> None:
     """Print request/response details to stderr when ``--debug-calls`` is active.
 
     Follows the same general output format as the ``@debug_call`` decorator so
