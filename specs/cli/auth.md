@@ -13,8 +13,8 @@ All other `regshape` commands resolve credentials automatically using the
 ## Usage
 
 ```
-regshape auth login  [OPTIONS] <registry>
-regshape auth logout [OPTIONS] <registry>
+regshape auth login  [OPTIONS] --registry <registry>
+regshape auth logout [OPTIONS] --registry <registry>
 ```
 
 ## Subcommands
@@ -28,16 +28,11 @@ regshape auth logout [OPTIONS] <registry>
 
 ## `auth login`
 
-### Arguments
-
-| Argument     | Required | Description                     |
-|--------------|----------|---------------------------------|
-| `<registry>` | Yes      | Registry hostname (e.g., `registry.example.com`) |
-
 ### Options
 
 | Option              | Short | Type   | Default        | Description |
 |---------------------|-------|--------|----------------|-------------|
+| `--registry`        | `-r`  | string | required       | Registry hostname (e.g., `registry.example.com`) |
 | `--username`        | `-u`  | string | prompt         | Username (overrides global `--username`) |
 | `--password`        | `-p`  | string | prompt (hidden)| Password (overrides global `--password`) |
 | `--password-stdin`  |       | flag   | false          | Read password from stdin instead of prompting |
@@ -67,16 +62,16 @@ regshape auth logout [OPTIONS] <registry>
 
 ```bash
 # Interactive prompt for credentials
-regshape auth login registry.example.com
+regshape auth login -r registry.example.com
 
 # Explicit credentials
-regshape auth login -u alice -p s3cr3t registry.example.com
+regshape auth login -r registry.example.com -u alice -p s3cr3t
 
 # Read password from stdin (e.g., from a secrets manager)
-echo "$MY_TOKEN" | regshape auth login -u alice --password-stdin registry.example.com
+echo "$MY_TOKEN" | regshape auth login -r registry.example.com -u alice --password-stdin
 
 # JSON output
-regshape --json auth login -u alice -p s3cr3t registry.example.com
+regshape --json auth login -r registry.example.com -u alice -p s3cr3t
 ```
 
 ### Output Format
@@ -103,17 +98,12 @@ Error: Login failed for registry.example.com: <reason>
 
 ## `auth logout`
 
-### Arguments
-
-| Argument     | Required | Description |
-|--------------|----------|-------------|
-| `<registry>` | Yes      | Registry hostname |
-
 ### Options
 
-| Option            | Short | Type | Default | Description |
-|-------------------|-------|------|---------|-------------|
-| `--docker-config` |       | path | none    | Alternate Docker config file path |
+| Option            | Short | Type   | Default  | Description |
+|-------------------|-------|--------|----------|-------------|
+| `--registry`      | `-r`  | string | required | Registry hostname |
+| `--docker-config` |       | path   | none     | Alternate Docker config file path |
 
 ### Behavior
 
@@ -134,8 +124,8 @@ Error: Login failed for registry.example.com: <reason>
 ### Examples
 
 ```bash
-regshape auth logout registry.example.com
-regshape --json auth logout registry.example.com
+regshape auth logout -r registry.example.com
+regshape --json auth logout -r registry.example.com
 ```
 
 ### Output Format
