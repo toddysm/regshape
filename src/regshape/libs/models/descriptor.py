@@ -156,10 +156,17 @@ class Descriptor:
         """
         try:
             platform_data = data.get("platform")
+            raw_size = data["size"]
+            try:
+                size = int(raw_size)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Descriptor: 'size' must be an integer, got {raw_size!r}"
+                ) from exc
             return cls(
                 media_type=data["mediaType"],
                 digest=data["digest"],
-                size=data["size"],
+                size=size,
                 platform=Platform.from_dict(platform_data) if platform_data else None,
                 annotations=data.get("annotations"),
                 artifact_type=data.get("artifactType"),
