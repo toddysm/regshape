@@ -2,9 +2,9 @@
 
 ## Overview
 
-The `manifest` command group manages OCI image manifests. It provides four
-subcommands that map to the three endpoints in the OCI Distribution Spec:
-`get`, `info`, `put`, and `delete`.
+The `manifest` command group manages OCI image manifests. It provides five
+subcommands that map to the OCI Distribution Spec endpoints:
+`get`, `info`, `descriptor`, `put`, and `delete`.
 
 `manifest get` can also extract individual fields from the parsed manifest
 model (`config`, `layers`, `subject`, `annotations`) using the `--part`
@@ -19,10 +19,11 @@ without having to `jq`-parse the raw JSON.
 ## Usage
 
 ```
-regshape manifest get    [OPTIONS]
-regshape manifest info   [OPTIONS]
-regshape manifest put    [OPTIONS]
-regshape manifest delete [OPTIONS]
+regshape manifest get        [OPTIONS]
+regshape manifest info       [OPTIONS]
+regshape manifest descriptor [OPTIONS]
+regshape manifest put        [OPTIONS]
+regshape manifest delete     [OPTIONS]
 ```
 
 ---
@@ -227,6 +228,65 @@ regshape manifest info -i myrepo/myimage:latest -r acr.io
 Digest:       sha256:abc123...
 Media Type:   application/vnd.oci.image.manifest.v1+json
 Size:         1234
+```
+
+---
+
+### `manifest descriptor`
+
+Return the OCI Descriptor for a given image reference as JSON.
+
+#### Options
+
+| Option | Short | Type | Default | Description |
+|---|---|---|---|---|
+| `--image-ref` | `-i` | string | required | Image reference (e.g., `repo:tag`, `registry/repo:tag`, `repo@sha256:...`) |
+| `--registry` | `-r` | string | none | Registry hostname. Required if not embedded in `--image-ref` |
+| `--username` | `-u` | string | none | Username for authentication |
+| `--password` | `-p` | string | none | Password for authentication |
+| `--accept` | | string | all OCI+Docker types | Set a specific `Accept` header |
+| `--time-methods` | | flag | false | Print execution time for individual method calls |
+| `--time-scenarios` | | flag | false | Print execution time for multi-step workflows |
+| `--debug-calls` | | flag | false | Print request/response headers for each HTTP call |
+
+#### Behavior
+
+1. Parse `--image-ref` to extract registry, repository, and tag or digest.
+2. Resolve credentials from `--username` / `--password` or the Docker credential store.
+3. Issue `HEAD /v2/<repo>/manifests/<reference>` with the `Accept` header.
+4. On success, read `Docker-Content-Digest`, `Content-Type`, and `Content-Length`
+   from the response headers.
+5. Print a JSON object using the OCI Descriptor wire-format field names
+   (`mediaType`, `digest`, `size`).
+
+The output is a valid OCI Descriptor object and can be embedded directly into
+another manifest (e.g. as the `subject` field or an entry in `manifests`).
+
+#### Exit Codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success |
+| 1 | Manifest not found, auth failure, or connection error |
+
+#### Examples
+
+```bash
+# Get the descriptor for a tag
+regshape manifest descriptor -i myrepo/myimage:latest -r acr.io
+
+# Get the descriptor for a specific digest
+regshape manifest descriptor -i myrepo/myimage@sha256:abc... -r acr.io
+```
+
+#### Output Format
+
+```json
+{
+  "mediaType": "application/vnd.oci.image.manifest.v1+json",
+  "digest": "sha256:abc123...",
+  "size": 1234
+}
 ```
 
 ---

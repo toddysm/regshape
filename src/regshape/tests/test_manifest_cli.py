@@ -357,6 +357,57 @@ class TestManifestInfo:
 
 
 # ---------------------------------------------------------------------------
+# TestManifestDescriptor  — CLI tests for ``manifest descriptor``
+# ---------------------------------------------------------------------------
+
+class TestManifestDescriptor:
+
+    def test_descriptor_returns_json(self):
+        resp = _make_response(200, content_length="1234")
+        with patch("requests.request", return_value=resp), \
+             patch("regshape.libs.auth.credentials.resolve_credentials",
+                   return_value=(None, None)):
+            result = _runner().invoke(
+                regshape,
+                ["manifest", "descriptor", "-i", f"{REPO}:{TAG}", "-r", REGISTRY],
+            )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["mediaType"] == OCI_IMAGE_MANIFEST
+        assert data["digest"] == DIGEST
+        assert data["size"] == 1234
+
+    def test_descriptor_fields_are_oci_wire_names(self):
+        """Output uses camelCase OCI wire-format field names."""
+        resp = _make_response(200, content_length="999")
+        with patch("requests.request", return_value=resp), \
+             patch("regshape.libs.auth.credentials.resolve_credentials",
+                   return_value=(None, None)):
+            result = _runner().invoke(
+                regshape,
+                ["manifest", "descriptor", "-i", f"{REPO}:{TAG}", "-r", REGISTRY],
+            )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        # Must use OCI wire-format keys (camelCase), not Python attribute names
+        assert "mediaType" in data
+        assert "digest" in data
+        assert "size" in data
+        assert "media_type" not in data
+
+    def test_descriptor_404_exits_1(self):
+        resp = _make_response(404, body=json.dumps({"errors": [{"code": "MANIFEST_UNKNOWN", "message": "not found"}]}))
+        with patch("requests.request", return_value=resp), \
+             patch("regshape.libs.auth.credentials.resolve_credentials",
+                   return_value=(None, None)):
+            result = _runner().invoke(
+                regshape,
+                ["manifest", "descriptor", "-i", f"{REPO}:{TAG}", "-r", REGISTRY],
+            )
+        assert result.exit_code == 1
+
+
+# ---------------------------------------------------------------------------
 # TestManifestPut  — CLI tests for ``manifest put``
 # ---------------------------------------------------------------------------
 

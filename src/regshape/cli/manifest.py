@@ -260,6 +260,84 @@ def info(ctx, registry, username, password, image_ref, accept):
 
 
 # ===========================================================================
+# manifest descriptor
+# ===========================================================================
+
+@manifest.command("descriptor")
+@telemetry_options
+@click.option(
+    "--image-ref",
+    "-i",
+    required=True,
+    metavar="IMAGE_REF",
+    help="Image reference (repo:tag, registry/repo:tag, or repo@sha256:...).",
+)
+@click.option(
+    "--registry",
+    "-r",
+    default=None,
+    help="Registry hostname (e.g., acr.io). Required if not embedded in IMAGE_REF.",
+)
+@click.option(
+    "--username",
+    "-u",
+    default=None,
+    help="Username for authentication.",
+)
+@click.option(
+    "--password",
+    "-p",
+    default=None,
+    help="Password for authentication.",
+)
+@click.option(
+    "--accept",
+    default=None,
+    metavar="MEDIA_TYPE",
+    help="Set a specific Accept header instead of the default multi-type value.",
+)
+@click.pass_context
+@track_scenario("manifest descriptor")
+def descriptor(ctx, registry, username, password, image_ref, accept):
+    """Return the OCI Descriptor for IMAGE_REF as JSON.
+
+    Issues a HEAD request and returns a JSON object with the
+    ``mediaType``, ``digest``, and ``size`` fields, matching the OCI
+    Descriptor wire format.  The output can be used directly as a
+    Descriptor object in another manifest.
+    """
+    insecure = ctx.obj.get("insecure", False) if ctx.obj else False
+
+    try:
+        registry, repo, reference = _parse_image_ref(image_ref, registry)
+    except ValueError as exc:
+        _error(image_ref, str(exc))
+        sys.exit(1)
+
+    username, password = resolve_credentials(registry, username, password)
+
+    try:
+        digest, media_type, size = _head_manifest(
+            registry=registry,
+            repo=repo,
+            reference=reference,
+            insecure=insecure,
+            username=username,
+            password=password,
+            accept=accept or _DEFAULT_ACCEPT,
+        )
+    except (AuthError, ManifestError, requests.exceptions.RequestException) as exc:
+        _error(image_ref, str(exc))
+        sys.exit(1)
+
+    click.echo(json.dumps({
+        "mediaType": media_type,
+        "digest": digest,
+        "size": size,
+    }, indent=2))
+
+
+# ===========================================================================
 # manifest put
 # ===========================================================================
 
