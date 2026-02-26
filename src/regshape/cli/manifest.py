@@ -477,18 +477,7 @@ def _fetch_manifest(
                 "Authentication failed",
                 "Registry requested Basic authentication but no credentials are available",
             )
-        # Normalize the auth header parameters to avoid leading spaces after commas,
-        # which can confuse registryauth._parse_auth_header().
-        scheme, sep, params = www_auth.partition(" ")
-        if sep and params:
-            cleaned_params = ",".join(part.strip() for part in params.split(","))
-            # Normalize scheme case for consistent authentication handling
-            normalized_scheme = scheme.capitalize() if scheme.lower() in ("basic", "bearer") else scheme
-            normalized_www_auth = f"{normalized_scheme} {cleaned_params}"
-        else:
-            # Normalize scheme case even if there are no parameters
-            normalized_scheme = scheme.capitalize() if scheme.lower() in ("basic", "bearer") else scheme
-            normalized_www_auth = f"{normalized_scheme}{' ' + params if params else ''}"
+        normalized_www_auth, normalized_scheme = _normalize_www_authenticate(www_auth)
         auth_value = registryauth.authenticate(normalized_www_auth, username, password)
         headers["Authorization"] = f"{normalized_scheme} {auth_value}"
         response = http_request(url, "GET", headers=headers, timeout=30)
@@ -542,10 +531,7 @@ def _head_manifest(
                 "credentials were provided. Please supply a username and password "
                 "or configure registry credentials.",
             )
-        # Normalize scheme case for consistent authentication handling
-        normalized_scheme = auth_scheme.capitalize() if auth_scheme.lower() in ("basic", "bearer") else auth_scheme
-        scheme, sep, params = www_auth.partition(" ")
-        normalized_www_auth = f"{normalized_scheme}{sep}{params}" if sep else normalized_scheme
+        normalized_www_auth, normalized_scheme = _normalize_www_authenticate(www_auth)
         auth_value = registryauth.authenticate(normalized_www_auth, username, password)
         headers["Authorization"] = f"{normalized_scheme} {auth_value}"
         response = http_request(url, "HEAD", headers=headers, timeout=30)
@@ -599,10 +585,7 @@ def _push_manifest(
                 "Authentication failed",
                 "Registry requested Basic authentication but no username/password were provided.",
             )
-        # Normalize scheme case for consistent authentication handling
-        normalized_scheme = auth_scheme.capitalize() if auth_scheme.lower() in ("basic", "bearer") else auth_scheme
-        scheme, sep, params = www_auth.partition(" ")
-        normalized_www_auth = f"{normalized_scheme}{sep}{params}" if sep else normalized_scheme
+        normalized_www_auth, normalized_scheme = _normalize_www_authenticate(www_auth)
         auth_value = registryauth.authenticate(normalized_www_auth, username, password)
         headers["Authorization"] = f"{normalized_scheme} {auth_value}"
         response = http_request(url, "PUT", headers=headers, data=body, timeout=30)
@@ -646,10 +629,7 @@ def _delete_manifest(
                 "Authentication failed",
                 f"registry {registry!r} requires Basic authentication but no credentials were provided",
             )
-        # Normalize scheme case for consistent authentication handling
-        normalized_scheme = auth_scheme.capitalize() if auth_scheme.lower() in ("basic", "bearer") else auth_scheme
-        scheme, sep, params = www_auth.partition(" ")
-        normalized_www_auth = f"{normalized_scheme}{sep}{params}" if sep else normalized_scheme
+        normalized_www_auth, normalized_scheme = _normalize_www_authenticate(www_auth)
         auth_value = registryauth.authenticate(normalized_www_auth, username, password)
         auth_headers = {"Authorization": f"{normalized_scheme} {auth_value}"}
         response = http_request(url, "DELETE", headers=auth_headers, timeout=30)
@@ -802,6 +782,34 @@ def _raise_for_manifest_error(
         f"Registry error for {_format_ref(registry, repo, reference)}",
         detail or f"HTTP {response.status_code}",
     )
+
+
+def _normalize_www_authenticate(www_auth: str) -> tuple[str, str]:
+    """Normalize a WWW-Authenticate header value.
+
+    Returns a ``(normalized_www_auth, normalized_scheme)`` tuple.
+
+    - Capitalizes ``basic``/``bearer`` scheme names so that
+      :func:`registryauth.authenticate` receives the expected casing.
+    - Strips leading and trailing whitespace from each comma-separated
+      parameter to prevent parse failures in
+      ``registryauth._parse_auth_header()`` when a registry produces
+      ``Bearer realm=\"...\", service=\"...\"`` (space after comma).
+
+    :param www_auth: Raw ``WWW-Authenticate`` header value.
+    :returns: ``(normalized_www_auth, normalized_scheme)`` where
+              *normalized_www_auth* is the cleaned full header value and
+              *normalized_scheme* is the scheme portion used when building
+              the ``Authorization`` request header.
+    """
+    scheme, sep, params = www_auth.partition(" ")
+    normalized_scheme = scheme.capitalize() if scheme.lower() in ("basic", "bearer") else scheme
+    if sep and params:
+        cleaned_params = ",".join(part.strip() for part in params.split(","))
+        normalized_www_auth = f"{normalized_scheme} {cleaned_params}"
+    else:
+        normalized_www_auth = normalized_scheme
+    return normalized_www_auth, normalized_scheme
 
 
 def _format_ref(registry: str, repo: str, reference: str) -> str:
