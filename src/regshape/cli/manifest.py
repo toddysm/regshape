@@ -644,25 +644,21 @@ def _extract_part(
 
 def _parse_image_ref(
     image_ref: str,
-    context_registry: Optional[str],
 ) -> tuple[str, str, str]:
     """Parse an image reference into ``(registry, repository, reference)``.
 
-    Supports the following formats::
+    The registry must be embedded in the reference. Supported formats::
 
-        myimage:tag
-        myrepo/myimage:tag
         registry.io/myimage:tag
         registry.io/myrepo/myimage:tag
-        myimage@sha256:<hex>
         registry.io/myimage@sha256:<hex>
+        registry.io/myrepo/myimage@sha256:<hex>
 
-    :param image_ref: The image reference string from the CLI argument.
-    :param context_registry: Registry from the ``--registry`` per-command option.
+    :param image_ref: The image reference string from the ``--image-ref`` flag.
     :returns: A ``(registry, repo, reference)`` triple where ``reference``
         is the tag or digest string (without the ``@`` prefix).
-    :raises ValueError: If neither the image ref nor context provides a
-        registry.
+    :raises ValueError: If the registry cannot be determined from the
+        image reference.
     """
     # Separate digest (@) from tag (:) — digest takes priority
     if "@" in image_ref:
@@ -703,13 +699,10 @@ def _parse_image_ref(
         registry = first
         repo = "/".join(parts[1:])
     else:
-        if not context_registry:
-            raise ValueError(
-                f"Cannot determine registry from {image_ref!r}: "
-                "embed the registry in the reference or use the --registry option"
-            )
-        registry = context_registry
-        repo = path_part
+        raise ValueError(
+            f"Cannot determine registry from {image_ref!r}: "
+            "embed the registry in --image-ref (e.g. acr.io/repo:tag)"
+        )
 
     if not repo:
         raise ValueError(
