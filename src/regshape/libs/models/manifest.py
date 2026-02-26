@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 
 """
-:mod:`manifest` - OCI ImageManifest and ImageIndex data models
-==============================================================
+:mod:`regshape.libs.models.manifest` - OCI ImageManifest and ImageIndex data models
+================================================================================ 
 
-    module:: manifest
-    :platform: Unix, Windows
-    :synopsis: Dataclasses for OCI Image Manifests, Image Indexes, and a
-               factory function that dispatches on mediaType.
-    moduleauthor:: ToddySM <toddysm@gmail.com>
+.. module:: regshape.libs.models.manifest
+   :platform: Unix, Windows
+   :synopsis: Dataclasses for OCI Image Manifests, Image Indexes, and a
+              factory function that dispatches on mediaType.
+.. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
 import hashlib
