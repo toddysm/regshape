@@ -14,7 +14,6 @@ from unittest.mock import MagicMock, patch
 
 from regshape.cli.main import regshape
 from regshape.cli.manifest import _parse_image_ref
-from regshape.libs.models.manifest import ImageManifest, ImageIndex
 from regshape.libs.models.mediatype import (
     OCI_IMAGE_CONFIG,
     OCI_IMAGE_INDEX,
