@@ -6,8 +6,9 @@
 
     module:: manifest
     :platform: Unix, Windows
-    :synopsis: Click command group providing ``get``, ``head``, ``put``, and
-               ``delete`` subcommands for OCI image manifest operations.
+    :synopsis: Click command group providing ``get``, ``info``, ``descriptor``,
+               ``put``, and ``delete`` subcommands for OCI image manifest
+               operations.
     moduleauthor:: ToddySM <toddysm@gmail.com>
 
 .. note::
