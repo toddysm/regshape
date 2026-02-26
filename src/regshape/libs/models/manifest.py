@@ -184,7 +184,7 @@ class ImageIndex:
             raise ValueError("ImageIndex.media_type must not be empty")
         if self.media_type not in INDEX_MEDIA_TYPES:
             raise ValueError(
-                f"ImageIndex.media_type must be one of {INDEX_MEDIA_TYPES}, got {self.media_type!r}"
+                f"ImageIndex.media_type must be one of {sorted(INDEX_MEDIA_TYPES)}, got {self.media_type!r}"
             )
         if not isinstance(self.manifests, list):
             raise ValueError("ImageIndex.manifests must be a list")
