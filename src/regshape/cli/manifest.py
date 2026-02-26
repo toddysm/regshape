@@ -749,7 +749,7 @@ def _raise_for_manifest_error(
 
     if response.status_code == 404:
         raise ManifestError(
-            f"Manifest not found: {registry}/{repo}:{reference}",
+            f"Manifest not found: {_format_ref(registry, repo, reference)}",
             detail or f"HTTP 404",
         )
     if response.status_code == 401:
@@ -758,9 +758,26 @@ def _raise_for_manifest_error(
             detail or "HTTP 401",
         )
     raise ManifestError(
-        f"Registry error for {registry}/{repo}:{reference}",
+        f"Registry error for {_format_ref(registry, repo, reference)}",
         detail or f"HTTP {response.status_code}",
     )
+
+
+def _format_ref(registry: str, repo: str, reference: str) -> str:
+    """Return a canonical OCI reference string.
+
+    Uses ``@`` as the separator when *reference* is a digest
+    (starts with ``sha256:`` or another algorithm prefix followed by ``:``).
+    Uses ``:`` for tag references.
+
+    :param registry: Registry hostname.
+    :param repo: Repository name.
+    :param reference: Tag or digest.
+    :returns: Canonical reference string, e.g. ``acr.io/repo:tag`` or
+              ``acr.io/repo@sha256:abc...``.
+    """
+    sep = "@" if ":" in reference else ":"
+    return f"{registry}/{repo}{sep}{reference}"
 
 
 def _write(output_path: Optional[str], content: str) -> None:
