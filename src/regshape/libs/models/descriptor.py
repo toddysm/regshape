@@ -175,7 +175,7 @@ class Descriptor:
                 media_type=data["mediaType"],
                 digest=data["digest"],
                 size=size,
-                platform=Platform.from_dict(platform_data) if platform_data else None,
+                platform=Platform.from_dict(platform_data) if platform_data is not None else None,
                 annotations=data.get("annotations"),
                 artifact_type=data.get("artifactType"),
                 urls=data.get("urls"),
