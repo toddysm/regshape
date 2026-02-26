@@ -130,7 +130,7 @@ def get(ctx, image_ref, accept, part, output, raw):
     username, password = resolve_credentials(registry, None, None)
 
     try:
-        body, content_type, digest = _fetch_manifest(
+        body, _, _ = _fetch_manifest(
             registry=registry,
             repo=repo,
             reference=reference,
