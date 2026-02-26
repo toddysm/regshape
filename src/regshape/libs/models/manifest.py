@@ -140,7 +140,7 @@ class ImageManifest:
                 media_type=data["mediaType"],
                 config=Descriptor.from_dict(data["config"]),
                 layers=[Descriptor.from_dict(layer) for layer in data["layers"]],
-                subject=Descriptor.from_dict(subject_data) if subject_data else None,
+                subject=Descriptor.from_dict(subject_data) if subject_data is not None else None,
                 annotations=data.get("annotations"),
                 artifact_type=data.get("artifactType"),
             )
