@@ -98,7 +98,7 @@ registry/repository@sha256:...  # e.g., acr.io/myrepo/myimage@sha256:abc...
 ```
 
 There is no global or per-command `--registry` flag. The registry is extracted from
-the image reference by `_parse_image_ref(image_ref, None)`.
+the image reference by `_parse_image_ref(image_ref)`.
 
 ### Global Options
 
