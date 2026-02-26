@@ -166,30 +166,6 @@ Formatted with 2-space indentation for readability.
 ]
 ```
 
-**JSON mode (global `--json` flag):**
-
-```json
-{
-  "reference": "myrepo/myimage:latest",
-  "digest": "sha256:...",
-  "media_type": "application/vnd.oci.image.manifest.v1+json",
-  "manifest": { ... }
-}
-```
-
-When `--part` is set, the `"manifest"` key is replaced with `"part"` and
-`"part_name"` is added:
-
-```json
-{
-  "reference": "myrepo/myimage:latest",
-  "digest": "sha256:...",
-  "media_type": "application/vnd.oci.image.manifest.v1+json",
-  "part_name": "layers",
-  "part": [ ... ]
-}
-```
-
 #### Error Messages
 
 | Scenario | Message |
@@ -241,9 +217,6 @@ without downloading the manifest body.
 ```bash
 # Check if a manifest exists
 regshape manifest info -i myrepo/myimage:latest -r acr.io
-
-# JSON output
-regshape --json manifest info -i myrepo/myimage:latest -r acr.io
 ```
 
 #### Output Format
@@ -254,17 +227,6 @@ regshape --json manifest info -i myrepo/myimage:latest -r acr.io
 Digest:       sha256:abc123...
 Media Type:   application/vnd.oci.image.manifest.v1+json
 Size:         1234
-```
-
-**JSON mode:**
-
-```json
-{
-  "reference": "myrepo/myimage:latest",
-  "digest": "sha256:abc123...",
-  "media_type": "application/vnd.oci.image.manifest.v1+json",
-  "size": 1234
-}
 ```
 
 ---
@@ -328,15 +290,6 @@ regshape --break manifest put -i myrepo/myimage:v2 -r acr.io \
 Pushed: sha256:abc123...
 ```
 
-**JSON mode:**
-
-```json
-{
-  "reference": "myrepo/myimage:v2",
-  "digest": "sha256:abc123..."
-}
-```
-
 ---
 
 ### `manifest delete`
@@ -377,9 +330,6 @@ not accepted by most registries for delete operations).
 ```bash
 # Delete by digest
 regshape manifest delete -i myrepo/myimage@sha256:abc... -r acr.io
-
-# JSON output
-regshape --json manifest delete -i myrepo/myimage@sha256:abc... -r acr.io
 ```
 
 #### Output Format
@@ -388,15 +338,6 @@ regshape --json manifest delete -i myrepo/myimage@sha256:abc... -r acr.io
 
 ```
 Deleted: sha256:abc123...
-```
-
-**JSON mode:**
-
-```json
-{
-  "reference": "myrepo/myimage@sha256:abc...",
-  "digest": "sha256:abc..."
-}
 ```
 
 ---

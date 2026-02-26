@@ -749,7 +749,6 @@ regshape [GLOBAL OPTIONS] <command-group> <command> [OPTIONS]
 | `--username` | `-u` | string | none | Username for authentication |
 | `--password` | `-p` | string | none | Password for authentication |
 | `--insecure` | | flag | false | Allow HTTP (no TLS) |
-| `--json` | | flag | false | Output as JSON |
 | `--verbose` | `-v` | flag | false | Verbose output |
 | `--break` | | flag | false | Enable break mode |
 | `--break-rules` | | string | none | Path to break mode rules file |

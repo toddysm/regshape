@@ -24,7 +24,6 @@ from regshape.libs.auth.credentials import resolve_credentials
 @click.option("--username", "-u", default=None, help="Username for authentication.")
 @click.option("--password", "-p", default=None, help="Password for authentication.")
 @click.option("--insecure", is_flag=True, default=False, help="Allow HTTP (no TLS).")
-@click.option("--json", "output_json", is_flag=True, default=False, help="Output as JSON.")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Verbose output.")
 @click.option("--break", "break_mode", is_flag=True, default=False, help="Enable break mode.")
 @click.option(
@@ -46,7 +45,6 @@ def regshape(
     username,
     password,
     insecure,
-    output_json,
     verbose,
     break_mode,
     break_rules,
@@ -68,7 +66,6 @@ def regshape(
     ctx.obj["username"] = resolved_username
     ctx.obj["password"] = resolved_password
     ctx.obj["insecure"] = insecure
-    ctx.obj["output_json"] = output_json
     ctx.obj["verbose"] = verbose
     ctx.obj["break_mode"] = break_mode
     ctx.obj["break_rules"] = break_rules

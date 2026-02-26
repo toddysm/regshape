@@ -174,21 +174,6 @@ class TestManifestGet:
         assert parsed["schemaVersion"] == 2
         assert parsed["mediaType"] == OCI_IMAGE_MANIFEST
 
-    def test_get_success_json_envelope(self):
-        resp = _make_response(200, body=_MANIFEST_JSON)
-        with patch("requests.request", return_value=resp), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
-                   return_value=(None, None)):
-            result = _runner().invoke(
-                regshape,
-                ["--json", "manifest", "get", "-i", f"{REPO}:{TAG}", "-r", REGISTRY],
-            )
-        assert result.exit_code == 0, result.output
-        data = json.loads(result.output)
-        assert "reference" in data
-        assert "manifest" in data
-        assert data["media_type"] == OCI_IMAGE_MANIFEST
-
     def test_get_raw_flag_skips_parsing(self):
         raw_body = _MANIFEST_JSON
         resp = _make_response(200, body=raw_body)
@@ -359,20 +344,6 @@ class TestManifestInfo:
         assert DIGEST in result.output
         assert "Media Type:" in result.output
 
-    def test_info_success_json(self):
-        resp = _make_response(200, content_length="999")
-        with patch("requests.request", return_value=resp), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
-                   return_value=(None, None)):
-            result = _runner().invoke(
-                regshape,
-                ["--json", "manifest", "info", "-i", f"{REPO}:{TAG}", "-r", REGISTRY],
-            )
-        assert result.exit_code == 0, result.output
-        data = json.loads(result.output)
-        assert data["digest"] == DIGEST
-        assert data["size"] == 999
-
     def test_info_404_exits_1(self):
         resp = _make_response(404, body=json.dumps({"errors": [{"code": "MANIFEST_UNKNOWN", "message": "not found"}]}))
         with patch("requests.request", return_value=resp), \
@@ -406,24 +377,6 @@ class TestManifestPut:
             )
         assert result.exit_code == 0, result.output
         assert "Pushed:" in result.output
-
-    def test_put_success_json_output(self, tmp_path):
-        manifest_file = tmp_path / "manifest.json"
-        manifest_file.write_text(_MANIFEST_JSON)
-        resp = _make_response(201)
-
-        with patch("requests.request", return_value=resp), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
-                   return_value=(None, None)):
-            result = _runner().invoke(
-                regshape,
-                ["--json", "manifest", "put", "-i", f"{REPO}:v2", "-r", REGISTRY,
-                 "--file", str(manifest_file)],
-            )
-        assert result.exit_code == 0, result.output
-        data = json.loads(result.output)
-        assert "digest" in data
-        assert "reference" in data
 
     def test_put_stdin(self):
         resp = _make_response(201)
@@ -489,19 +442,6 @@ class TestManifestDelete:
         assert result.exit_code == 0, result.output
         assert "Deleted:" in result.output
         assert DIGEST in result.output
-
-    def test_delete_success_json(self):
-        resp = _make_response(202)
-        with patch("requests.request", return_value=resp), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
-                   return_value=(None, None)):
-            result = _runner().invoke(
-                regshape,
-                ["--json", "manifest", "delete", "-i", f"{REPO}@{DIGEST}", "-r", REGISTRY],
-            )
-        assert result.exit_code == 0, result.output
-        data = json.loads(result.output)
-        assert data["digest"] == DIGEST
 
     def test_delete_tag_reference_rejected(self):
         """Deleting by tag exits with code 2 — OCI requires digest."""

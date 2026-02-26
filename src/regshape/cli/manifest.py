@@ -134,7 +134,6 @@ def get(ctx, registry, username, password, image_ref, accept, part, output, raw)
     model instead of printing the full JSON.  Use ``--raw`` to bypass
     model parsing entirely and print the wire bytes from the registry.
     """
-    output_json = ctx.obj.get("output_json", False) if ctx.obj else False
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     if raw and part:
@@ -143,7 +142,7 @@ def get(ctx, registry, username, password, image_ref, accept, part, output, raw)
     try:
         registry, repo, reference = _parse_image_ref(image_ref, registry)
     except ValueError as exc:
-        _error(output_json, image_ref, str(exc))
+        _error(image_ref, str(exc))
         sys.exit(1)
 
     username, password = resolve_credentials(registry, username, password)
@@ -159,7 +158,7 @@ def get(ctx, registry, username, password, image_ref, accept, part, output, raw)
             accept=accept or _DEFAULT_ACCEPT,
         )
     except (AuthError, ManifestError, requests.exceptions.RequestException) as exc:
-        _error(output_json, image_ref, str(exc))
+        _error(image_ref, str(exc))
         sys.exit(1)
 
     if raw:
@@ -170,39 +169,20 @@ def get(ctx, registry, username, password, image_ref, accept, part, output, raw)
     try:
         parsed = parse_manifest(body)
     except ManifestError as exc:
-        _error(output_json, image_ref, f"Failed to parse manifest: {exc}")
+        _error(image_ref, f"Failed to parse manifest: {exc}")
         sys.exit(1)
 
     if part:
         exit_code, result = _extract_part(parsed, part)
         if exit_code != 0:
-            _error(output_json, image_ref, result)
+            _error(image_ref, result)
             sys.exit(exit_code)
-        if output_json:
-            envelope = {
-                "reference": image_ref,
-                "digest": digest,
-                "media_type": content_type,
-                "part_name": part,
-                "part": json.loads(result),
-            }
-            _write(output, json.dumps(envelope, indent=2))
-        else:
-            _write(output, result)
+        _write(output, result)
         return
 
     # Full manifest output
     manifest_dict = json.loads(parsed.to_json())
-    if output_json:
-        envelope = {
-            "reference": image_ref,
-            "digest": digest,
-            "media_type": content_type,
-            "manifest": manifest_dict,
-        }
-        _write(output, json.dumps(envelope, indent=2))
-    else:
-        _write(output, json.dumps(manifest_dict, indent=2))
+    _write(output, json.dumps(manifest_dict, indent=2))
 
 
 # ===========================================================================
@@ -250,13 +230,12 @@ def info(ctx, registry, username, password, image_ref, accept):
     Issues a HEAD request and returns the digest, media type, and size
     from response headers.
     """
-    output_json = ctx.obj.get("output_json", False) if ctx.obj else False
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
         registry, repo, reference = _parse_image_ref(image_ref, registry)
     except ValueError as exc:
-        _error(output_json, image_ref, str(exc))
+        _error(image_ref, str(exc))
         sys.exit(1)
 
     username, password = resolve_credentials(registry, username, password)
@@ -272,20 +251,12 @@ def info(ctx, registry, username, password, image_ref, accept):
             accept=accept or _DEFAULT_ACCEPT,
         )
     except (AuthError, ManifestError, requests.exceptions.RequestException) as exc:
-        _error(output_json, image_ref, str(exc))
+        _error(image_ref, str(exc))
         sys.exit(1)
 
-    if output_json:
-        click.echo(json.dumps({
-            "reference": image_ref,
-            "digest": digest,
-            "media_type": media_type,
-            "size": size,
-        }, indent=2))
-    else:
-        click.echo(f"Digest:       {digest}")
-        click.echo(f"Media Type:   {media_type}")
-        click.echo(f"Size:         {size}")
+    click.echo(f"Digest:       {digest}")
+    click.echo(f"Media Type:   {media_type}")
+    click.echo(f"Size:         {size}")
 
 
 # ===========================================================================
@@ -352,7 +323,6 @@ def put(ctx, registry, username, password, image_ref, manifest_file, from_stdin,
     Provide the manifest JSON via ``--file`` or ``--stdin`` (exactly one
     is required).
     """
-    output_json = ctx.obj.get("output_json", False) if ctx.obj else False
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     if manifest_file and from_stdin:
@@ -363,7 +333,7 @@ def put(ctx, registry, username, password, image_ref, manifest_file, from_stdin,
     try:
         registry, repo, reference = _parse_image_ref(image_ref, registry)
     except ValueError as exc:
-        _error(output_json, image_ref, str(exc))
+        _error(image_ref, str(exc))
         sys.exit(1)
 
     username, password = resolve_credentials(registry, username, password)
@@ -395,13 +365,10 @@ def put(ctx, registry, username, password, image_ref, manifest_file, from_stdin,
             password=password,
         )
     except (AuthError, ManifestError, requests.exceptions.RequestException) as exc:
-        _error(output_json, image_ref, str(exc))
+        _error(image_ref, str(exc))
         sys.exit(1)
 
-    if output_json:
-        click.echo(json.dumps({"reference": image_ref, "digest": digest}, indent=2))
-    else:
-        click.echo(f"Pushed: {digest}")
+    click.echo(f"Pushed: {digest}")
 
 
 # ===========================================================================
@@ -444,18 +411,16 @@ def delete(ctx, registry, username, password, image_ref):
     Distribution Spec requires deletion by digest; tag references are
     rejected with exit code 2.
     """
-    output_json = ctx.obj.get("output_json", False) if ctx.obj else False
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
         registry, repo, reference = _parse_image_ref(image_ref, registry)
     except ValueError as exc:
-        _error(output_json, image_ref, str(exc))
+        _error(image_ref, str(exc))
         sys.exit(1)
 
     if not reference.startswith("sha256:") and not reference.startswith("sha512:"):
         _error(
-            output_json,
             image_ref,
             "manifest delete requires a digest reference (@sha256:...); "
             "tag references are not supported by the OCI spec for delete operations",
@@ -474,13 +439,10 @@ def delete(ctx, registry, username, password, image_ref):
             password=password,
         )
     except (AuthError, ManifestError, requests.exceptions.RequestException) as exc:
-        _error(output_json, image_ref, str(exc))
+        _error(image_ref, str(exc))
         sys.exit(1)
 
-    if output_json:
-        click.echo(json.dumps({"reference": image_ref, "digest": reference}, indent=2))
-    else:
-        click.echo(f"Deleted: {reference}")
+    click.echo(f"Deleted: {reference}")
 
 
 # ===========================================================================
@@ -824,12 +786,6 @@ def _write(output_path: Optional[str], content: str) -> None:
         click.echo(content)
 
 
-def _error(output_json: bool, reference: str, reason: str) -> None:
-    """Print an error message in the appropriate format to stderr."""
-    if output_json:
-        click.echo(
-            json.dumps({"status": "error", "reference": reference, "message": reason}),
-            err=True,
-        )
-    else:
-        click.echo(f"Error: {reason}", err=True)
+def _error(reference: str, reason: str) -> None:
+    """Print an error message to stderr."""
+    click.echo(f"Error: {reason}", err=True)
