@@ -578,7 +578,7 @@ def _push_manifest(
             )
         auth_scheme = www_auth.split(" ", 1)[0]
         # Avoid generating a Basic token for missing credentials (e.g. None:None).
-        if auth_scheme.lower() == "basic" and (not username or not password):
+        if auth_scheme.lower() == "basic" and (username is None or password is None):
             raise AuthError(
                 "Authentication failed",
                 "Registry requested Basic authentication but no username/password were provided.",
