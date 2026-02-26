@@ -271,7 +271,7 @@ class ImageIndex:
                 schema_version=data["schemaVersion"],
                 media_type=data["mediaType"],
                 manifests=[Descriptor.from_dict(m) for m in manifests_data],
-                subject=Descriptor.from_dict(subject_data) if subject_data else None,
+                subject=Descriptor.from_dict(subject_data) if subject_data is not None else None,
                 annotations=data.get("annotations"),
                 artifact_type=data.get("artifactType"),
             )
