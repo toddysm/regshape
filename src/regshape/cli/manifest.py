@@ -471,8 +471,13 @@ def _fetch_manifest(
                 "Authentication failed",
                 f"registry {registry!r} returned 401 without WWW-Authenticate",
             )
+        auth_scheme = www_auth.split(" ", 1)[0]
+        if auth_scheme.lower() == "basic" and (username is None or password is None):
+            raise AuthError(
+                "Authentication failed",
+                "Registry requested Basic authentication but no credentials are available",
+            )
         auth_value = registryauth.authenticate(www_auth, username, password)
-        auth_scheme = www_auth.split(" ")[0]
         headers["Authorization"] = f"{auth_scheme} {auth_value}"
         response = http_request(url, "GET", headers=headers, timeout=30)
 
