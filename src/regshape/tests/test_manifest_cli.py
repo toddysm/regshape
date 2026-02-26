@@ -159,7 +159,7 @@ class TestManifestGet:
     def test_get_success_plain(self):
         resp = _make_response(200, body=_MANIFEST_JSON)
         with patch("requests.request", return_value=resp), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
+             patch("regshape.cli.manifest.resolve_credentials",
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
@@ -174,7 +174,7 @@ class TestManifestGet:
         raw_body = _MANIFEST_JSON
         resp = _make_response(200, body=raw_body)
         with patch("requests.request", return_value=resp), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
+             patch("regshape.cli.manifest.resolve_credentials",
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
@@ -187,7 +187,7 @@ class TestManifestGet:
     def test_get_part_config(self):
         resp = _make_response(200, body=_MANIFEST_JSON)
         with patch("requests.request", return_value=resp), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
+             patch("regshape.cli.manifest.resolve_credentials",
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
@@ -201,7 +201,7 @@ class TestManifestGet:
     def test_get_part_layers(self):
         resp = _make_response(200, body=_MANIFEST_JSON)
         with patch("requests.request", return_value=resp), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
+             patch("regshape.cli.manifest.resolve_credentials",
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
@@ -216,7 +216,7 @@ class TestManifestGet:
     def test_get_part_annotations(self):
         resp = _make_response(200, body=_MANIFEST_JSON)
         with patch("requests.request", return_value=resp), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
+             patch("regshape.cli.manifest.resolve_credentials",
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
@@ -229,7 +229,7 @@ class TestManifestGet:
     def test_get_part_subject_absent_exits_2(self):
         resp = _make_response(200, body=_MANIFEST_JSON)
         with patch("requests.request", return_value=resp), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
+             patch("regshape.cli.manifest.resolve_credentials",
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
@@ -240,7 +240,7 @@ class TestManifestGet:
     def test_get_part_config_on_index_exits_2(self):
         resp = _make_response(200, body=_INDEX_JSON, content_type=OCI_IMAGE_INDEX)
         with patch("requests.request", return_value=resp), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
+             patch("regshape.cli.manifest.resolve_credentials",
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
@@ -260,7 +260,7 @@ class TestManifestGet:
         error_body = json.dumps({"errors": [{"code": "MANIFEST_UNKNOWN", "message": "manifest unknown"}]})
         resp = _make_response(404, body=error_body)
         with patch("requests.request", return_value=resp), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
+             patch("regshape.cli.manifest.resolve_credentials",
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
@@ -285,7 +285,7 @@ class TestManifestGet:
             return ok
 
         with patch("requests.request", side_effect=side_effect), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
+             patch("regshape.cli.manifest.resolve_credentials",
                    return_value=("user", "pass")), \
              patch("regshape.libs.auth.registryauth.authenticate",
                    return_value="fake-token"):
@@ -298,7 +298,7 @@ class TestManifestGet:
     def test_get_connection_error_exits_1(self):
         with patch("requests.request",
                    side_effect=requests.exceptions.ConnectionError("refused")), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
+             patch("regshape.cli.manifest.resolve_credentials",
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
@@ -309,7 +309,7 @@ class TestManifestGet:
     def test_get_image_index_plain(self):
         resp = _make_response(200, body=_INDEX_JSON, content_type=OCI_IMAGE_INDEX)
         with patch("requests.request", return_value=resp), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
+             patch("regshape.cli.manifest.resolve_credentials",
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
@@ -329,7 +329,7 @@ class TestManifestInfo:
     def test_info_success_plain(self):
         resp = _make_response(200, content_length="1234")
         with patch("requests.request", return_value=resp), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
+             patch("regshape.cli.manifest.resolve_credentials",
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
@@ -343,7 +343,7 @@ class TestManifestInfo:
     def test_info_404_exits_1(self):
         resp = _make_response(404, body=json.dumps({"errors": [{"code": "MANIFEST_UNKNOWN", "message": "not found"}]}))
         with patch("requests.request", return_value=resp), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
+             patch("regshape.cli.manifest.resolve_credentials",
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
@@ -361,7 +361,7 @@ class TestManifestDescriptor:
     def test_descriptor_returns_json(self):
         resp = _make_response(200, content_length="1234")
         with patch("requests.request", return_value=resp), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
+             patch("regshape.cli.manifest.resolve_credentials",
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
@@ -377,7 +377,7 @@ class TestManifestDescriptor:
         """Output uses camelCase OCI wire-format field names."""
         resp = _make_response(200, content_length="999")
         with patch("requests.request", return_value=resp), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
+             patch("regshape.cli.manifest.resolve_credentials",
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
@@ -394,7 +394,7 @@ class TestManifestDescriptor:
     def test_descriptor_404_exits_1(self):
         resp = _make_response(404, body=json.dumps({"errors": [{"code": "MANIFEST_UNKNOWN", "message": "not found"}]}))
         with patch("requests.request", return_value=resp), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
+             patch("regshape.cli.manifest.resolve_credentials",
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
@@ -415,7 +415,7 @@ class TestManifestPut:
         resp = _make_response(201)
 
         with patch("requests.request", return_value=resp), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
+             patch("regshape.cli.manifest.resolve_credentials",
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
@@ -428,7 +428,7 @@ class TestManifestPut:
     def test_put_stdin(self):
         resp = _make_response(201)
         with patch("requests.request", return_value=resp), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
+             patch("regshape.cli.manifest.resolve_credentials",
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
@@ -461,7 +461,7 @@ class TestManifestPut:
         resp = _make_response(400, body=error_body)
 
         with patch("requests.request", return_value=resp), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
+             patch("regshape.cli.manifest.resolve_credentials",
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
@@ -480,7 +480,7 @@ class TestManifestDelete:
     def test_delete_success_plain(self):
         resp = _make_response(202)
         with patch("requests.request", return_value=resp), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
+             patch("regshape.cli.manifest.resolve_credentials",
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
@@ -502,7 +502,7 @@ class TestManifestDelete:
         error_body = json.dumps({"errors": [{"code": "MANIFEST_UNKNOWN", "message": "not found"}]})
         resp = _make_response(404, body=error_body)
         with patch("requests.request", return_value=resp), \
-             patch("regshape.libs.auth.credentials.resolve_credentials",
+             patch("regshape.cli.manifest.resolve_credentials",
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
