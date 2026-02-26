@@ -34,14 +34,16 @@ The `--image-ref` / `-i` option accepts the standard container image reference s
 
 | Format | Example |
 |---|---|
-| `repo:tag` | `myimage:latest` (requires `--registry` option) |
 | `registry/repo:tag` | `acr.io/myrepo/myimage:v1` |
-| `repo@digest` | `myimage@sha256:abc...` |
 | `registry/repo@digest` | `acr.io/myrepo/myimage@sha256:abc...` |
 
-When the registry is embedded in the `--image-ref` value it takes precedence over the
-`--registry` option. If neither provides a registry, the command exits with
-an error.
+The registry must always be embedded in the `--image-ref` value. If no registry
+is present, the command exits with an error.
+
+> **Authentication:** Run `regshape auth login` before using manifest commands
+> against authenticated registries. Credentials are resolved automatically from
+> the Docker credential store. Commands return exit code 1 with an authentication
+> error if no stored credentials exist for the registry.
 
 ---
 
@@ -55,10 +57,7 @@ Fetch the manifest for a given image reference.
 
 | Option | Short | Type | Default | Description |
 |---|---|---|---|---|
-| `--image-ref` | `-i` | string | required | Image reference (e.g., `repo:tag`, `registry/repo:tag`, `repo@sha256:...`) |
-| `--registry` | `-r` | string | none | Registry hostname (e.g., `acr.io`). Required if not embedded in `--image-ref` |
-| `--username` | `-u` | string | none | Username for authentication |
-| `--password` | `-p` | string | none | Password for authentication |
+| `--image-ref` | `-i` | string | required | Image reference with embedded registry (e.g., `registry/repo:tag`, `registry/repo@sha256:...`) |
 | `--accept` | | string | all OCI+Docker types | Set a specific `Accept` header (overrides the default multi-type header) |
 | `--part` | | choice | none | Extract a single field from the parsed model: `config`, `layers`, `subject`, or `annotations` |
 | `--output` | `-o` | path | stdout | Write manifest (or extracted part) to this file instead of stdout |
@@ -70,7 +69,7 @@ Fetch the manifest for a given image reference.
 #### Behavior
 
 1. Parse `--image-ref` to extract registry, repository, and tag or digest.
-2. Resolve credentials from `--username` / `--password` or the Docker credential store.
+2. Resolve credentials from the Docker credential store for the extracted registry.
 3. Issue `GET /v2/<repo>/manifests/<reference>` with an `Accept` header that
    covers all known OCI and Docker manifest media types (or the single type
    given via `--accept`).
@@ -105,24 +104,24 @@ application/vnd.docker.distribution.manifest.list.v2+json
 #### Examples
 
 ```bash
+# Log in first
+regshape auth login -r acr.io -u alice
+
 # Print the full manifest for a tag
-regshape manifest get -i myrepo/myimage:latest -r acr.io
+regshape manifest get -i acr.io/myrepo/myimage:latest
 
 # Print just the layers
-regshape manifest get -i myrepo/myimage:latest -r acr.io --part layers
+regshape manifest get -i acr.io/myrepo/myimage:latest --part layers
 
 # Save raw manifest JSON to a file
-regshape manifest get -i myrepo/myimage@sha256:abc... -r acr.io -o manifest.json
-
-# Authenticated fetch with explicit credentials
-regshape manifest get -i myrepo/myimage:latest -r acr.io -u alice -p s3cr3t
+regshape manifest get -i acr.io/myrepo/myimage@sha256:abc... -o manifest.json
 
 # Force a specific Accept header (useful for break mode testing)
-regshape manifest get -i myrepo/myimage:latest -r acr.io \
+regshape manifest get -i acr.io/myrepo/myimage:latest \
   --accept application/vnd.oci.image.manifest.v1+json
 
 # Print raw response body without parsing (break mode verification)
-regshape --break manifest get -i myrepo/myimage:latest -r acr.io --raw
+regshape --break manifest get -i acr.io/myrepo/myimage:latest --raw
 ```
 
 #### Output Format
@@ -188,10 +187,7 @@ without downloading the manifest body.
 
 | Option | Short | Type | Default | Description |
 |---|---|---|---|---|
-| `--image-ref` | `-i` | string | required | Image reference (e.g., `repo:tag`, `registry/repo:tag`, `repo@sha256:...`) |
-| `--registry` | `-r` | string | none | Registry hostname. Required if not embedded in `--image-ref` |
-| `--username` | `-u` | string | none | Username for authentication |
-| `--password` | `-p` | string | none | Password for authentication |
+| `--image-ref` | `-i` | string | required | Image reference with embedded registry (e.g., `registry/repo:tag`, `registry/repo@sha256:...`) |
 | `--accept` | | string | all OCI+Docker types | Set a specific `Accept` header |
 | `--time-methods` | | flag | false | Print execution time for individual method calls |
 | `--time-scenarios` | | flag | false | Print execution time for multi-step workflows |
@@ -200,7 +196,7 @@ without downloading the manifest body.
 #### Behavior
 
 1. Parse `--image-ref` to extract registry, repository, and tag or digest.
-2. Resolve credentials from `--username` / `--password` or the Docker credential store.
+2. Resolve credentials from the Docker credential store for the extracted registry.
 3. Issue `HEAD /v2/<repo>/manifests/<reference>` with the `Accept` header.
 4. On success, read `Docker-Content-Digest`, `Content-Type`, and
    `Content-Length` from the response headers.
@@ -216,8 +212,11 @@ without downloading the manifest body.
 #### Examples
 
 ```bash
+# Log in first
+regshape auth login -r acr.io -u alice
+
 # Check if a manifest exists
-regshape manifest info -i myrepo/myimage:latest -r acr.io
+regshape manifest info -i acr.io/myrepo/myimage:latest
 ```
 
 #### Output Format
@@ -240,10 +239,7 @@ Return the OCI Descriptor for a given image reference as JSON.
 
 | Option | Short | Type | Default | Description |
 |---|---|---|---|---|
-| `--image-ref` | `-i` | string | required | Image reference (e.g., `repo:tag`, `registry/repo:tag`, `repo@sha256:...`) |
-| `--registry` | `-r` | string | none | Registry hostname. Required if not embedded in `--image-ref` |
-| `--username` | `-u` | string | none | Username for authentication |
-| `--password` | `-p` | string | none | Password for authentication |
+| `--image-ref` | `-i` | string | required | Image reference with embedded registry (e.g., `registry/repo:tag`, `registry/repo@sha256:...`) |
 | `--accept` | | string | all OCI+Docker types | Set a specific `Accept` header |
 | `--time-methods` | | flag | false | Print execution time for individual method calls |
 | `--time-scenarios` | | flag | false | Print execution time for multi-step workflows |
@@ -252,7 +248,7 @@ Return the OCI Descriptor for a given image reference as JSON.
 #### Behavior
 
 1. Parse `--image-ref` to extract registry, repository, and tag or digest.
-2. Resolve credentials from `--username` / `--password` or the Docker credential store.
+2. Resolve credentials from the Docker credential store for the extracted registry.
 3. Issue `HEAD /v2/<repo>/manifests/<reference>` with the `Accept` header.
 4. On success, read `Docker-Content-Digest`, `Content-Type`, and `Content-Length`
    from the response headers.
@@ -272,11 +268,14 @@ another manifest (e.g. as the `subject` field or an entry in `manifests`).
 #### Examples
 
 ```bash
+# Log in first
+regshape auth login -r acr.io -u alice
+
 # Get the descriptor for a tag
-regshape manifest descriptor -i myrepo/myimage:latest -r acr.io
+regshape manifest descriptor -i acr.io/myrepo/myimage:latest
 
 # Get the descriptor for a specific digest
-regshape manifest descriptor -i myrepo/myimage@sha256:abc... -r acr.io
+regshape manifest descriptor -i acr.io/myrepo/myimage@sha256:abc...
 ```
 
 #### Output Format
@@ -299,10 +298,7 @@ Push a manifest to the registry.
 
 | Option | Short | Type | Default | Description |
 |---|---|---|---|---|
-| `--image-ref` | `-i` | string | required | Image reference (e.g., `repo:tag`, `registry/repo:tag`, `repo@sha256:...`) |
-| `--registry` | `-r` | string | none | Registry hostname. Required if not embedded in `--image-ref` |
-| `--username` | `-u` | string | none | Username for authentication |
-| `--password` | `-p` | string | none | Password for authentication |
+| `--image-ref` | `-i` | string | required | Image reference with embedded registry (e.g., `registry/repo:tag`, `registry/repo@sha256:...`) |
 | `--file` | `-f` | path | none | Read manifest JSON from this file (mutually exclusive with `--stdin`) |
 | `--stdin` | | flag | false | Read manifest JSON from stdin (mutually exclusive with `--file`) |
 | `--content-type` | | string | inferred | Override the `Content-Type` header (useful for break mode testing) |
@@ -315,11 +311,12 @@ Exactly one of `--file` or `--stdin` must be given.
 #### Behavior
 
 1. Parse `--image-ref` to extract registry, repository, and tag or digest.
-2. Read the manifest body from `--file` or stdin.
-3. Infer `Content-Type` from the `mediaType` field in the JSON, unless
+2. Resolve credentials from the Docker credential store for the extracted registry.
+3. Read the manifest body from `--file` or stdin.
+4. Infer `Content-Type` from the `mediaType` field in the JSON, unless
    `--content-type` overrides it.
-4. Issue `PUT /v2/<repo>/manifests/<reference>` with the manifest body.
-5. On success, print the `Docker-Content-Digest` from the response.
+5. Issue `PUT /v2/<repo>/manifests/<reference>` with the manifest body.
+6. On success, print the `Docker-Content-Digest` from the response.
 
 #### Exit Codes
 
@@ -331,14 +328,17 @@ Exactly one of `--file` or `--stdin` must be given.
 #### Examples
 
 ```bash
+# Log in first
+regshape auth login -r acr.io -u alice
+
 # Push a manifest from a file
-regshape manifest put -i myrepo/myimage:v2 -r acr.io --file manifest.json
+regshape manifest put -i acr.io/myrepo/myimage:v2 --file manifest.json
 
 # Push a manifest from stdin
-cat manifest.json | regshape manifest put -i myrepo/myimage:v2 -r acr.io --stdin
+cat manifest.json | regshape manifest put -i acr.io/myrepo/myimage:v2 --stdin
 
 # Push with overridden Content-Type (break mode: wrong content type)
-regshape --break manifest put -i myrepo/myimage:v2 -r acr.io \
+regshape --break manifest put -i acr.io/myrepo/myimage:v2 \
   --file manifest.json --content-type application/octet-stream
 ```
 
@@ -361,10 +361,7 @@ not accepted by most registries for delete operations).
 
 | Option | Short | Type | Default | Description |
 |---|---|---|---|---|
-| `--image-ref` | `-i` | string | required | Image reference — must be a digest reference (`repo@sha256:...`) |
-| `--registry` | `-r` | string | none | Registry hostname. Required if not embedded in `--image-ref` |
-| `--username` | `-u` | string | none | Username for authentication |
-| `--password` | `-p` | string | none | Password for authentication |
+| `--image-ref` | `-i` | string | required | Image reference with embedded registry — must be a digest reference (`registry/repo@sha256:...`) |
 | `--time-methods` | | flag | false | Print execution time for individual method calls |
 | `--time-scenarios` | | flag | false | Print execution time for multi-step workflows |
 | `--debug-calls` | | flag | false | Print request/response headers for each HTTP call |
@@ -373,7 +370,7 @@ not accepted by most registries for delete operations).
 
 1. Parse `--image-ref` — must contain a digest reference (`@sha256:...`).
    If a tag is given, exit with an error advising the user to use a digest.
-2. Resolve credentials.
+2. Resolve credentials from the Docker credential store for the extracted registry.
 3. Issue `DELETE /v2/<repo>/manifests/<digest>`.
 4. On success, print a confirmation message.
 
@@ -388,8 +385,11 @@ not accepted by most registries for delete operations).
 #### Examples
 
 ```bash
+# Log in first
+regshape auth login -r acr.io -u alice
+
 # Delete by digest
-regshape manifest delete -i myrepo/myimage@sha256:abc... -r acr.io
+regshape manifest delete -i acr.io/myrepo/myimage@sha256:abc...
 ```
 
 #### Output Format
@@ -404,12 +404,18 @@ Deleted: sha256:abc123...
 
 ## Credential Resolution
 
-Same chain as `auth login`:
+Manifest commands do not accept inline credentials. Credentials are resolved
+automatically from the Docker credential store populated by `auth login`:
 
-1. Explicit `--username` / `--password` per-command options
-2. Docker credential store (`credHelpers` entry in `~/.docker/config.json`)
-3. Base64-encoded `auths` entry in `~/.docker/config.json`
-4. Unauthenticated (anonymous)
+1. Docker credential store (`credHelpers` entry in `~/.docker/config.json`)
+2. Base64-encoded `auths` entry in `~/.docker/config.json`
+3. Unauthenticated (anonymous)
+
+If authentication is required and no stored credentials exist, the registry
+returns HTTP 401, which the command surfaces as exit code 1.
+
+**Always run `regshape auth login` before using manifest commands against
+authenticated registries.**
 
 ---
 

@@ -16,13 +16,9 @@ import click
 
 from regshape.cli.auth import auth
 from regshape.cli.manifest import manifest
-from regshape.libs.auth.credentials import resolve_credentials
 
 
 @click.group()
-@click.option("--registry", "-r", default=None, help="Registry URL.")
-@click.option("--username", "-u", default=None, help="Username for authentication.")
-@click.option("--password", "-p", default=None, help="Password for authentication.")
 @click.option("--insecure", is_flag=True, default=False, help="Allow HTTP (no TLS).")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Verbose output.")
 @click.option("--break", "break_mode", is_flag=True, default=False, help="Enable break mode.")
@@ -41,9 +37,6 @@ from regshape.libs.auth.credentials import resolve_credentials
 @click.pass_context
 def regshape(
     ctx,
-    registry,
-    username,
-    password,
     insecure,
     verbose,
     break_mode,
@@ -53,18 +46,6 @@ def regshape(
     """RegShape — OCI registry manipulation tool."""
     ctx.ensure_object(dict)
 
-    # Resolve credentials using the full priority chain when a registry is known.
-    # Commands that don't need a registry (e.g., auth login) manage credentials
-    # themselves using the registry argument passed to that command.
-    resolved_username, resolved_password = resolve_credentials(
-        registry or "",
-        username=username,
-        password=password,
-    )
-
-    ctx.obj["registry"] = registry
-    ctx.obj["username"] = resolved_username
-    ctx.obj["password"] = resolved_password
     ctx.obj["insecure"] = insecure
     ctx.obj["verbose"] = verbose
     ctx.obj["break_mode"] = break_mode

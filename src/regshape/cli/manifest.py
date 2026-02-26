@@ -66,25 +66,7 @@ def manifest():
     "-i",
     required=True,
     metavar="IMAGE_REF",
-    help="Image reference (repo:tag, registry/repo:tag, or repo@sha256:...).",
-)
-@click.option(
-    "--registry",
-    "-r",
-    default=None,
-    help="Registry hostname (e.g., acr.io). Required if not embedded in IMAGE_REF.",
-)
-@click.option(
-    "--username",
-    "-u",
-    default=None,
-    help="Username for authentication.",
-)
-@click.option(
-    "--password",
-    "-p",
-    default=None,
-    help="Password for authentication.",
+    help="Image reference — registry must be embedded (registry/repo:tag or registry/repo@sha256:...).",
 )
 @click.option(
     "--accept",
@@ -122,13 +104,12 @@ def manifest():
 )
 @click.pass_context
 @track_scenario("manifest get")
-def get(ctx, registry, username, password, image_ref, accept, part, output, raw):
+def get(ctx, image_ref, accept, part, output, raw):
     """Fetch the manifest for IMAGE_REF.
 
-    IMAGE_REF may be a tag reference (``repo:tag`` or
-    ``registry/repo:tag``) or a digest reference
-    (``repo@sha256:...``).  When the registry is not embedded in
-    IMAGE_REF the ``--registry`` option is used.
+    IMAGE_REF must embed the registry (``registry/repo:tag`` or
+    ``registry/repo@sha256:...``).  Credentials are resolved
+    automatically from the credential store populated by ``auth login``.
 
     Use ``--part`` to extract a single field from the parsed manifest
     model instead of printing the full JSON.  Use ``--raw`` to bypass
@@ -140,12 +121,12 @@ def get(ctx, registry, username, password, image_ref, accept, part, output, raw)
         raise click.UsageError("--raw and --part are mutually exclusive")
 
     try:
-        registry, repo, reference = _parse_image_ref(image_ref, registry)
+        registry, repo, reference = _parse_image_ref(image_ref, None)
     except ValueError as exc:
         _error(image_ref, str(exc))
         sys.exit(1)
 
-    username, password = resolve_credentials(registry, username, password)
+    username, password = resolve_credentials(registry, None, None)
 
     try:
         body, content_type, digest = _fetch_manifest(
@@ -196,25 +177,7 @@ def get(ctx, registry, username, password, image_ref, accept, part, output, raw)
     "-i",
     required=True,
     metavar="IMAGE_REF",
-    help="Image reference (repo:tag, registry/repo:tag, or repo@sha256:...).",
-)
-@click.option(
-    "--registry",
-    "-r",
-    default=None,
-    help="Registry hostname (e.g., acr.io). Required if not embedded in IMAGE_REF.",
-)
-@click.option(
-    "--username",
-    "-u",
-    default=None,
-    help="Username for authentication.",
-)
-@click.option(
-    "--password",
-    "-p",
-    default=None,
-    help="Password for authentication.",
+    help="Image reference — registry must be embedded (registry/repo:tag or registry/repo@sha256:...).",
 )
 @click.option(
     "--accept",
@@ -224,21 +187,22 @@ def get(ctx, registry, username, password, image_ref, accept, part, output, raw)
 )
 @click.pass_context
 @track_scenario("manifest info")
-def info(ctx, registry, username, password, image_ref, accept):
+def info(ctx, image_ref, accept):
     """Print metadata for IMAGE_REF without downloading the manifest body.
 
     Issues a HEAD request and returns the digest, media type, and size
-    from response headers.
+    from response headers.  Credentials are resolved automatically from
+    the credential store populated by ``auth login``.
     """
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo, reference = _parse_image_ref(image_ref, registry)
+        registry, repo, reference = _parse_image_ref(image_ref, None)
     except ValueError as exc:
         _error(image_ref, str(exc))
         sys.exit(1)
 
-    username, password = resolve_credentials(registry, username, password)
+    username, password = resolve_credentials(registry, None, None)
 
     try:
         digest, media_type, size = _head_manifest(
@@ -270,25 +234,7 @@ def info(ctx, registry, username, password, image_ref, accept):
     "-i",
     required=True,
     metavar="IMAGE_REF",
-    help="Image reference (repo:tag, registry/repo:tag, or repo@sha256:...).",
-)
-@click.option(
-    "--registry",
-    "-r",
-    default=None,
-    help="Registry hostname (e.g., acr.io). Required if not embedded in IMAGE_REF.",
-)
-@click.option(
-    "--username",
-    "-u",
-    default=None,
-    help="Username for authentication.",
-)
-@click.option(
-    "--password",
-    "-p",
-    default=None,
-    help="Password for authentication.",
+    help="Image reference — registry must be embedded (registry/repo:tag or registry/repo@sha256:...).",
 )
 @click.option(
     "--accept",
@@ -298,23 +244,24 @@ def info(ctx, registry, username, password, image_ref, accept):
 )
 @click.pass_context
 @track_scenario("manifest descriptor")
-def descriptor(ctx, registry, username, password, image_ref, accept):
+def descriptor(ctx, image_ref, accept):
     """Return the OCI Descriptor for IMAGE_REF as JSON.
 
     Issues a HEAD request and returns a JSON object with the
     ``mediaType``, ``digest``, and ``size`` fields, matching the OCI
     Descriptor wire format.  The output can be used directly as a
-    Descriptor object in another manifest.
+    Descriptor object in another manifest.  Credentials are resolved
+    automatically from the credential store populated by ``auth login``.
     """
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo, reference = _parse_image_ref(image_ref, registry)
+        registry, repo, reference = _parse_image_ref(image_ref, None)
     except ValueError as exc:
         _error(image_ref, str(exc))
         sys.exit(1)
 
-    username, password = resolve_credentials(registry, username, password)
+    username, password = resolve_credentials(registry, None, None)
 
     try:
         digest, media_type, size = _head_manifest(
@@ -348,25 +295,7 @@ def descriptor(ctx, registry, username, password, image_ref, accept):
     "-i",
     required=True,
     metavar="IMAGE_REF",
-    help="Image reference (repo:tag, registry/repo:tag, or repo@sha256:...).",
-)
-@click.option(
-    "--registry",
-    "-r",
-    default=None,
-    help="Registry hostname (e.g., acr.io). Required if not embedded in IMAGE_REF.",
-)
-@click.option(
-    "--username",
-    "-u",
-    default=None,
-    help="Username for authentication.",
-)
-@click.option(
-    "--password",
-    "-p",
-    default=None,
-    help="Password for authentication.",
+    help="Image reference — registry must be embedded (registry/repo:tag or registry/repo@sha256:...).",
 )
 @click.option(
     "--file",
@@ -395,11 +324,12 @@ def descriptor(ctx, registry, username, password, image_ref, accept):
 )
 @click.pass_context
 @track_scenario("manifest put")
-def put(ctx, registry, username, password, image_ref, manifest_file, from_stdin, content_type):
+def put(ctx, image_ref, manifest_file, from_stdin, content_type):
     """Push a manifest to the registry as IMAGE_REF.
 
     Provide the manifest JSON via ``--file`` or ``--stdin`` (exactly one
-    is required).
+    is required).  Credentials are resolved automatically from the
+    credential store populated by ``auth login``.
     """
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
@@ -409,12 +339,12 @@ def put(ctx, registry, username, password, image_ref, manifest_file, from_stdin,
         raise click.UsageError("One of --file or --stdin is required")
 
     try:
-        registry, repo, reference = _parse_image_ref(image_ref, registry)
+        registry, repo, reference = _parse_image_ref(image_ref, None)
     except ValueError as exc:
         _error(image_ref, str(exc))
         sys.exit(1)
 
-    username, password = resolve_credentials(registry, username, password)
+    username, password = resolve_credentials(registry, None, None)
 
     # Read manifest body
     if manifest_file:
@@ -460,39 +390,22 @@ def put(ctx, registry, username, password, image_ref, manifest_file, from_stdin,
     "-i",
     required=True,
     metavar="IMAGE_REF",
-    help="Image reference — must be a digest reference (repo@sha256:...).",
-)
-@click.option(
-    "--registry",
-    "-r",
-    default=None,
-    help="Registry hostname (e.g., acr.io). Required if not embedded in IMAGE_REF.",
-)
-@click.option(
-    "--username",
-    "-u",
-    default=None,
-    help="Username for authentication.",
-)
-@click.option(
-    "--password",
-    "-p",
-    default=None,
-    help="Password for authentication.",
+    help="Image reference — must be a digest reference with registry embedded (registry/repo@sha256:...).",
 )
 @click.pass_context
 @track_scenario("manifest delete")
-def delete(ctx, registry, username, password, image_ref):
+def delete(ctx, image_ref):
     """Delete the manifest identified by IMAGE_REF.
 
-    IMAGE_REF must be a digest reference (``repo@sha256:...``).  The OCI
-    Distribution Spec requires deletion by digest; tag references are
-    rejected with exit code 2.
+    IMAGE_REF must be a digest reference (``registry/repo@sha256:...``).
+    The OCI Distribution Spec requires deletion by digest; tag references
+    are rejected with exit code 2.  Credentials are resolved automatically
+    from the credential store populated by ``auth login``.
     """
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo, reference = _parse_image_ref(image_ref, registry)
+        registry, repo, reference = _parse_image_ref(image_ref, None)
     except ValueError as exc:
         _error(image_ref, str(exc))
         sys.exit(1)
@@ -505,7 +418,7 @@ def delete(ctx, registry, username, password, image_ref):
         )
         sys.exit(2)
 
-    username, password = resolve_credentials(registry, username, password)
+    username, password = resolve_credentials(registry, None, None)
 
     try:
         _delete_manifest(

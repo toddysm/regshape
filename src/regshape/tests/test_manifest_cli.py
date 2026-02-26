@@ -167,7 +167,7 @@ class TestManifestGet:
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
-                ["manifest", "get", "-i", f"{REPO}:{TAG}", "-r", REGISTRY],
+                ["manifest", "get", "-i", f"{REGISTRY}/{REPO}:{TAG}"],
             )
         assert result.exit_code == 0, result.output
         parsed = json.loads(result.output)
@@ -182,7 +182,7 @@ class TestManifestGet:
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
-                ["manifest", "get", "-i", f"{REPO}:{TAG}", "-r", REGISTRY, "--raw"],
+                ["manifest", "get", "-i", f"{REGISTRY}/{REPO}:{TAG}", "--raw"],
             )
         assert result.exit_code == 0, result.output
         # Raw output should be the verbatim response body
@@ -195,7 +195,7 @@ class TestManifestGet:
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
-                ["manifest", "get", "-i", f"{REPO}:{TAG}", "-r", REGISTRY, "--part", "config"],
+                ["manifest", "get", "-i", f"{REGISTRY}/{REPO}:{TAG}", "--part", "config"],
             )
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
@@ -209,7 +209,7 @@ class TestManifestGet:
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
-                ["manifest", "get", "-i", f"{REPO}:{TAG}", "-r", REGISTRY, "--part", "layers"],
+                ["manifest", "get", "-i", f"{REGISTRY}/{REPO}:{TAG}", "--part", "layers"],
             )
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
@@ -224,7 +224,7 @@ class TestManifestGet:
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
-                ["manifest", "get", "-i", f"{REPO}:{TAG}", "-r", REGISTRY, "--part", "annotations"],
+                ["manifest", "get", "-i", f"{REGISTRY}/{REPO}:{TAG}", "--part", "annotations"],
             )
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
@@ -237,7 +237,7 @@ class TestManifestGet:
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
-                ["manifest", "get", "-i", f"{REPO}:{TAG}", "-r", REGISTRY, "--part", "subject"],
+                ["manifest", "get", "-i", f"{REGISTRY}/{REPO}:{TAG}", "--part", "subject"],
             )
         assert result.exit_code == 2
 
@@ -248,14 +248,14 @@ class TestManifestGet:
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
-                ["manifest", "get", "-i", f"{REPO}:{TAG}", "-r", REGISTRY, "--part", "config"],
+                ["manifest", "get", "-i", f"{REGISTRY}/{REPO}:{TAG}", "--part", "config"],
             )
         assert result.exit_code == 2
 
     def test_get_part_and_raw_mutually_exclusive(self):
         result = _runner().invoke(
             regshape,
-            ["manifest", "get", "-i", f"{REPO}:{TAG}", "-r", REGISTRY, "--part", "layers", "--raw"],
+            ["manifest", "get", "-i", f"{REGISTRY}/{REPO}:{TAG}", "--part", "layers", "--raw"],
         )
         assert result.exit_code != 0
         assert "mutually exclusive" in result.output.lower() or "mutually exclusive" in (result.exception and str(result.exception) or "").lower() or result.exit_code == 1
@@ -268,7 +268,7 @@ class TestManifestGet:
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
-                ["manifest", "get", "-i", f"{REPO}:{TAG}", "-r", REGISTRY],
+                ["manifest", "get", "-i", f"{REGISTRY}/{REPO}:{TAG}"],
             )
         assert result.exit_code == 1
 
@@ -295,7 +295,7 @@ class TestManifestGet:
                    return_value="fake-token"):
             result = _runner().invoke(
                 regshape,
-                ["manifest", "get", "-i", f"{REPO}:{TAG}", "-r", REGISTRY],
+                ["manifest", "get", "-i", f"{REGISTRY}/{REPO}:{TAG}"],
             )
         assert result.exit_code == 0, result.output
 
@@ -306,7 +306,7 @@ class TestManifestGet:
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
-                ["manifest", "get", "-i", f"{REPO}:{TAG}", "-r", REGISTRY],
+                ["manifest", "get", "-i", f"{REGISTRY}/{REPO}:{TAG}"],
             )
         assert result.exit_code == 1
 
@@ -317,7 +317,7 @@ class TestManifestGet:
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
-                ["manifest", "get", "-i", f"{REPO}:{TAG}", "-r", REGISTRY],
+                ["manifest", "get", "-i", f"{REGISTRY}/{REPO}:{TAG}"],
             )
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
@@ -337,7 +337,7 @@ class TestManifestInfo:
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
-                ["manifest", "info", "-i", f"{REPO}:{TAG}", "-r", REGISTRY],
+                ["manifest", "info", "-i", f"{REGISTRY}/{REPO}:{TAG}"],
             )
         assert result.exit_code == 0, result.output
         assert "Digest:" in result.output
@@ -351,7 +351,7 @@ class TestManifestInfo:
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
-                ["manifest", "info", "-i", f"{REPO}:{TAG}", "-r", REGISTRY],
+                ["manifest", "info", "-i", f"{REGISTRY}/{REPO}:{TAG}"],
             )
         assert result.exit_code == 1
 
@@ -369,7 +369,7 @@ class TestManifestDescriptor:
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
-                ["manifest", "descriptor", "-i", f"{REPO}:{TAG}", "-r", REGISTRY],
+                ["manifest", "descriptor", "-i", f"{REGISTRY}/{REPO}:{TAG}"],
             )
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
@@ -385,7 +385,7 @@ class TestManifestDescriptor:
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
-                ["manifest", "descriptor", "-i", f"{REPO}:{TAG}", "-r", REGISTRY],
+                ["manifest", "descriptor", "-i", f"{REGISTRY}/{REPO}:{TAG}"],
             )
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
@@ -402,7 +402,7 @@ class TestManifestDescriptor:
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
-                ["manifest", "descriptor", "-i", f"{REPO}:{TAG}", "-r", REGISTRY],
+                ["manifest", "descriptor", "-i", f"{REGISTRY}/{REPO}:{TAG}"],
             )
         assert result.exit_code == 1
 
@@ -423,7 +423,7 @@ class TestManifestPut:
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
-                ["manifest", "put", "-i", f"{REPO}:v2", "-r", REGISTRY,
+                ["manifest", "put", "-i", f"{REGISTRY}/{REPO}:v2",
                  "--file", str(manifest_file)],
             )
         assert result.exit_code == 0, result.output
@@ -436,7 +436,7 @@ class TestManifestPut:
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
-                ["manifest", "put", "-i", f"{REPO}:v2", "-r", REGISTRY, "--stdin"],
+                ["manifest", "put", "-i", f"{REGISTRY}/{REPO}:v2", "--stdin"],
                 input=_MANIFEST_JSON,
             )
         assert result.exit_code == 0, result.output
@@ -444,7 +444,7 @@ class TestManifestPut:
     def test_put_requires_file_or_stdin(self):
         result = _runner().invoke(
             regshape,
-            ["manifest", "put", "-i", f"{REPO}:v2", "-r", REGISTRY],
+            ["manifest", "put", "-i", f"{REGISTRY}/{REPO}:v2"],
         )
         assert result.exit_code != 0
 
@@ -453,7 +453,7 @@ class TestManifestPut:
         manifest_file.write_text(_MANIFEST_JSON)
         result = _runner().invoke(
             regshape,
-            ["manifest", "put", "-i", f"{REPO}:v2", "-r", REGISTRY,
+            ["manifest", "put", "-i", f"{REGISTRY}/{REPO}:v2",
              "--file", str(manifest_file), "--stdin"],
         )
         assert result.exit_code != 0
@@ -469,7 +469,7 @@ class TestManifestPut:
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
-                ["manifest", "put", "-i", f"{REPO}:v2", "-r", REGISTRY,
+                ["manifest", "put", "-i", f"{REGISTRY}/{REPO}:v2",
                  "--file", str(manifest_file)],
             )
         assert result.exit_code == 1
@@ -488,7 +488,7 @@ class TestManifestDelete:
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
-                ["manifest", "delete", "-i", f"{REPO}@{DIGEST}", "-r", REGISTRY],
+                ["manifest", "delete", "-i", f"{REGISTRY}/{REPO}@{DIGEST}"],
             )
         assert result.exit_code == 0, result.output
         assert "Deleted:" in result.output
@@ -498,7 +498,7 @@ class TestManifestDelete:
         """Deleting by tag exits with code 2 — OCI requires digest."""
         result = _runner().invoke(
             regshape,
-            ["manifest", "delete", "-i", f"{REPO}:latest", "-r", REGISTRY],
+            ["manifest", "delete", "-i", f"{REGISTRY}/{REPO}:latest"],
         )
         assert result.exit_code == 2
 
@@ -510,6 +510,6 @@ class TestManifestDelete:
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
-                ["manifest", "delete", "-i", f"{REPO}@{DIGEST}", "-r", REGISTRY],
+                ["manifest", "delete", "-i", f"{REGISTRY}/{REPO}@{DIGEST}"],
             )
         assert result.exit_code == 1
