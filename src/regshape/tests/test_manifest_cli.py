@@ -110,45 +110,41 @@ def _runner():
 class TestParseImageRef:
 
     def test_registry_embedded_with_tag(self):
-        reg, repo, ref = _parse_image_ref("acr.io/myrepo/myimage:v1", None)
+        reg, repo, ref = _parse_image_ref("acr.io/myrepo/myimage:v1")
         assert reg == "acr.io"
         assert repo == "myrepo/myimage"
         assert ref == "v1"
 
-    def test_registry_from_context(self):
-        reg, repo, ref = _parse_image_ref("myrepo/myimage:v1", "acr.io")
-        assert reg == "acr.io"
-        assert repo == "myrepo/myimage"
-        assert ref == "v1"
+    def test_no_registry_raises_for_relative_ref(self):
+        with pytest.raises(ValueError, match="registry"):
+            _parse_image_ref("myrepo/myimage:v1")
 
     def test_digest_reference(self):
-        reg, repo, ref = _parse_image_ref(f"acr.io/myimage@{DIGEST}", None)
+        reg, repo, ref = _parse_image_ref(f"acr.io/myimage@{DIGEST}")
         assert reg == "acr.io"
         assert repo == "myimage"
         assert ref == DIGEST
 
-    def test_digest_reference_context_registry(self):
-        reg, repo, ref = _parse_image_ref(f"myimage@{DIGEST}", "acr.io")
-        assert reg == "acr.io"
-        assert repo == "myimage"
-        assert ref == DIGEST
+    def test_no_registry_raises_for_digest_without_registry(self):
+        with pytest.raises(ValueError, match="registry"):
+            _parse_image_ref(f"myimage@{DIGEST}")
 
     def test_no_tag_defaults_to_latest(self):
-        reg, repo, ref = _parse_image_ref("myimage", "acr.io")
+        reg, repo, ref = _parse_image_ref("acr.io/myimage")
         assert ref == "latest"
 
-    def test_no_registry_raises_when_no_context(self):
+    def test_no_registry_raises(self):
         with pytest.raises(ValueError, match="registry"):
-            _parse_image_ref("myimage:latest", None)
+            _parse_image_ref("myimage:latest")
 
     def test_localhost_is_registry(self):
-        reg, repo, ref = _parse_image_ref("localhost:5000/myimage:dev", None)
+        reg, repo, ref = _parse_image_ref("localhost:5000/myimage:dev")
         assert reg == "localhost:5000"
         assert repo == "myimage"
         assert ref == "dev"
 
     def test_multi_level_repo_embedded_registry(self):
-        reg, repo, ref = _parse_image_ref("acr.io/a/b/c:tag", None)
+        reg, repo, ref = _parse_image_ref("acr.io/a/b/c:tag")
         assert reg == "acr.io"
         assert repo == "a/b/c"
         assert ref == "tag"

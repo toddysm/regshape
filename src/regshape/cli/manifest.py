@@ -122,7 +122,7 @@ def get(ctx, image_ref, accept, part, output, raw):
         raise click.UsageError("--raw and --part are mutually exclusive")
 
     try:
-        registry, repo, reference = _parse_image_ref(image_ref, None)
+        registry, repo, reference = _parse_image_ref(image_ref)
     except ValueError as exc:
         _error(image_ref, str(exc))
         sys.exit(1)
@@ -198,7 +198,7 @@ def info(ctx, image_ref, accept):
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo, reference = _parse_image_ref(image_ref, None)
+        registry, repo, reference = _parse_image_ref(image_ref)
     except ValueError as exc:
         _error(image_ref, str(exc))
         sys.exit(1)
@@ -257,7 +257,7 @@ def descriptor(ctx, image_ref, accept):
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo, reference = _parse_image_ref(image_ref, None)
+        registry, repo, reference = _parse_image_ref(image_ref)
     except ValueError as exc:
         _error(image_ref, str(exc))
         sys.exit(1)
@@ -340,7 +340,7 @@ def put(ctx, image_ref, manifest_file, from_stdin, content_type):
         raise click.UsageError("One of --file or --stdin is required")
 
     try:
-        registry, repo, reference = _parse_image_ref(image_ref, None)
+        registry, repo, reference = _parse_image_ref(image_ref)
     except ValueError as exc:
         _error(image_ref, str(exc))
         sys.exit(1)
@@ -406,7 +406,7 @@ def delete(ctx, image_ref):
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo, reference = _parse_image_ref(image_ref, None)
+        registry, repo, reference = _parse_image_ref(image_ref)
     except ValueError as exc:
         _error(image_ref, str(exc))
         sys.exit(1)
