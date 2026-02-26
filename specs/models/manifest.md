@@ -30,8 +30,8 @@ and are imported where needed.
 
 ```
 src/regshape/libs/models/
-├── __init__.py          # Exports: Descriptor, Platform, ImageManifest,
-│                        #          ImageIndex, parse_manifest, MediaType constants
+├── __init__.py          # Package marker; exposes submodules
+│                        # (import from .descriptor, .manifest, .mediatype)
 ├── descriptor.py        # Descriptor, Platform
 ├── manifest.py          # ImageManifest, ImageIndex, parse_manifest
 └── mediatype.py         # Media type string constants
