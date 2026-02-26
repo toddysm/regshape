@@ -254,7 +254,7 @@ class TestManifestGet:
             ["manifest", "get", "-i", f"{REGISTRY}/{REPO}:{TAG}", "--part", "layers", "--raw"],
         )
         assert result.exit_code != 0
-        assert "mutually exclusive" in result.output.lower() or "mutually exclusive" in (result.exception and str(result.exception) or "").lower() or result.exit_code == 1
+        assert "mutually exclusive" in result.output.lower()
 
     def test_get_404_exits_1(self):
         error_body = json.dumps({"errors": [{"code": "MANIFEST_UNKNOWN", "message": "manifest unknown"}]})
