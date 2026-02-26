@@ -477,7 +477,15 @@ def _fetch_manifest(
                 "Authentication failed",
                 "Registry requested Basic authentication but no credentials are available",
             )
-        auth_value = registryauth.authenticate(www_auth, username, password)
+        # Normalize the auth header parameters to avoid leading spaces after commas,
+        # which can confuse registryauth._parse_auth_header().
+        scheme, sep, params = www_auth.partition(" ")
+        if sep and params:
+            cleaned_params = ",".join(part.strip() for part in params.split(","))
+            normalized_www_auth = f"{scheme} {cleaned_params}"
+        else:
+            normalized_www_auth = www_auth
+        auth_value = registryauth.authenticate(normalized_www_auth, username, password)
         headers["Authorization"] = f"{auth_scheme} {auth_value}"
         response = http_request(url, "GET", headers=headers, timeout=30)
 
