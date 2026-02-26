@@ -68,8 +68,12 @@ class Platform:
 
         :param data: Dict parsed from JSON.
         :returns: A :class:`Platform` instance.
-        :raises ValueError: If required fields are missing.
+        :raises ValueError: If required fields are missing or the input is not a dict.
         """
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"Platform: expected a dict, got {type(data).__name__!r}"
+            )
         try:
             return cls(
                 architecture=data["architecture"],
@@ -154,6 +158,10 @@ class Descriptor:
         :returns: A :class:`Descriptor` instance.
         :raises ValueError: If required fields are missing or invalid.
         """
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"Descriptor: expected a dict, got {type(data).__name__!r}"
+            )
         try:
             platform_data = data.get("platform")
             raw_size = data["size"]
