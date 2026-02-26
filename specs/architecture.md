@@ -745,9 +745,6 @@ regshape [GLOBAL OPTIONS] <command-group> <command> [OPTIONS]
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--registry` | `-r` | string | none | Registry URL (can also be embedded in image reference) |
-| `--username` | `-u` | string | none | Username for authentication |
-| `--password` | `-p` | string | none | Password for authentication |
 | `--insecure` | | flag | false | Allow HTTP (no TLS) |
 | `--verbose` | `-v` | flag | false | Verbose output |
 | `--break` | | flag | false | Enable break mode |
@@ -799,24 +796,21 @@ The CLI `main.py` constructs a `RegistryClient` from global options and stores i
 
 ```python
 @click.group()
-@click.option("--registry", "-r", help="Registry URL")
-@click.option("--username", "-u", help="Username")
-@click.option("--password", "-p", help="Password")
 @click.option("--insecure", is_flag=True, help="Allow HTTP")
-@click.option("--json", "output_json", is_flag=True, help="JSON output")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 @click.option("--break", "break_mode", is_flag=True, help="Enable break mode")
 @click.option("--break-rules", type=click.Path(exists=True), help="Break rules file")
 @click.option("--log-file", type=click.Path(), help="Request/response log file")
 @click.pass_context
-def regshape(ctx, registry, username, password, insecure, output_json,
-             verbose, break_mode, break_rules, log_file):
+def regshape(ctx, insecure, verbose, break_mode, break_rules, log_file):
     """RegShape - OCI registry manipulation tool."""
     ctx.ensure_object(dict)
     # ... construct TransportConfig and RegistryClient ...
-    ctx.obj["client"] = RegistryClient(config)
-    ctx.obj["output_json"] = output_json
+    ctx.obj["insecure"] = insecure
     ctx.obj["verbose"] = verbose
+    ctx.obj["break_mode"] = break_mode
+    ctx.obj["break_rules"] = break_rules
+    ctx.obj["log_file"] = log_file
 ```
 
 ---
