@@ -259,15 +259,18 @@ class ImageIndex:
         """
         try:
             subject_data = data.get("subject")
+            manifests_data = data["manifests"]
+            if not isinstance(manifests_data, list):
+                raise ValueError("'manifests' must be a list")
             return cls(
                 schema_version=data["schemaVersion"],
                 media_type=data["mediaType"],
-                manifests=[Descriptor.from_dict(m) for m in data["manifests"]],
+                manifests=[Descriptor.from_dict(m) for m in manifests_data],
                 subject=Descriptor.from_dict(subject_data) if subject_data else None,
                 annotations=data.get("annotations"),
                 artifact_type=data.get("artifactType"),
             )
-        except (KeyError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError) as exc:
             raise ManifestError(
                 "Invalid ImageIndex", str(exc)
             ) from exc
