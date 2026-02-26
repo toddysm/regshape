@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 
 """
-:mod:`mediatype` - OCI and Docker media type constants
-======================================================
+:mod:`regshape.libs.models.mediatype` - OCI and Docker media type constants
+===========================================================================
 
-    module:: mediatype
-    :platform: Unix, Windows
-    :synopsis: String constants for OCI Distribution Spec and Docker V2 media types
-    moduleauthor:: ToddySM <toddysm@gmail.com>
+.. module:: regshape.libs.models.mediatype
+   :platform: Unix, Windows
+   :synopsis: String constants for OCI Distribution Spec and Docker V2 media types
+.. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
 # ---------------------------------------------------------------------------
