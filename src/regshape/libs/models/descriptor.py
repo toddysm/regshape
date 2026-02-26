@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 
 """
-:mod:`descriptor` - OCI Descriptor and Platform data models
-===========================================================
+:mod:`regshape.libs.models.descriptor` - OCI Descriptor and Platform data models
+================================================================================ 
 
-    module:: descriptor
-    :platform: Unix, Windows
-    :synopsis: Dataclasses for the OCI content Descriptor and Platform types
-    moduleauthor:: ToddySM <toddysm@gmail.com>
+.. module:: regshape.libs.models.descriptor
+   :platform: Unix, Windows
+   :synopsis: Dataclasses for the OCI content Descriptor and Platform types
+.. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
 import re
