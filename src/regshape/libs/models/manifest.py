@@ -300,6 +300,12 @@ def parse_manifest(data: str) -> Union[ImageManifest, ImageIndex]:
     except json.JSONDecodeError as exc:
         raise ManifestError("Failed to parse manifest JSON", str(exc)) from exc
 
+    if not isinstance(obj, dict):
+        raise ManifestError(
+            "Failed to parse manifest JSON",
+            f"expected a JSON object at the root, got {type(obj).__name__!r}",
+        )
+
     media_type = obj.get("mediaType", "")
 
     if media_type in MANIFEST_MEDIA_TYPES:
