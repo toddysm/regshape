@@ -56,6 +56,11 @@ class ImageManifest:
             )
         if not self.media_type:
             raise ValueError("ImageManifest.media_type must not be empty")
+        if self.media_type not in MANIFEST_MEDIA_TYPES:
+            raise ValueError(
+                f"ImageManifest.media_type must be one of {sorted(MANIFEST_MEDIA_TYPES)}, "
+                f"got {self.media_type!r}"
+            )
         if not isinstance(self.layers, list):
             raise ValueError("ImageManifest.layers must be a list")
 
