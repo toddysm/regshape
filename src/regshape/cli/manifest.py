@@ -31,7 +31,7 @@ from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.decorators.timing import track_time
 from regshape.libs.errors import AuthError, ManifestError
 from regshape.libs.models.manifest import ImageIndex, ImageManifest, parse_manifest
-from regshape.libs.models.mediatype import ALL_MANIFEST_MEDIA_TYPES
+from regshape.libs.models.mediatype import ALL_MANIFEST_MEDIA_TYPES, OCI_IMAGE_MANIFEST
 
 # ---------------------------------------------------------------------------
 # Default Accept header value when the caller does not override it.
@@ -357,9 +357,9 @@ def put(ctx, image_ref, manifest_file, from_stdin, content_type):
     if content_type is None:
         try:
             obj = json.loads(body)
-            content_type = obj.get("mediaType", "application/vnd.oci.image.manifest.v1+json")
+            content_type = obj.get("mediaType", OCI_IMAGE_MANIFEST)
         except (json.JSONDecodeError, AttributeError):
-            content_type = "application/vnd.oci.image.manifest.v1+json"
+            content_type = OCI_IMAGE_MANIFEST
 
     try:
         digest = _push_manifest(
