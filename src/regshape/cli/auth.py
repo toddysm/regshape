@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 
 """
-:mod: `auth` - CLI commands for authentication
-================================================
+:mod:`regshape.cli.auth` - CLI commands for authentication
+===========================================================
 
-    module:: auth
-    :platform: Unix, Windows
-    :synopsis: Click command group providing ``login`` and ``logout`` commands
-               for OCI registry authentication.
-    moduleauthor:: ToddySM <toddysm@gmail.com>
+.. module:: regshape.cli.auth
+   :platform: Unix, Windows
+   :synopsis: Click command group providing ``login`` and ``logout`` commands
+              for OCI registry authentication.
+
+.. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
-import json
 import sys
 
 import click
@@ -76,7 +76,6 @@ def login(ctx, registry, username, password, password_stdin, docker_config):
     registries). This will migrate to ``RegistryClient`` once the transport
     layer is available.
     """
-    output_json = ctx.obj.get("output_json", False) if ctx.obj else False
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     # --- Resolve password ---------------------------------------------------
@@ -105,10 +104,10 @@ def login(ctx, registry, username, password, password_stdin, docker_config):
     try:
         _verify_credentials(registry, resolved_username, resolved_password, insecure=insecure)
     except AuthError as e:
-        _error(output_json, registry, str(e))
+        _error(registry, str(e))
         sys.exit(1)
     except requests.exceptions.RequestException as e:
-        _error(output_json, registry, str(e))
+        _error(registry, str(e))
         sys.exit(1)
 
     # --- Persist credentials ------------------------------------------------
@@ -120,14 +119,11 @@ def login(ctx, registry, username, password, password_stdin, docker_config):
             docker_config_path=docker_config,
         )
     except AuthError as e:
-        _error(output_json, registry, f"Could not store credentials: {e}")
+        _error(registry, f"Could not store credentials: {e}")
         sys.exit(1)
 
     # --- Success output ------------------------------------------------------
-    if output_json:
-        click.echo(json.dumps({"status": "success", "registry": registry}))
-    else:
-        click.echo("Login succeeded.")
+    click.echo("Login succeeded.")
 
 
 @auth.command("logout")
@@ -147,17 +143,13 @@ def login(ctx, registry, username, password, password_stdin, docker_config):
 @click.pass_context
 def logout(ctx, registry, docker_config):
     """Remove stored credentials for a registry."""
-    output_json = ctx.obj.get("output_json", False) if ctx.obj else False
-
     try:
         found = erase_credentials(registry, docker_config_path=docker_config)
     except AuthError as e:
-        _error(output_json, registry, str(e))
+        _error(registry, str(e))
         sys.exit(1)
 
-    if output_json:
-        click.echo(json.dumps({"status": "success", "registry": registry}))
-    elif found:
+    if found:
         click.echo(f"Removing login credentials for {registry}.")
     else:
         click.echo(f"Not logged in to {registry}.")
@@ -216,12 +208,6 @@ def _verify_credentials(registry: str, username: str, password: str, insecure: b
     raise AuthError("Login failed", f"unexpected status {response.status_code}")
 
 
-def _error(output_json: bool, registry: str, reason: str) -> None:
-    """Print an error message in the appropriate format."""
-    if output_json:
-        click.echo(
-            json.dumps({"status": "error", "registry": registry, "message": reason}),
-            err=True,
-        )
-    else:
-        click.echo(f"Error for {registry}: {reason}", err=True)
+def _error(registry: str, reason: str) -> None:
+    """Print an error message to stderr."""
+    click.echo(f"Error for {registry}: {reason}", err=True)

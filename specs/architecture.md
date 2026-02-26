@@ -729,21 +729,23 @@ class RegistryError(RegShapeError):
 
 The CLI uses Click with a top-level group and subcommand groups for each domain.
 
+### CLI Design Principles
+
+- **Always use named flags; never use positional arguments.** Every input is expressed as a named option (e.g. `--image-ref`, `--repo`, `--digest`). This makes commands self-documenting, composable in scripts without relying on position, and easier to extend without breaking callers.
+- Per-command flags (e.g. `--registry/-r`, `--image-ref/-i`) take precedence over global options for the same concept.
+- Short aliases are provided for the most frequently-used options.
+
 ### Entry Point
 
 ```
-regshape [GLOBAL OPTIONS] <command-group> <command> [OPTIONS] [ARGS]
+regshape [GLOBAL OPTIONS] <command-group> <command> [OPTIONS]
 ```
 
 ### Global Options
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--registry` | `-r` | string | none | Registry URL (can also be embedded in image reference) |
-| `--username` | `-u` | string | none | Username for authentication |
-| `--password` | `-p` | string | none | Password for authentication |
 | `--insecure` | | flag | false | Allow HTTP (no TLS) |
-| `--json` | | flag | false | Output as JSON |
 | `--verbose` | `-v` | flag | false | Verbose output |
 | `--break` | | flag | false | Enable break mode |
 | `--break-rules` | | string | none | Path to break mode rules file |
@@ -753,24 +755,25 @@ regshape [GLOBAL OPTIONS] <command-group> <command> [OPTIONS] [ARGS]
 
 ```
 regshape
-├── ping <registry>                          # GET /v2/
+├── ping --registry <registry>               # GET /v2/
 ├── manifest
-│   ├── get <image-ref>                      # GET /v2/<name>/manifests/<ref>
-│   ├── head <image-ref>                     # HEAD /v2/<name>/manifests/<ref>
-│   ├── put <image-ref> [--file <path>]      # PUT /v2/<name>/manifests/<ref>
-│   └── delete <image-ref>                   # DELETE /v2/<name>/manifests/<ref>
+│   ├── get    --image-ref <ref> [OPTIONS]   # GET /v2/<name>/manifests/<ref>
+│   ├── info       --image-ref <ref> [OPTIONS]   # HEAD /v2/<name>/manifests/<ref>
+│   ├── descriptor --image-ref <ref> [OPTIONS]   # HEAD /v2/<name>/manifests/<ref> → Descriptor JSON
+│   ├── put    --image-ref <ref> [OPTIONS]   # PUT /v2/<name>/manifests/<ref>
+│   └── delete --image-ref <ref> [OPTIONS]   # DELETE /v2/<name>/manifests/<ref>
 ├── blob
-│   ├── get <repo> <digest> [--output <path>]           # GET /v2/<name>/blobs/<digest>
-│   ├── head <repo> <digest>                            # HEAD /v2/<name>/blobs/<digest>
-│   ├── delete <repo> <digest>                          # DELETE /v2/<name>/blobs/<digest>
-│   ├── upload <repo> <file> [--chunked] [--chunk-size <bytes>]  # POST + PUT (or POST + PATCH + PUT)
-│   └── mount <repo> <digest> --from <source>           # POST with mount param
+│   ├── get    --repo <repo> --digest <digest> [--output <path>]           # GET /v2/<name>/blobs/<digest>
+│   ├── head   --repo <repo> --digest <digest>                             # HEAD /v2/<name>/blobs/<digest>
+│   ├── delete --repo <repo> --digest <digest>                             # DELETE /v2/<name>/blobs/<digest>
+│   ├── upload --repo <repo> --file <file> [--chunked] [--chunk-size <n>]  # POST + PUT (or POST + PATCH + PUT)
+│   └── mount  --repo <repo> --digest <digest> --from <source>             # POST with mount param
 ├── tag
-│   └── list <repo> [--limit N] [--last <tag>] # GET /v2/<name>/tags/list
+│   └── list --repo <repo> [--limit <n>] [--last <tag>]   # GET /v2/<name>/tags/list
 ├── referrer
-│   └── list <repo> <digest> [--type <filter>] # GET /v2/<name>/referrers/<digest>
+│   └── list --repo <repo> --digest <digest> [--type <filter>]  # GET /v2/<name>/referrers/<digest>
 └── catalog
-    └── list [--limit N] [--last <repo>]       # GET /v2/_catalog
+    └── list [--limit <n>] [--last <repo>]                # GET /v2/_catalog
 ```
 
 ### CLI Module Structure
@@ -793,24 +796,21 @@ The CLI `main.py` constructs a `RegistryClient` from global options and stores i
 
 ```python
 @click.group()
-@click.option("--registry", "-r", help="Registry URL")
-@click.option("--username", "-u", help="Username")
-@click.option("--password", "-p", help="Password")
 @click.option("--insecure", is_flag=True, help="Allow HTTP")
-@click.option("--json", "output_json", is_flag=True, help="JSON output")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 @click.option("--break", "break_mode", is_flag=True, help="Enable break mode")
 @click.option("--break-rules", type=click.Path(exists=True), help="Break rules file")
 @click.option("--log-file", type=click.Path(), help="Request/response log file")
 @click.pass_context
-def regshape(ctx, registry, username, password, insecure, output_json,
-             verbose, break_mode, break_rules, log_file):
+def regshape(ctx, insecure, verbose, break_mode, break_rules, log_file):
     """RegShape - OCI registry manipulation tool."""
     ctx.ensure_object(dict)
     # ... construct TransportConfig and RegistryClient ...
-    ctx.obj["client"] = RegistryClient(config)
-    ctx.obj["output_json"] = output_json
+    ctx.obj["insecure"] = insecure
     ctx.obj["verbose"] = verbose
+    ctx.obj["break_mode"] = break_mode
+    ctx.obj["break_rules"] = break_rules
+    ctx.obj["log_file"] = log_file
 ```
 
 ---
@@ -1083,4 +1083,4 @@ The recommended order for implementing RegShape, based on dependencies.
 - [ ] Should the transport layer support async (`aiohttp`) in addition to synchronous `requests`? (This spec assumes synchronous only for v1, with the middleware pattern being portable to async later.)
 - [ ] Should `RegistryClient` manage a `requests.Session` for connection pooling and cookie persistence, or create fresh connections per request? (Recommendation: use a Session for connection reuse.)
 - [ ] Should chunked blob uploads support configurable chunk size? (Recommendation: yes, with a sensible default like 5MB.)
-- Registry and image reference semantics: The `--registry` flag always specifies the registry host[:port] to use. For commands that accept an `<image-ref>` argument, if `--registry` is provided then `<image-ref>` MUST NOT include a registry component (it is treated as `repo[:tag|@digest]` only), and providing both an embedded registry and `--registry` is a CLI error. If `--registry` is omitted, `<image-ref>` MAY be fully qualified (for example, `registry.example.com/repo:tag`), in which case the embedded registry is parsed and used. For commands that accept a separate `<repo>` argument (such as blob, tag, and referrer commands), `<repo>` MUST contain only the repository path (no registry), and the registry is always taken from `--registry` (or from a configured default registry if `--registry` is not supplied).
+- [ ] Registry and image reference semantics: The current CLI does not expose a global `--registry` option. Manifest commands accept a single `--image-ref` that MUST be fully qualified, including the registry host[:port] (for example, `registry.example.com/repo:tag`), and the registry is always derived from this string (as in `_parse_image_ref(..., None)`). If we later introduce a separate `--registry` flag (or per-command registry options), we must define how it interacts with `--image-ref` and any `--repo` parameters to avoid ambiguous registry selection (for example, disallowing both an explicit registry flag and an embedded registry at the same time, and requiring `--repo` to omit the registry component).

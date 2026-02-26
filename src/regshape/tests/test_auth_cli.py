@@ -354,28 +354,6 @@ class TestAuthLoginCommand:
         assert result.exit_code == 0, result.output
         assert "Login succeeded." in result.output
 
-    def test_login_success_json_output(self):
-        """Successful login with --json outputs a JSON success object."""
-        ok_resp = _make_response(200)
-        with patch("regshape.libs.auth.credentials.dockerconfig.load_config",
-                   return_value=None), \
-             patch("regshape.libs.auth.credentials.dockerconfig.get_config_file",
-                   return_value=None), \
-             patch("regshape.libs.auth.credentials.dockerconfig.home_dir",
-                   return_value="/tmp"), \
-             patch("regshape.libs.auth.credentials.dockerconfig.DOCKER_CONFIG_FILENAME",
-                   os.path.join(".docker", "config.json")), \
-             patch("requests.request", return_value=ok_resp), \
-             patch("regshape.libs.auth.credentials.store_credentials"):
-            result = self._runner().invoke(
-                regshape,
-                ["--json", "auth", "login", "-r", REGISTRY, "-u", "alice", "-p", "secret"],
-            )
-        assert result.exit_code == 0, result.output
-        data = json.loads(result.output)
-        assert data["status"] == "success"
-        assert data["registry"] == REGISTRY
-
     def test_login_bearer_challenge_cycle(self):
         """login completes successfully after a 401 Bearer challenge."""
         challenge_resp = _make_response(401, www_auth=BEARER_CHALLENGE)
@@ -554,19 +532,6 @@ class TestAuthLogoutCommand:
         assert result.exit_code == 0
         assert f"Not logged in to {REGISTRY}" in result.output
 
-    def test_logout_json_output(self):
-        """logout with --json outputs a JSON success object."""
-        with patch("regshape.cli.auth.erase_credentials",
-                   return_value=True):
-            result = self._runner().invoke(
-                regshape,
-                ["--json", "auth", "logout", "-r", REGISTRY],
-            )
-        assert result.exit_code == 0
-        data = json.loads(result.output)
-        assert data["status"] == "success"
-        assert data["registry"] == REGISTRY
-
     def test_logout_error_exits_nonzero(self):
         """logout exits 1 when erasing credentials raises AuthError."""
         with patch("regshape.cli.auth.erase_credentials",
@@ -688,26 +653,4 @@ class TestAuthLoginTelemetry:
         assert "mypassword" not in result.stderr
         assert "super-secret-token" not in result.stderr
         assert "<redacted>" in result.stderr
-        assert "> GET" in result.stderr
-
-    def test_json_stdout_not_contaminated_by_telemetry(self):
-        """With --json, stdout is valid JSON even when all telemetry flags active."""
-        with contextlib.ExitStack() as stack:
-            for p in self._ok_patches():
-                stack.enter_context(p)
-            result = self._runner().invoke(
-                regshape,
-                ["--json", "auth", "login",
-                 "--time-scenarios", "--time-methods", "--debug-calls",
-                 "-r", REGISTRY, "-u", "alice", "-p", "s3cr3t"],
-            )
-        assert result.exit_code == 0, result.output
-        # stdout must be parseable as JSON — telemetry must not have bled in
-        data = json.loads(result.stdout)
-        assert data["status"] == "success"
-        assert data["registry"] == REGISTRY
-        # all telemetry present on stderr inside a single block
-        assert "── telemetry" in result.stderr
-        assert "auth login" in result.stderr
-        assert "_verify_credentials" in result.stderr
         assert "> GET" in result.stderr
