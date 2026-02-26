@@ -340,47 +340,47 @@ class TestManifestGet:
 
 
 # ---------------------------------------------------------------------------
-# TestManifestHead  — CLI tests for ``manifest head``
+# TestManifestInfo  — CLI tests for ``manifest info``
 # ---------------------------------------------------------------------------
 
-class TestManifestHead:
+class TestManifestInfo:
 
-    def test_head_success_plain(self):
+    def test_info_success_plain(self):
         resp = _make_response(200, content_length="1234")
         with patch("requests.request", return_value=resp), \
              patch("regshape.libs.auth.credentials.resolve_credentials",
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
-                ["manifest", "head", "-i", f"{REPO}:{TAG}", "-r", REGISTRY],
+                ["manifest", "info", "-i", f"{REPO}:{TAG}", "-r", REGISTRY],
             )
         assert result.exit_code == 0, result.output
         assert "Digest:" in result.output
         assert DIGEST in result.output
         assert "Media Type:" in result.output
 
-    def test_head_success_json(self):
+    def test_info_success_json(self):
         resp = _make_response(200, content_length="999")
         with patch("requests.request", return_value=resp), \
              patch("regshape.libs.auth.credentials.resolve_credentials",
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
-                ["--json", "manifest", "head", "-i", f"{REPO}:{TAG}", "-r", REGISTRY],
+                ["--json", "manifest", "info", "-i", f"{REPO}:{TAG}", "-r", REGISTRY],
             )
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
         assert data["digest"] == DIGEST
         assert data["size"] == 999
 
-    def test_head_404_exits_1(self):
+    def test_info_404_exits_1(self):
         resp = _make_response(404, body=json.dumps({"errors": [{"code": "MANIFEST_UNKNOWN", "message": "not found"}]}))
         with patch("requests.request", return_value=resp), \
              patch("regshape.libs.auth.credentials.resolve_credentials",
                    return_value=(None, None)):
             result = _runner().invoke(
                 regshape,
-                ["manifest", "head", "-i", f"{REPO}:{TAG}", "-r", REGISTRY],
+                ["manifest", "info", "-i", f"{REPO}:{TAG}", "-r", REGISTRY],
             )
         assert result.exit_code == 1
 

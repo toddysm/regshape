@@ -206,10 +206,10 @@ def get(ctx, registry, username, password, image_ref, accept, part, output, raw)
 
 
 # ===========================================================================
-# manifest head
+# manifest info
 # ===========================================================================
 
-@manifest.command("head")
+@manifest.command("info")
 @telemetry_options
 @click.option(
     "--image-ref",
@@ -243,12 +243,12 @@ def get(ctx, registry, username, password, image_ref, accept, part, output, raw)
     help="Set a specific Accept header instead of the default multi-type value.",
 )
 @click.pass_context
-@track_scenario("manifest head")
-def head(ctx, registry, username, password, image_ref, accept):
-    """Check whether IMAGE_REF exists and print its metadata.
+@track_scenario("manifest info")
+def info(ctx, registry, username, password, image_ref, accept):
+    """Print metadata for IMAGE_REF without downloading the manifest body.
 
-    Issues a HEAD request, which returns digest, media type, and size
-    from response headers without downloading the manifest body.
+    Issues a HEAD request and returns the digest, media type, and size
+    from response headers.
     """
     output_json = ctx.obj.get("output_json", False) if ctx.obj else False
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False

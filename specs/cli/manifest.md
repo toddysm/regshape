@@ -4,7 +4,7 @@
 
 The `manifest` command group manages OCI image manifests. It provides four
 subcommands that map to the three endpoints in the OCI Distribution Spec:
-`get`, `head`, `put`, and `delete`.
+`get`, `info`, `put`, and `delete`.
 
 `manifest get` can also extract individual fields from the parsed manifest
 model (`config`, `layers`, `subject`, `annotations`) using the `--part`
@@ -20,7 +20,7 @@ without having to `jq`-parse the raw JSON.
 
 ```
 regshape manifest get    [OPTIONS]
-regshape manifest head   [OPTIONS]
+regshape manifest info   [OPTIONS]
 regshape manifest put    [OPTIONS]
 regshape manifest delete [OPTIONS]
 ```
@@ -202,7 +202,7 @@ When `--part` is set, the `"manifest"` key is replaced with `"part"` and
 
 ---
 
-### `manifest head`
+### `manifest info`
 
 Check manifest existence and retrieve metadata (digest, media type, size)
 without downloading the manifest body.
@@ -240,10 +240,10 @@ without downloading the manifest body.
 
 ```bash
 # Check if a manifest exists
-regshape manifest head -i myrepo/myimage:latest -r acr.io
+regshape manifest info -i myrepo/myimage:latest -r acr.io
 
 # JSON output
-regshape --json manifest head -i myrepo/myimage:latest -r acr.io
+regshape --json manifest info -i myrepo/myimage:latest -r acr.io
 ```
 
 #### Output Format

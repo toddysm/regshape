@@ -762,7 +762,7 @@ regshape
 ├── ping --registry <registry>               # GET /v2/
 ├── manifest
 │   ├── get    --image-ref <ref> [OPTIONS]   # GET /v2/<name>/manifests/<ref>
-│   ├── head   --image-ref <ref> [OPTIONS]   # HEAD /v2/<name>/manifests/<ref>
+│   ├── info   --image-ref <ref> [OPTIONS]   # HEAD /v2/<name>/manifests/<ref>
 │   ├── put    --image-ref <ref> [OPTIONS]   # PUT /v2/<name>/manifests/<ref>
 │   └── delete --image-ref <ref> [OPTIONS]   # DELETE /v2/<name>/manifests/<ref>
 ├── blob
