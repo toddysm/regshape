@@ -520,8 +520,10 @@ def _head_manifest(
                 f"registry {registry!r} returned 401 without WWW-Authenticate",
             )
         auth_scheme = www_auth.split(" ", 1)[0]
-        # Avoid generating a Basic token for missing credentials (None:None).
-        if auth_scheme.lower() == "basic" and not (username or password):
+        # Avoid generating a Basic token for missing or partial credentials.
+        if auth_scheme.lower() == "basic" and (
+            username is None or password is None
+        ):
             raise AuthError(
                 "Authentication failed",
                 f"registry {registry!r} requires Basic authentication, but no "
