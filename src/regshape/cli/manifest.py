@@ -561,8 +561,14 @@ def _push_manifest(
                 "Authentication failed",
                 f"registry {registry!r} returned 401 without WWW-Authenticate",
             )
+        auth_scheme = www_auth.split(" ", 1)[0]
+        # Avoid generating a Basic token for missing credentials (e.g. None:None).
+        if auth_scheme.lower() == "basic" and (not username or not password):
+            raise AuthError(
+                "Authentication failed",
+                "Registry requested Basic authentication but no username/password were provided.",
+            )
         auth_value = registryauth.authenticate(www_auth, username, password)
-        auth_scheme = www_auth.split(" ")[0]
         headers["Authorization"] = f"{auth_scheme} {auth_value}"
         response = http_request(url, "PUT", headers=headers, data=body, timeout=30)
 
