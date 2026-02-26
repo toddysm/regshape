@@ -123,6 +123,11 @@ class ImageManifest:
             raise ManifestError(
                 "Failed to parse manifest JSON", str(exc)
             ) from exc
+        if not isinstance(obj, dict):
+            raise ManifestError(
+                "Invalid manifest JSON: expected a JSON object at top level",
+                f"Got {type(obj).__name__}",
+            )
         return cls._from_dict(obj)
 
     @classmethod
