@@ -27,6 +27,7 @@ class AuthError(RegShapeError):
     """
     pass
 
+
 class ManifestError(RegShapeError):
     """
     Error caused by a malformed, unknown, or unprocessable manifest.
