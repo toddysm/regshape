@@ -14,8 +14,8 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-# Regex for valid OCI digest strings (algorithm:hex).
-_DIGEST_RE = re.compile(r'^(sha256|sha512):[a-f0-9]+$')
+# Regex for valid OCI digest strings (algorithm:hex) with strict length checks.
+_DIGEST_RE = re.compile(r'^(?:sha256:[a-f0-9]{64}|sha512:[a-f0-9]{128})$')
 
 
 @dataclass
