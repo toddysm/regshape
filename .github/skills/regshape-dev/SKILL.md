@@ -72,6 +72,40 @@ When designing break mode features:
 - Log full request/response pairs for analysis
 - Make break mode explicit and opt-in (never active by default)
 
+## CLI Design Principles
+
+### Auth-First Authentication
+
+Authentication is always performed as a separate, explicit step via `regshape auth login`.
+All other command groups (manifest, blob, tag, referrer, catalog) resolve credentials
+automatically from the Docker credential store and **do not** accept per-command
+`--username` / `--password` flags.
+
+- The `auth login` command stores credentials using the Docker credential store mechanics
+  (`credHelpers` in `~/.docker/config.json` or base64-encoded `auths` entries).
+- Non-auth commands call `resolve_credentials(registry, None, None)` to look up stored
+  credentials for the embedded registry.
+- If no stored credentials exist and the registry requires authentication, the registry
+  returns HTTP 401, which surfaces as exit code 1.
+
+### Registry Must Be Embedded in Image Reference
+
+The `--image-ref` / `-i` flag always requires the registry to be embedded:
+
+```
+registry/repository:tag         # e.g., acr.io/myrepo/myimage:latest
+registry/repository@sha256:...  # e.g., acr.io/myrepo/myimage@sha256:abc...
+```
+
+There is no global or per-command `--registry` flag. The registry is extracted from
+the image reference by `_parse_image_ref(image_ref, None)`.
+
+### Global Options
+
+The root `regshape` group only provides infrastructure-level options:
+`--insecure`, `--verbose`, `--break`, `--break-rules`, `--log-file`.
+There are no global auth options.
+
 ## Key References
 
 - **OCI Distribution Spec**: [references/oci-distribution-spec.md](references/oci-distribution-spec.md) — API endpoints, schemas, error codes
