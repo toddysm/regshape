@@ -11,7 +11,7 @@
 """
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 # Regex for valid OCI digest strings (algorithm:hex).
