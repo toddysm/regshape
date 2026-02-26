@@ -813,5 +813,5 @@ def _write(output_path: Optional[str], content: str) -> None:
 
 
 def _error(reference: str, reason: str) -> None:
-    """Print an error message to stderr."""
-    click.echo(f"Error: {reason}", err=True)
+    """Print an error message to stderr, prefixed with the image reference."""
+    click.echo(f"Error [{reference}]: {reason}", err=True)
