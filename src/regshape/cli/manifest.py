@@ -598,8 +598,14 @@ def _delete_manifest(
                 "Authentication failed",
                 f"registry {registry!r} returned 401 without WWW-Authenticate",
             )
+        auth_scheme = www_auth.split(" ", 1)[0]
+        # For Basic auth, ensure credentials are present before attempting to authenticate.
+        if auth_scheme.lower() == "basic" and (username is None or password is None):
+            raise AuthError(
+                "Authentication failed",
+                f"registry {registry!r} requires Basic authentication but no credentials were provided",
+            )
         auth_value = registryauth.authenticate(www_auth, username, password)
-        auth_scheme = www_auth.split(" ")[0]
         auth_headers = {"Authorization": f"{auth_scheme} {auth_value}"}
         response = http_request(url, "DELETE", headers=auth_headers, timeout=30)
 
