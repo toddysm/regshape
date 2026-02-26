@@ -664,7 +664,6 @@ def _parse_image_ref(
     if "@" in image_ref:
         path_part, digest_part = image_ref.rsplit("@", 1)
         ref = digest_part
-        tag_sep = "@"
     elif ":" in image_ref:
         # Could be "registry:port/repo:tag" so split on the last ":"
         last_colon = image_ref.rfind(":")
@@ -680,11 +679,9 @@ def _parse_image_ref(
         else:
             path_part = before_colon
             ref = after_colon
-        tag_sep = ":"
     else:
         path_part = image_ref
         ref = "latest"
-        tag_sep = None  # noqa: F841
 
     # Determine whether the first component of path_part is a registry hostname
     parts = path_part.split("/")
