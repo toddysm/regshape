@@ -52,7 +52,7 @@ _PARTS = ("config", "layers", "subject", "annotations")
 
 @click.group()
 def manifest():
-    """Manage OCI image manifests (get, head, put, delete)."""
+    """Manage OCI image manifests (get, info, descriptor, put, delete)."""
     pass
 
 
