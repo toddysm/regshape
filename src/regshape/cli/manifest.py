@@ -519,8 +519,16 @@ def _head_manifest(
                 "Authentication failed",
                 f"registry {registry!r} returned 401 without WWW-Authenticate",
             )
+        auth_scheme = www_auth.split(" ", 1)[0]
+        # Avoid generating a Basic token for missing credentials (None:None).
+        if auth_scheme.lower() == "basic" and not (username or password):
+            raise AuthError(
+                "Authentication failed",
+                f"registry {registry!r} requires Basic authentication, but no "
+                "credentials were provided. Please supply a username and password "
+                "or configure registry credentials.",
+            )
         auth_value = registryauth.authenticate(www_auth, username, password)
-        auth_scheme = www_auth.split(" ")[0]
         headers["Authorization"] = f"{auth_scheme} {auth_value}"
         response = http_request(url, "HEAD", headers=headers, timeout=30)
 
