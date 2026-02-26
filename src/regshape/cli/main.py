@@ -15,6 +15,7 @@
 import click
 
 from regshape.cli.auth import auth
+from regshape.cli.manifest import manifest
 from regshape.libs.auth.credentials import resolve_credentials
 
 
@@ -82,6 +83,7 @@ def regshape(
 # ---------------------------------------------------------------------------
 
 regshape.add_command(auth)
+regshape.add_command(manifest)
 
 
 if __name__ == "__main__":
