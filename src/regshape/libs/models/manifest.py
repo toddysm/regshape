@@ -144,7 +144,7 @@ class ImageManifest:
                 annotations=data.get("annotations"),
                 artifact_type=data.get("artifactType"),
             )
-        except (KeyError, ValueError) as exc:
+        except (KeyError, ValueError, TypeError) as exc:
             raise ManifestError(
                 "Invalid ImageManifest", str(exc)
             ) from exc
