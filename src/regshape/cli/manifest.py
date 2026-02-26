@@ -793,7 +793,7 @@ def _format_ref(registry: str, repo: str, reference: str) -> str:
     :returns: Canonical reference string, e.g. ``acr.io/repo:tag`` or
               ``acr.io/repo@sha256:abc...``.
     """
-    sep = "@" if ":" in reference else ":"
+    sep = "@" if (reference.startswith("sha256:") or reference.startswith("sha512:")) else ":"
     return f"{registry}/{repo}{sep}{reference}"
 
 
