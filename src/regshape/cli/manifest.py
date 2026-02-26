@@ -482,11 +482,15 @@ def _fetch_manifest(
         scheme, sep, params = www_auth.partition(" ")
         if sep and params:
             cleaned_params = ",".join(part.strip() for part in params.split(","))
-            normalized_www_auth = f"{scheme} {cleaned_params}"
+            # Normalize scheme case for consistent authentication handling
+            normalized_scheme = scheme.capitalize() if scheme.lower() in ("basic", "bearer") else scheme
+            normalized_www_auth = f"{normalized_scheme} {cleaned_params}"
         else:
-            normalized_www_auth = www_auth
+            # Normalize scheme case even if there are no parameters
+            normalized_scheme = scheme.capitalize() if scheme.lower() in ("basic", "bearer") else scheme
+            normalized_www_auth = f"{normalized_scheme}{' ' + params if params else ''}"
         auth_value = registryauth.authenticate(normalized_www_auth, username, password)
-        headers["Authorization"] = f"{auth_scheme} {auth_value}"
+        headers["Authorization"] = f"{normalized_scheme} {auth_value}"
         response = http_request(url, "GET", headers=headers, timeout=30)
 
     _raise_for_manifest_error(response, registry, repo, reference)
@@ -538,8 +542,12 @@ def _head_manifest(
                 "credentials were provided. Please supply a username and password "
                 "or configure registry credentials.",
             )
-        auth_value = registryauth.authenticate(www_auth, username, password)
-        headers["Authorization"] = f"{auth_scheme} {auth_value}"
+        # Normalize scheme case for consistent authentication handling
+        normalized_scheme = auth_scheme.capitalize() if auth_scheme.lower() in ("basic", "bearer") else auth_scheme
+        scheme, sep, params = www_auth.partition(" ")
+        normalized_www_auth = f"{normalized_scheme}{sep}{params}" if sep else normalized_scheme
+        auth_value = registryauth.authenticate(normalized_www_auth, username, password)
+        headers["Authorization"] = f"{normalized_scheme} {auth_value}"
         response = http_request(url, "HEAD", headers=headers, timeout=30)
 
     _raise_for_manifest_error(response, registry, repo, reference)
@@ -591,8 +599,12 @@ def _push_manifest(
                 "Authentication failed",
                 "Registry requested Basic authentication but no username/password were provided.",
             )
-        auth_value = registryauth.authenticate(www_auth, username, password)
-        headers["Authorization"] = f"{auth_scheme} {auth_value}"
+        # Normalize scheme case for consistent authentication handling
+        normalized_scheme = auth_scheme.capitalize() if auth_scheme.lower() in ("basic", "bearer") else auth_scheme
+        scheme, sep, params = www_auth.partition(" ")
+        normalized_www_auth = f"{normalized_scheme}{sep}{params}" if sep else normalized_scheme
+        auth_value = registryauth.authenticate(normalized_www_auth, username, password)
+        headers["Authorization"] = f"{normalized_scheme} {auth_value}"
         response = http_request(url, "PUT", headers=headers, data=body, timeout=30)
 
     _raise_for_manifest_error(response, registry, repo, reference)
@@ -634,8 +646,12 @@ def _delete_manifest(
                 "Authentication failed",
                 f"registry {registry!r} requires Basic authentication but no credentials were provided",
             )
-        auth_value = registryauth.authenticate(www_auth, username, password)
-        auth_headers = {"Authorization": f"{auth_scheme} {auth_value}"}
+        # Normalize scheme case for consistent authentication handling
+        normalized_scheme = auth_scheme.capitalize() if auth_scheme.lower() in ("basic", "bearer") else auth_scheme
+        scheme, sep, params = www_auth.partition(" ")
+        normalized_www_auth = f"{normalized_scheme}{sep}{params}" if sep else normalized_scheme
+        auth_value = registryauth.authenticate(normalized_www_auth, username, password)
+        auth_headers = {"Authorization": f"{normalized_scheme} {auth_value}"}
         response = http_request(url, "DELETE", headers=auth_headers, timeout=30)
 
     _raise_for_manifest_error(response, registry, repo, digest)
