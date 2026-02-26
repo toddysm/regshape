@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 
 """
-:mod:`manifest` - CLI commands for OCI manifest operations
-==========================================================
+:mod:`regshape.cli.manifest` - CLI commands for OCI manifest operations
+========================================================================
 
-    module:: manifest
-    :platform: Unix, Windows
-    :synopsis: Click command group providing ``get``, ``info``, ``descriptor``,
-               ``put``, and ``delete`` subcommands for OCI image manifest
-               operations.
-    moduleauthor:: ToddySM <toddysm@gmail.com>
+.. module:: regshape.cli.manifest
+   :platform: Unix, Windows
+   :synopsis: Click command group providing ``get``, ``info``, ``descriptor``,
+              ``put``, and ``delete`` subcommands for OCI image manifest
+              operations.
+
+.. moduleauthor:: ToddySM <toddysm@gmail.com>
 
 .. note::
     HTTP requests are currently issued directly via ``requests`` + the

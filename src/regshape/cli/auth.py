@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 
 """
-:mod: `auth` - CLI commands for authentication
-================================================
+:mod:`regshape.cli.auth` - CLI commands for authentication
+===========================================================
 
-    module:: auth
-    :platform: Unix, Windows
-    :synopsis: Click command group providing ``login`` and ``logout`` commands
-               for OCI registry authentication.
-    moduleauthor:: ToddySM <toddysm@gmail.com>
+.. module:: regshape.cli.auth
+   :platform: Unix, Windows
+   :synopsis: Click command group providing ``login`` and ``logout`` commands
+              for OCI registry authentication.
+
+.. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
 import sys
