@@ -146,6 +146,8 @@ def get(ctx, registry, username, password, image_ref, accept, part, output, raw)
         _error(output_json, image_ref, str(exc))
         sys.exit(1)
 
+    username, password = resolve_credentials(registry, username, password)
+
     try:
         body, content_type, digest = _fetch_manifest(
             registry=registry,
@@ -257,6 +259,8 @@ def head(ctx, registry, username, password, image_ref, accept):
         _error(output_json, image_ref, str(exc))
         sys.exit(1)
 
+    username, password = resolve_credentials(registry, username, password)
+
     try:
         digest, media_type, size = _head_manifest(
             registry=registry,
@@ -362,6 +366,8 @@ def put(ctx, registry, username, password, image_ref, manifest_file, from_stdin,
         _error(output_json, image_ref, str(exc))
         sys.exit(1)
 
+    username, password = resolve_credentials(registry, username, password)
+
     # Read manifest body
     if manifest_file:
         with open(manifest_file, "rb") as fh:
@@ -455,6 +461,8 @@ def delete(ctx, registry, username, password, image_ref):
             "tag references are not supported by the OCI spec for delete operations",
         )
         sys.exit(2)
+
+    username, password = resolve_credentials(registry, username, password)
 
     try:
         _delete_manifest(
