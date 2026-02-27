@@ -250,7 +250,11 @@ def _fetch_tag_list(
             url, "GET", headers=headers, params=params if params else None, timeout=30
         )
 
-    _raise_for_tag_error(response, registry, repo, repo)
+    if not (200 <= response.status_code < 300):
+        raise TagError(
+            f"Tag operation failed for {registry}/{repo}",
+            f"Registry returned HTTP {response.status_code}: {response.text}",
+        )
 
     try:
         return TagList.from_json(response.text)
