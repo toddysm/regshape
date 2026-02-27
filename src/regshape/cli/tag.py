@@ -250,11 +250,7 @@ def _fetch_tag_list(
             url, "GET", headers=headers, params=params if params else None, timeout=30
         )
 
-    if not (200 <= response.status_code < 300):
-        raise TagError(
-            f"Tag operation failed for {registry}/{repo}",
-            f"Registry returned HTTP {response.status_code}: {response.text}",
-        )
+    _raise_for_list_error(response, registry, repo)
 
     try:
         return TagList.from_json(response.text)
@@ -308,30 +304,22 @@ def _delete_tag(
         auth_headers = {"Authorization": f"{normalized_scheme} {auth_value}"}
         response = http_request(url, "DELETE", headers=auth_headers, timeout=30)
 
-    _raise_for_tag_error(response, registry, repo, tag)
+    _raise_for_delete_error(response, registry, repo, tag)
 
 
 # ===========================================================================
 # Internal helpers — utilities
 # ===========================================================================
 
-def _raise_for_tag_error(
-    response: requests.Response,
-    registry: str,
-    repo: str,
-    reference: str,
-) -> None:
-    """Raise a :class:`TagError` or :class:`AuthError` for non-2xx responses.
+def _parse_oci_error_detail(response: requests.Response) -> str:
+    """Extract a human-readable detail string from an OCI error response body.
 
-    Attempts to parse the OCI error JSON body for a descriptive message.
+    Returns the first OCI error as ``"CODE: message"`` when the body is valid
+    OCI error JSON, or falls back to the raw text (truncated to 200 chars).
 
-    :raises AuthError: On 401.
-    :raises TagError: On all other non-2xx status codes.
+    :param response: The HTTP response to inspect.
+    :returns: A detail string, possibly empty.
     """
-    if 200 <= response.status_code < 300:
-        return
-
-    detail = ""
     try:
         err_body = response.json()
         errors = err_body.get("errors", [])
@@ -339,19 +327,81 @@ def _raise_for_tag_error(
             first = errors[0]
             code = first.get("code", "")
             msg = first.get("message", "")
-            detail = f"{code}: {msg}"
+            return f"{code}: {msg}"
     except Exception:
-        detail = response.text[:200]
+        pass
+    return response.text[:200]
 
-    if response.status_code == 404:
-        raise TagError(
-            f"Tag not found: {_format_ref(registry, repo, reference)}",
-            detail or "HTTP 404",
-        )
+
+def _raise_for_list_error(
+    response: requests.Response,
+    registry: str,
+    repo: str,
+) -> None:
+    """Raise a :class:`TagError` or :class:`AuthError` for non-2xx tag-list responses.
+
+    Maps status codes to messages appropriate for a list operation:
+
+    * 401 → :class:`AuthError`
+    * 404 → "Repository not found"
+    * other non-2xx → generic registry error
+
+    :raises AuthError: On 401.
+    :raises TagError: On all other non-2xx status codes.
+    """
+    if 200 <= response.status_code < 300:
+        return
+
+    detail = _parse_oci_error_detail(response)
+
     if response.status_code == 401:
         raise AuthError(
             f"Authentication failed for {registry}",
             detail or "HTTP 401",
+        )
+    if response.status_code == 404:
+        raise TagError(
+            f"Repository not found: {registry}/{repo}",
+            detail or "HTTP 404",
+        )
+    raise TagError(
+        f"Registry error for {registry}/{repo}",
+        detail or f"HTTP {response.status_code}",
+    )
+
+
+def _raise_for_delete_error(
+    response: requests.Response,
+    registry: str,
+    repo: str,
+    tag: str,
+) -> None:
+    """Raise a :class:`TagError` or :class:`AuthError` for non-2xx tag-delete responses.
+
+    Maps status codes to messages appropriate for a delete operation:
+
+    * 401 → :class:`AuthError`
+    * 404 → "Tag not found"
+    * 400 / 405 → "Tag deletion is not supported"
+    * other non-2xx → generic registry error
+
+    :raises AuthError: On 401.
+    :raises TagError: On all other non-2xx status codes.
+    """
+    if 200 <= response.status_code < 300:
+        return
+
+    detail = _parse_oci_error_detail(response)
+
+    if response.status_code == 401:
+        raise AuthError(
+            f"Authentication failed for {registry}",
+            detail or "HTTP 401",
+        )
+    if response.status_code == 404:
+        raise TagError(
+            f"Tag not found: {_format_ref(registry, repo, tag)}",
+            detail or "HTTP 404",
         )
     if response.status_code in (400, 405):
         raise TagError(
@@ -359,7 +409,7 @@ def _raise_for_tag_error(
             detail or f"HTTP {response.status_code}",
         )
     raise TagError(
-        f"Registry error for {_format_ref(registry, repo, reference)}",
+        f"Registry error for {_format_ref(registry, repo, tag)}",
         detail or f"HTTP {response.status_code}",
     )
 

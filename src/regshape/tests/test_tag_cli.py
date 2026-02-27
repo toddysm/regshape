@@ -196,7 +196,7 @@ class TestTagListCommand:
                 "tag", "list", "-i", f"{REGISTRY}/{REPO}",
             ])
         assert result.exit_code == 1
-        assert "Error" in result.output or "Error" in (result.output + result.exception.__str__() if result.exception else "")
+        assert "Repository not found" in result.output
 
     def test_list_auth_challenge_bearer(self):
         """401 with Bearer WWW-Authenticate triggers token exchange and retry."""
