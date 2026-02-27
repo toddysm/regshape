@@ -459,22 +459,54 @@ class OciErrorDetail:
 
     :param code: OCI error code (e.g., ``MANIFEST_UNKNOWN``).
     :param message: Human-readable message.
-    :param detail: Optional additional detail.
+    :param detail: Optional additional detail (opaque — may be dict, list,
+        str, or None as permitted by the OCI spec).
     """
     code: str
     message: str
-    detail: Optional[dict] = None
+    detail: Any | None = None
+
+    def format(self) -> str:
+        """Return ``"CODE: message"``, falling back to whichever field is
+        non-empty, or ``""`` when both are empty."""
+
+    def to_dict(self) -> dict: ...
+
+    @classmethod
+    def from_dict(cls, data: object) -> 'OciErrorDetail': ...
+
 
 @dataclass
 class OciErrorResponse:
     """Parsed OCI error response body.
 
-    :param errors: List of error details.
+    :param errors: List of error details. Always a list; never ``None``.
     """
     errors: list[OciErrorDetail]
 
+    def first_detail(self) -> str:
+        """Return ``errors[0].format()`` when errors is non-empty, otherwise
+        ``""``. Primary extraction point used by all CLI raise-helpers."""
+
+    def to_dict(self) -> dict: ...
+    def to_json(self) -> str: ...
+
+    @classmethod
+    def from_dict(cls, data: object) -> 'OciErrorResponse': ...
+
     @classmethod
     def from_json(cls, data: str) -> 'OciErrorResponse': ...
+
+    @classmethod
+    def from_response(cls, response: requests.Response) -> 'OciErrorResponse':
+        """Parse the OCI error body from an HTTP response.
+
+        **Never raises.** Returns ``OciErrorResponse(errors=[])`` on any
+        parse failure (empty body, invalid JSON, wrong shape, etc.) so
+        callers can be written as a single expression::
+
+            detail = OciErrorResponse.from_response(response).first_detail()
+        """
 ```
 
 #### Media Type Constants
