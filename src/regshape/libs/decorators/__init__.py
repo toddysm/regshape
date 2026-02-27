@@ -123,10 +123,13 @@ def telemetry_options(func: Callable) -> Callable:
             time_scenarios_enabled=kwargs.pop("time_scenarios", False),
             debug_calls_enabled=kwargs.pop("debug_calls", False),
         ))
-        result = func(*args, **kwargs)
-        # flush any method timings not already consumed by a @track_scenario block
-        from regshape.libs.decorators.output import flush_telemetry
-        flush_telemetry()
+        try:
+            result = func(*args, **kwargs)
+        finally:
+            # flush any method timings not already consumed by a @track_scenario block;
+            # runs even when the command calls sys.exit() (raises SystemExit)
+            from regshape.libs.decorators.output import flush_telemetry
+            flush_telemetry()
         return result
     return wrapper
 

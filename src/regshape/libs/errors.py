@@ -33,3 +33,10 @@ class ManifestError(RegShapeError):
     Error caused by a malformed, unknown, or unprocessable manifest.
     """
     pass
+
+
+class TagError(RegShapeError):
+    """
+    Error caused by a malformed or unprocessable tag-list response.
+    """
+    pass

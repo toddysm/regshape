@@ -44,8 +44,10 @@ def track_time(func):
         if not config.time_methods_enabled:
             return func(*args, **kwargs)
         start = time.perf_counter()
-        result = func(*args, **kwargs)
-        elapsed = time.perf_counter() - start
-        config.method_timings.append((func.__qualname__, elapsed))
+        try:
+            result = func(*args, **kwargs)
+        finally:
+            elapsed = time.perf_counter() - start
+            config.method_timings.append((func.__qualname__, elapsed))
         return result
     return wrapper

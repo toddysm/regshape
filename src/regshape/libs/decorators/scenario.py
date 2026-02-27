@@ -55,12 +55,14 @@ def track_scenario(name: str):
             if not config.time_scenarios_enabled:
                 return func(*args, **kwargs)
             start = time.perf_counter()
-            result = func(*args, **kwargs)
-            elapsed = time.perf_counter() - start
-            print_telemetry_block(
-                name, elapsed, list(config.method_timings), config.output
-            )
-            config.method_timings.clear()
+            try:
+                result = func(*args, **kwargs)
+            finally:
+                elapsed = time.perf_counter() - start
+                print_telemetry_block(
+                    name, elapsed, list(config.method_timings), config.output
+                )
+                config.method_timings.clear()
             return result
         return wrapper
     return decorator

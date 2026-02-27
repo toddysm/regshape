@@ -16,6 +16,7 @@ import click
 
 from regshape.cli.auth import auth
 from regshape.cli.manifest import manifest
+from regshape.cli.tag import tag
 
 
 @click.group()
@@ -62,6 +63,7 @@ def regshape(
 
 regshape.add_command(auth)
 regshape.add_command(manifest)
+regshape.add_command(tag)
 
 
 if __name__ == "__main__":
