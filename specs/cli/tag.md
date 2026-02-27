@@ -131,7 +131,7 @@ v2.0
 
 | Scenario | Message |
 |---|---|
-| Repository not found | `Error [acr.io/myrepo/myimage]: Manifest not found: ...` |
+| Repository not found | `Error [acr.io/myrepo/myimage]: Registry error: repository not found` |
 | Auth failure | `Error [acr.io/myrepo/myimage]: Authentication failed for acr.io` |
 | Connection error | `Error [acr.io/myrepo/myimage]: <transport error>` |
 
