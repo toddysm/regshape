@@ -107,9 +107,12 @@ class TagList:
                 "Invalid tag-list response",
                 f"missing required field {exc}",
             ) from exc
-        # Normalise null / missing "tags" to an empty list.
-        raw_tags = data.get("tags")
-        tags: list[str] = raw_tags if isinstance(raw_tags, list) else []
+        # Normalise null / missing "tags" to an empty list; otherwise pass
+        # through the raw value so __post_init__ can validate its type.
+        if "tags" not in data or data.get("tags") is None:
+            tags: list[str] = []
+        else:
+            tags = data["tags"]  # type: ignore[assignment]
         return cls(namespace=namespace, tags=tags)
 
     @classmethod
