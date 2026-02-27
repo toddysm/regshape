@@ -51,12 +51,16 @@ class TestTagListFromDict:
         with pytest.raises(ValueError, match="namespace must not be empty"):
             TagList.from_dict({"name": "", "tags": []})
 
-    def test_tags_not_list_after_normalisation_raises_value_error(self):
-        # A non-list, non-null "tags" value falls through normalisation
-        # as a non-list and is passed to __post_init__, which rejects it.
+    def test_constructor_rejects_non_list_tags(self):
+        # Direct construction with a non-list "tags" value should be rejected
+        # by __post_init__ validation.
         with pytest.raises(ValueError, match="tags must be a list"):
             TagList(namespace="myrepo/myimage", tags="not-a-list")  # type: ignore[arg-type]
 
+    def test_non_list_non_null_tags_in_from_dict_raises_value_error(self):
+        # A non-list, non-null "tags" value coming from the wire should be rejected.
+        with pytest.raises(ValueError, match="tags must be a list"):
+            TagList.from_dict({"name": "myrepo/myimage", "tags": "not-a-list"})
     def test_preserves_tag_order(self):
         tags = ["z-tag", "a-tag", "m-tag"]
         tl = TagList.from_dict({"name": "repo", "tags": tags})
