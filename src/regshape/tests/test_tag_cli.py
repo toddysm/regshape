@@ -10,7 +10,9 @@ from click.testing import CliRunner
 from unittest.mock import MagicMock, patch
 
 from regshape.cli.main import regshape
-from regshape.cli.tag import _parse_image_ref
+from regshape.libs.errors import AuthError, TagError
+from regshape.libs.models.tags import TagList
+from regshape.libs.refs import parse_image_ref as _parse_image_ref
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -41,20 +43,9 @@ _TAG_LIST_NULL_JSON = json.dumps({
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_response(
-    status_code: int,
-    body: str = "{}",
-    www_auth: str = None,
-) -> MagicMock:
-    resp = MagicMock(spec=requests.Response)
-    resp.status_code = status_code
-    resp.text = body
-    headers = {}
-    if www_auth:
-        headers["WWW-Authenticate"] = www_auth
-    resp.headers = headers
-    resp.json.return_value = json.loads(body) if body.strip().startswith("{") else {}
-    return resp
+def _tag_list(json_str: str = _TAG_LIST_JSON) -> TagList:
+    """Build a TagList instance from a JSON string."""
+    return TagList.from_json(json_str)
 
 
 def _runner():
@@ -106,9 +97,7 @@ class TestParseImageRef:
 class TestTagListCommand:
 
     def test_list_prints_one_tag_per_line(self):
-        with patch("regshape.cli.tag.http_request") as mock_req, \
-             patch("regshape.cli.tag.resolve_credentials", return_value=(None, None)):
-            mock_req.return_value = _make_response(200, _TAG_LIST_JSON)
+        with patch("regshape.cli.tag.list_tags", return_value=_tag_list()):
             result = _runner().invoke(regshape, [
                 "tag", "list", "-i", f"{REGISTRY}/{REPO}",
             ])
@@ -116,13 +105,10 @@ class TestTagListCommand:
         assert "latest" in result.output
         assert "v1.0" in result.output
         assert "v2.0" in result.output
-        # one per line — no JSON wrapper
         assert "{" not in result.output
 
     def test_list_json_flag(self):
-        with patch("regshape.cli.tag.http_request") as mock_req, \
-             patch("regshape.cli.tag.resolve_credentials", return_value=(None, None)):
-            mock_req.return_value = _make_response(200, _TAG_LIST_JSON)
+        with patch("regshape.cli.tag.list_tags", return_value=_tag_list()):
             result = _runner().invoke(regshape, [
                 "tag", "list", "-i", f"{REGISTRY}/{REPO}", "--json",
             ])
@@ -132,9 +118,8 @@ class TestTagListCommand:
         assert parsed["tags"] == ["latest", "v1.0", "v2.0"]
 
     def test_list_empty_repository(self):
-        with patch("regshape.cli.tag.http_request") as mock_req, \
-             patch("regshape.cli.tag.resolve_credentials", return_value=(None, None)):
-            mock_req.return_value = _make_response(200, _TAG_LIST_EMPTY_JSON)
+        with patch("regshape.cli.tag.list_tags",
+                   return_value=_tag_list(_TAG_LIST_EMPTY_JSON)):
             result = _runner().invoke(regshape, [
                 "tag", "list", "-i", f"{REGISTRY}/{REPO}",
             ])
@@ -142,9 +127,8 @@ class TestTagListCommand:
         assert result.output.strip() == ""
 
     def test_list_null_tags_normalised(self):
-        with patch("regshape.cli.tag.http_request") as mock_req, \
-             patch("regshape.cli.tag.resolve_credentials", return_value=(None, None)):
-            mock_req.return_value = _make_response(200, _TAG_LIST_NULL_JSON)
+        with patch("regshape.cli.tag.list_tags",
+                   return_value=_tag_list(_TAG_LIST_NULL_JSON)):
             result = _runner().invoke(regshape, [
                 "tag", "list", "-i", f"{REGISTRY}/{REPO}",
             ])
@@ -152,83 +136,43 @@ class TestTagListCommand:
         assert result.output.strip() == ""
 
     def test_list_passes_n_param(self):
-        with patch("regshape.cli.tag.http_request") as mock_req, \
-             patch("regshape.cli.tag.resolve_credentials", return_value=(None, None)):
-            mock_req.return_value = _make_response(200, _TAG_LIST_JSON)
+        with patch("regshape.cli.tag.list_tags", return_value=_tag_list()) as mock_list:
             _runner().invoke(regshape, [
                 "tag", "list", "-i", f"{REGISTRY}/{REPO}", "--n", "5",
             ])
-        call_kwargs = mock_req.call_args
-        assert call_kwargs[1]["params"]["n"] == 5
+        assert mock_list.call_args[1]["page_size"] == 5
 
     def test_list_passes_last_param(self):
-        with patch("regshape.cli.tag.http_request") as mock_req, \
-             patch("regshape.cli.tag.resolve_credentials", return_value=(None, None)):
-            mock_req.return_value = _make_response(200, _TAG_LIST_JSON)
+        with patch("regshape.cli.tag.list_tags", return_value=_tag_list()) as mock_list:
             _runner().invoke(regshape, [
                 "tag", "list", "-i", f"{REGISTRY}/{REPO}", "--last", "v1.0",
             ])
-        call_kwargs = mock_req.call_args
-        assert call_kwargs[1]["params"]["last"] == "v1.0"
+        assert mock_list.call_args[1]["last"] == "v1.0"
 
     def test_list_ignores_tag_suffix_in_image_ref(self):
         """A tag suffix in --image-ref is stripped; only registry+repo are used."""
-        with patch("regshape.cli.tag.http_request") as mock_req, \
-             patch("regshape.cli.tag.resolve_credentials", return_value=(None, None)):
-            mock_req.return_value = _make_response(200, _TAG_LIST_JSON)
+        with patch("regshape.cli.tag.list_tags", return_value=_tag_list()) as mock_list:
             result = _runner().invoke(regshape, [
                 "tag", "list", "-i", f"{REGISTRY}/{REPO}:latest",
             ])
         assert result.exit_code == 0
-        # URL should not include the tag
-        url_arg = mock_req.call_args[0][0]
-        assert "/tags/list" in url_arg
-        assert ":latest" not in url_arg
+        assert mock_list.call_args[1]["repo"] == REPO
 
     def test_list_404_exits_1(self):
-        with patch("regshape.cli.tag.http_request") as mock_req, \
-             patch("regshape.cli.tag.resolve_credentials", return_value=(None, None)):
-            mock_req.return_value = _make_response(
-                404,
-                json.dumps({"errors": [{"code": "NAME_UNKNOWN", "message": "repo not found"}]}),
-            )
+        with patch("regshape.cli.tag.list_tags",
+                   side_effect=TagError(
+                       f"Repository not found: {REGISTRY}/{REPO}", "NAME_UNKNOWN"
+                   )):
             result = _runner().invoke(regshape, [
                 "tag", "list", "-i", f"{REGISTRY}/{REPO}",
             ])
         assert result.exit_code == 1
         assert "Repository not found" in result.output
 
-    def test_list_auth_challenge_bearer(self):
-        """401 with Bearer WWW-Authenticate triggers token exchange and retry."""
-        auth_resp = _make_response(
-            401,
-            www_auth='Bearer realm="https://auth.example.io/token",service="acr.example.io"',
-        )
-        ok_resp = _make_response(200, _TAG_LIST_JSON)
-        with patch("regshape.cli.tag.http_request", side_effect=[auth_resp, ok_resp]), \
-             patch("regshape.cli.tag.resolve_credentials", return_value=("alice", "secret")), \
-             patch("regshape.cli.tag.registryauth.authenticate", return_value="mytoken"):
-            result = _runner().invoke(regshape, [
-                "tag", "list", "-i", f"{REGISTRY}/{REPO}",
-            ])
-        assert result.exit_code == 0
-        assert "latest" in result.output
-
-    def test_list_401_no_www_authenticate_exits_1(self):
-        with patch("regshape.cli.tag.http_request") as mock_req, \
-             patch("regshape.cli.tag.resolve_credentials", return_value=(None, None)):
-            mock_req.return_value = _make_response(401)
-            result = _runner().invoke(regshape, [
-                "tag", "list", "-i", f"{REGISTRY}/{REPO}",
-            ])
-        assert result.exit_code == 1
-
-    def test_list_basic_auth_no_credentials_exits_1(self):
-        with patch("regshape.cli.tag.http_request") as mock_req, \
-             patch("regshape.cli.tag.resolve_credentials", return_value=(None, None)):
-            mock_req.return_value = _make_response(
-                401, www_auth='Basic realm="registry"'
-            )
+    def test_list_auth_error_exits_1(self):
+        """Authentication failure from transport layer exits with code 1."""
+        with patch("regshape.cli.tag.list_tags",
+                   side_effect=AuthError("Authentication failed", "HTTP 401")):
             result = _runner().invoke(regshape, [
                 "tag", "list", "-i", f"{REGISTRY}/{REPO}",
             ])
@@ -236,9 +180,7 @@ class TestTagListCommand:
 
     def test_list_output_flag_writes_file(self, tmp_path):
         out_file = tmp_path / "tags.txt"
-        with patch("regshape.cli.tag.http_request") as mock_req, \
-             patch("regshape.cli.tag.resolve_credentials", return_value=(None, None)):
-            mock_req.return_value = _make_response(200, _TAG_LIST_JSON)
+        with patch("regshape.cli.tag.list_tags", return_value=_tag_list()):
             result = _runner().invoke(regshape, [
                 "tag", "list", "-i", f"{REGISTRY}/{REPO}", "-o", str(out_file),
             ])
@@ -251,25 +193,35 @@ class TestTagListCommand:
         ])
         assert result.exit_code == 1
 
-    def test_list_url_uses_https_by_default(self):
-        with patch("regshape.cli.tag.http_request") as mock_req, \
-             patch("regshape.cli.tag.resolve_credentials", return_value=(None, None)):
-            mock_req.return_value = _make_response(200, _TAG_LIST_JSON)
+    def test_list_uses_secure_transport_by_default(self):
+        """RegistryClient is created with insecure=False by default."""
+        with patch("regshape.cli.tag.list_tags", return_value=_tag_list()), \
+             patch("regshape.cli.tag.RegistryClient") as mock_client_cls:
+            mock_client_cls.return_value = MagicMock()
             _runner().invoke(regshape, [
                 "tag", "list", "-i", f"{REGISTRY}/{REPO}",
             ])
-        url = mock_req.call_args[0][0]
-        assert url.startswith("https://")
+        config = mock_client_cls.call_args[0][0]
+        assert config.insecure is False
 
-    def test_list_url_uses_http_when_insecure(self):
-        with patch("regshape.cli.tag.http_request") as mock_req, \
-             patch("regshape.cli.tag.resolve_credentials", return_value=(None, None)):
-            mock_req.return_value = _make_response(200, _TAG_LIST_JSON)
+    def test_list_uses_insecure_transport_when_flag_set(self):
+        """--insecure flag propagates insecure=True to TransportConfig."""
+        with patch("regshape.cli.tag.list_tags", return_value=_tag_list()), \
+             patch("regshape.cli.tag.RegistryClient") as mock_client_cls:
+            mock_client_cls.return_value = MagicMock()
             _runner().invoke(regshape, [
                 "--insecure", "tag", "list", "-i", f"{REGISTRY}/{REPO}",
             ])
-        url = mock_req.call_args[0][0]
-        assert url.startswith("http://")
+        config = mock_client_cls.call_args[0][0]
+        assert config.insecure is True
+
+    def test_list_connection_error_exits_1(self):
+        with patch("regshape.cli.tag.list_tags",
+                   side_effect=requests.exceptions.ConnectionError("refused")):
+            result = _runner().invoke(regshape, [
+                "tag", "list", "-i", f"{REGISTRY}/{REPO}",
+            ])
+        assert result.exit_code == 1
 
 
 # ---------------------------------------------------------------------------
@@ -279,9 +231,7 @@ class TestTagListCommand:
 class TestTagDeleteCommand:
 
     def test_delete_success(self):
-        with patch("regshape.cli.tag.http_request") as mock_req, \
-             patch("regshape.cli.tag.resolve_credentials", return_value=(None, None)):
-            mock_req.return_value = _make_response(202)
+        with patch("regshape.cli.tag.delete_tag", return_value=None):
             result = _runner().invoke(regshape, [
                 "tag", "delete", "-i", f"{REGISTRY}/{REPO}:{TAG}",
             ])
@@ -296,94 +246,67 @@ class TestTagDeleteCommand:
         assert "manifest delete" in result.output
 
     def test_delete_404_exits_1(self):
-        with patch("regshape.cli.tag.http_request") as mock_req, \
-             patch("regshape.cli.tag.resolve_credentials", return_value=(None, None)):
-            mock_req.return_value = _make_response(
-                404,
-                json.dumps({"errors": [{"code": "MANIFEST_UNKNOWN", "message": "tag not found"}]}),
-            )
+        with patch("regshape.cli.tag.delete_tag",
+                   side_effect=TagError(
+                       f"Tag not found: {REGISTRY}/{REPO}:{TAG}", "MANIFEST_UNKNOWN"
+                   )):
             result = _runner().invoke(regshape, [
                 "tag", "delete", "-i", f"{REGISTRY}/{REPO}:{TAG}",
             ])
         assert result.exit_code == 1
 
     def test_delete_405_tag_deletion_disabled(self):
-        with patch("regshape.cli.tag.http_request") as mock_req, \
-             patch("regshape.cli.tag.resolve_credentials", return_value=(None, None)):
-            mock_req.return_value = _make_response(405)
+        with patch("regshape.cli.tag.delete_tag",
+                   side_effect=TagError(
+                       "Tag deletion is not supported by this registry", "HTTP 405"
+                   )):
             result = _runner().invoke(regshape, [
                 "tag", "delete", "-i", f"{REGISTRY}/{REPO}:{TAG}",
             ])
         assert result.exit_code == 1
         assert "not supported" in result.output
 
-    def test_delete_auth_challenge_bearer(self):
-        auth_resp = _make_response(
-            401,
-            www_auth='Bearer realm="https://auth.example.io/token",service="acr.example.io"',
-        )
-        ok_resp = _make_response(202)
-        with patch("regshape.cli.tag.http_request", side_effect=[auth_resp, ok_resp]), \
-             patch("regshape.cli.tag.resolve_credentials", return_value=("alice", "secret")), \
-             patch("regshape.cli.tag.registryauth.authenticate", return_value="mytoken"):
-            result = _runner().invoke(regshape, [
-                "tag", "delete", "-i", f"{REGISTRY}/{REPO}:{TAG}",
-            ])
-        assert result.exit_code == 0
-        assert "Deleted tag" in result.output
-
-    def test_delete_401_no_www_authenticate_exits_1(self):
-        with patch("regshape.cli.tag.http_request") as mock_req, \
-             patch("regshape.cli.tag.resolve_credentials", return_value=(None, None)):
-            mock_req.return_value = _make_response(401)
+    def test_delete_auth_error_exits_1(self):
+        """Authentication failure from transport exits with code 1."""
+        with patch("regshape.cli.tag.delete_tag",
+                   side_effect=AuthError("Authentication failed", "HTTP 401")):
             result = _runner().invoke(regshape, [
                 "tag", "delete", "-i", f"{REGISTRY}/{REPO}:{TAG}",
             ])
         assert result.exit_code == 1
 
-    def test_delete_basic_auth_no_credentials_exits_1(self):
-        with patch("regshape.cli.tag.http_request") as mock_req, \
-             patch("regshape.cli.tag.resolve_credentials", return_value=(None, None)):
-            mock_req.return_value = _make_response(
-                401, www_auth='Basic realm="registry"'
-            )
-            result = _runner().invoke(regshape, [
-                "tag", "delete", "-i", f"{REGISTRY}/{REPO}:{TAG}",
-            ])
-        assert result.exit_code == 1
-
-    def test_delete_uses_manifests_endpoint(self):
-        with patch("regshape.cli.tag.http_request") as mock_req, \
-             patch("regshape.cli.tag.resolve_credentials", return_value=(None, None)):
-            mock_req.return_value = _make_response(202)
+    def test_delete_uses_secure_transport_by_default(self):
+        """RegistryClient is created with insecure=False by default."""
+        with patch("regshape.cli.tag.delete_tag", return_value=None), \
+             patch("regshape.cli.tag.RegistryClient") as mock_client_cls:
+            mock_client_cls.return_value = MagicMock()
             _runner().invoke(regshape, [
                 "tag", "delete", "-i", f"{REGISTRY}/{REPO}:{TAG}",
             ])
-        url = mock_req.call_args[0][0]
-        assert f"/v2/{REPO}/manifests/{TAG}" in url
+        config = mock_client_cls.call_args[0][0]
+        assert config.insecure is False
 
-    def test_delete_url_uses_https_by_default(self):
-        with patch("regshape.cli.tag.http_request") as mock_req, \
-             patch("regshape.cli.tag.resolve_credentials", return_value=(None, None)):
-            mock_req.return_value = _make_response(202)
-            _runner().invoke(regshape, [
-                "tag", "delete", "-i", f"{REGISTRY}/{REPO}:{TAG}",
-            ])
-        url = mock_req.call_args[0][0]
-        assert url.startswith("https://")
-
-    def test_delete_url_uses_http_when_insecure(self):
-        with patch("regshape.cli.tag.http_request") as mock_req, \
-             patch("regshape.cli.tag.resolve_credentials", return_value=(None, None)):
-            mock_req.return_value = _make_response(202)
+    def test_delete_uses_insecure_transport_when_flag_set(self):
+        """--insecure flag propagates insecure=True to TransportConfig."""
+        with patch("regshape.cli.tag.delete_tag", return_value=None), \
+             patch("regshape.cli.tag.RegistryClient") as mock_client_cls:
+            mock_client_cls.return_value = MagicMock()
             _runner().invoke(regshape, [
                 "--insecure", "tag", "delete", "-i", f"{REGISTRY}/{REPO}:{TAG}",
             ])
-        url = mock_req.call_args[0][0]
-        assert url.startswith("http://")
+        config = mock_client_cls.call_args[0][0]
+        assert config.insecure is True
 
     def test_delete_bad_image_ref_exits_1(self):
         result = _runner().invoke(regshape, [
             "tag", "delete", "-i", "no-registry/myimage:tag",
         ])
+        assert result.exit_code == 1
+
+    def test_delete_connection_error_exits_1(self):
+        with patch("regshape.cli.tag.delete_tag",
+                   side_effect=requests.exceptions.ConnectionError("refused")):
+            result = _runner().invoke(regshape, [
+                "tag", "delete", "-i", f"{REGISTRY}/{REPO}:{TAG}",
+            ])
         assert result.exit_code == 1

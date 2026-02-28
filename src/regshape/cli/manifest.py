@@ -11,11 +11,6 @@
               operations.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
-
-.. note::
-    HTTP requests are currently issued directly via ``requests`` + the
-    existing ``libs/auth/`` helpers.  These will be replaced by
-    ``RegistryClient`` calls once ``libs/transport/`` is implemented.
 """
 
 import json
@@ -25,16 +20,14 @@ from typing import Optional
 import click
 import requests
 
-from regshape.libs.auth import registryauth
-from regshape.libs.auth.credentials import resolve_credentials
 from regshape.libs.decorators import telemetry_options
-from regshape.libs.decorators.call_details import http_request
 from regshape.libs.decorators.scenario import track_scenario
-from regshape.libs.decorators.timing import track_time
 from regshape.libs.errors import AuthError, ManifestError
-from regshape.libs.models.error import OciErrorResponse
+from regshape.libs.manifests import delete_manifest, get_manifest, head_manifest, push_manifest
 from regshape.libs.models.manifest import ImageIndex, ImageManifest, parse_manifest
 from regshape.libs.models.mediatype import ALL_MANIFEST_MEDIA_TYPES, OCI_IMAGE_MANIFEST
+from regshape.libs.refs import format_ref, parse_image_ref
+from regshape.libs.transport import RegistryClient, TransportConfig
 
 # ---------------------------------------------------------------------------
 # Default Accept header value when the caller does not override it.
@@ -124,21 +117,18 @@ def get(ctx, image_ref, accept, part, output, raw):
         raise click.UsageError("--raw and --part are mutually exclusive")
 
     try:
-        registry, repo, reference = _parse_image_ref(image_ref)
+        registry, repo, reference = parse_image_ref(image_ref)
     except ValueError as exc:
         _error(image_ref, str(exc))
         sys.exit(1)
 
-    username, password = resolve_credentials(registry, None, None)
+    client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
     try:
-        body, _, _ = _fetch_manifest(
-            registry=registry,
+        body, _, _ = get_manifest(
+            client=client,
             repo=repo,
             reference=reference,
-            insecure=insecure,
-            username=username,
-            password=password,
             accept=accept or _DEFAULT_ACCEPT,
         )
     except (AuthError, ManifestError, requests.exceptions.RequestException) as exc:
@@ -200,21 +190,18 @@ def info(ctx, image_ref, accept):
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo, reference = _parse_image_ref(image_ref)
+        registry, repo, reference = parse_image_ref(image_ref)
     except ValueError as exc:
         _error(image_ref, str(exc))
         sys.exit(1)
 
-    username, password = resolve_credentials(registry, None, None)
+    client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
     try:
-        digest, media_type, size = _head_manifest(
-            registry=registry,
+        digest, media_type, size = head_manifest(
+            client=client,
             repo=repo,
             reference=reference,
-            insecure=insecure,
-            username=username,
-            password=password,
             accept=accept or _DEFAULT_ACCEPT,
         )
     except (AuthError, ManifestError, requests.exceptions.RequestException) as exc:
@@ -259,21 +246,18 @@ def descriptor(ctx, image_ref, accept):
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo, reference = _parse_image_ref(image_ref)
+        registry, repo, reference = parse_image_ref(image_ref)
     except ValueError as exc:
         _error(image_ref, str(exc))
         sys.exit(1)
 
-    username, password = resolve_credentials(registry, None, None)
+    client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
     try:
-        digest, media_type, size = _head_manifest(
-            registry=registry,
+        digest, media_type, size = head_manifest(
+            client=client,
             repo=repo,
             reference=reference,
-            insecure=insecure,
-            username=username,
-            password=password,
             accept=accept or _DEFAULT_ACCEPT,
         )
     except (AuthError, ManifestError, requests.exceptions.RequestException) as exc:
@@ -342,12 +326,10 @@ def put(ctx, image_ref, manifest_file, from_stdin, content_type):
         raise click.UsageError("One of --file or --stdin is required")
 
     try:
-        registry, repo, reference = _parse_image_ref(image_ref)
+        registry, repo, reference = parse_image_ref(image_ref)
     except ValueError as exc:
         _error(image_ref, str(exc))
         sys.exit(1)
-
-    username, password = resolve_credentials(registry, None, None)
 
     # Read manifest body
     if manifest_file:
@@ -364,16 +346,15 @@ def put(ctx, image_ref, manifest_file, from_stdin, content_type):
         except (json.JSONDecodeError, AttributeError):
             content_type = OCI_IMAGE_MANIFEST
 
+    client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
+
     try:
-        digest = _push_manifest(
-            registry=registry,
+        digest = push_manifest(
+            client=client,
             repo=repo,
             reference=reference,
             body=body,
             content_type=content_type,
-            insecure=insecure,
-            username=username,
-            password=password,
         )
     except (AuthError, ManifestError, requests.exceptions.RequestException) as exc:
         _error(image_ref, str(exc))
@@ -408,7 +389,7 @@ def delete(ctx, image_ref):
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo, reference = _parse_image_ref(image_ref)
+        registry, repo, reference = parse_image_ref(image_ref)
     except ValueError as exc:
         _error(image_ref, str(exc))
         sys.exit(1)
@@ -421,16 +402,13 @@ def delete(ctx, image_ref):
         )
         sys.exit(2)
 
-    username, password = resolve_credentials(registry, None, None)
+    client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
     try:
-        _delete_manifest(
-            registry=registry,
+        delete_manifest(
+            client=client,
             repo=repo,
             digest=reference,
-            insecure=insecure,
-            username=username,
-            password=password,
         )
     except (AuthError, ManifestError, requests.exceptions.RequestException) as exc:
         _error(image_ref, str(exc))
@@ -440,207 +418,7 @@ def delete(ctx, image_ref):
 
 
 # ===========================================================================
-# Internal helpers — HTTP operations
-# ===========================================================================
-
-@track_time
-def _fetch_manifest(
-    registry: str,
-    repo: str,
-    reference: str,
-    insecure: bool,
-    username: Optional[str],
-    password: Optional[str],
-    accept: str,
-) -> tuple[str, str, str]:
-    """Issue an authenticated GET for the manifest.
-
-    :returns: ``(body_str, content_type, digest)``
-    :raises AuthError: On authentication failure.
-    :raises ManifestError: On a non-2xx registry response.
-    :raises requests.exceptions.RequestException: On transport errors.
-    """
-    scheme = "http" if insecure else "https"
-    url = f"{scheme}://{registry}/v2/{repo}/manifests/{reference}"
-    headers = {"Accept": accept}
-
-    response = http_request(url, "GET", headers=headers, timeout=30)
-
-    if response.status_code == 401:
-        www_auth = response.headers.get("WWW-Authenticate", "")
-        if not www_auth:
-            raise AuthError(
-                "Authentication failed",
-                f"registry {registry!r} returned 401 without WWW-Authenticate",
-            )
-        auth_scheme = www_auth.split(" ", 1)[0]
-        if auth_scheme.lower() == "basic" and (username is None or password is None):
-            raise AuthError(
-                "Authentication failed",
-                "Registry requested Basic authentication but no credentials are available",
-            )
-        normalized_www_auth, normalized_scheme = _normalize_www_authenticate(www_auth)
-        auth_value = registryauth.authenticate(normalized_www_auth, username, password)
-        headers["Authorization"] = f"{normalized_scheme} {auth_value}"
-        response = http_request(url, "GET", headers=headers, timeout=30)
-
-    _raise_for_manifest_error(response, registry, repo, reference)
-
-    body = response.text
-    content_type = response.headers.get("Content-Type", "")
-    digest = response.headers.get("Docker-Content-Digest", "")
-    return body, content_type, digest
-
-
-@track_time
-def _head_manifest(
-    registry: str,
-    repo: str,
-    reference: str,
-    insecure: bool,
-    username: Optional[str],
-    password: Optional[str],
-    accept: str,
-) -> tuple[str, str, int]:
-    """Issue an authenticated HEAD for the manifest.
-
-    :returns: ``(digest, content_type, size)``
-    :raises AuthError: On authentication failure.
-    :raises ManifestError: On a non-2xx registry response.
-    :raises requests.exceptions.RequestException: On transport errors.
-    """
-    scheme = "http" if insecure else "https"
-    url = f"{scheme}://{registry}/v2/{repo}/manifests/{reference}"
-    headers = {"Accept": accept}
-
-    response = http_request(url, "HEAD", headers=headers, timeout=30)
-
-    if response.status_code == 401:
-        www_auth = response.headers.get("WWW-Authenticate", "")
-        if not www_auth:
-            raise AuthError(
-                "Authentication failed",
-                f"registry {registry!r} returned 401 without WWW-Authenticate",
-            )
-        auth_scheme = www_auth.split(" ", 1)[0]
-        # Avoid generating a Basic token for missing or partial credentials.
-        if auth_scheme.lower() == "basic" and (
-            username is None or password is None
-        ):
-            raise AuthError(
-                "Authentication failed",
-                f"registry {registry!r} requires Basic authentication, but no "
-                "credentials were provided. Please supply a username and password "
-                "or configure registry credentials.",
-            )
-        normalized_www_auth, normalized_scheme = _normalize_www_authenticate(www_auth)
-        auth_value = registryauth.authenticate(normalized_www_auth, username, password)
-        headers["Authorization"] = f"{normalized_scheme} {auth_value}"
-        response = http_request(url, "HEAD", headers=headers, timeout=30)
-
-    _raise_for_manifest_error(response, registry, repo, reference)
-
-    digest = response.headers.get("Docker-Content-Digest", "")
-    media_type = response.headers.get("Content-Type", "")
-    try:
-        size = int(response.headers.get("Content-Length", "0"))
-    except ValueError:
-        size = 0
-    return digest, media_type, size
-
-
-@track_time
-def _push_manifest(
-    registry: str,
-    repo: str,
-    reference: str,
-    body: bytes,
-    content_type: str,
-    insecure: bool,
-    username: Optional[str],
-    password: Optional[str],
-) -> str:
-    """Issue an authenticated PUT for the manifest.
-
-    :returns: The ``Docker-Content-Digest`` from the response.
-    :raises AuthError: On authentication failure.
-    :raises ManifestError: On a non-2xx registry response.
-    :raises requests.exceptions.RequestException: On transport errors.
-    """
-    scheme = "http" if insecure else "https"
-    url = f"{scheme}://{registry}/v2/{repo}/manifests/{reference}"
-    headers = {"Content-Type": content_type}
-
-    response = http_request(url, "PUT", headers=headers, data=body, timeout=30)
-
-    if response.status_code == 401:
-        www_auth = response.headers.get("WWW-Authenticate", "")
-        if not www_auth:
-            raise AuthError(
-                "Authentication failed",
-                f"registry {registry!r} returned 401 without WWW-Authenticate",
-            )
-        auth_scheme = www_auth.split(" ", 1)[0]
-        # Avoid generating a Basic token for missing credentials (e.g. None:None).
-        if auth_scheme.lower() == "basic" and (username is None or password is None):
-            raise AuthError(
-                "Authentication failed",
-                "Registry requested Basic authentication but no username/password were provided.",
-            )
-        normalized_www_auth, normalized_scheme = _normalize_www_authenticate(www_auth)
-        auth_value = registryauth.authenticate(normalized_www_auth, username, password)
-        headers["Authorization"] = f"{normalized_scheme} {auth_value}"
-        response = http_request(url, "PUT", headers=headers, data=body, timeout=30)
-
-    _raise_for_manifest_error(response, registry, repo, reference)
-
-    return response.headers.get("Docker-Content-Digest", "")
-
-
-@track_time
-def _delete_manifest(
-    registry: str,
-    repo: str,
-    digest: str,
-    insecure: bool,
-    username: Optional[str],
-    password: Optional[str],
-) -> None:
-    """Issue an authenticated DELETE for the manifest.
-
-    :raises AuthError: On authentication failure.
-    :raises ManifestError: On a non-2xx registry response.
-    :raises requests.exceptions.RequestException: On transport errors.
-    """
-    scheme = "http" if insecure else "https"
-    url = f"{scheme}://{registry}/v2/{repo}/manifests/{digest}"
-
-    response = http_request(url, "DELETE", timeout=30)
-
-    if response.status_code == 401:
-        www_auth = response.headers.get("WWW-Authenticate", "")
-        if not www_auth:
-            raise AuthError(
-                "Authentication failed",
-                f"registry {registry!r} returned 401 without WWW-Authenticate",
-            )
-        auth_scheme = www_auth.split(" ", 1)[0]
-        # For Basic auth, ensure credentials are present before attempting to authenticate.
-        if auth_scheme.lower() == "basic" and (username is None or password is None):
-            raise AuthError(
-                "Authentication failed",
-                f"registry {registry!r} requires Basic authentication but no credentials were provided",
-            )
-        normalized_www_auth, normalized_scheme = _normalize_www_authenticate(www_auth)
-        auth_value = registryauth.authenticate(normalized_www_auth, username, password)
-        auth_headers = {"Authorization": f"{normalized_scheme} {auth_value}"}
-        response = http_request(url, "DELETE", headers=auth_headers, timeout=30)
-
-    _raise_for_manifest_error(response, registry, repo, digest)
-
-
-# ===========================================================================
-# Internal helpers — model extraction, reference parsing, error formatting
+# Internal helpers — model extraction, output, error
 # ===========================================================================
 
 def _extract_part(
@@ -673,151 +451,6 @@ def _extract_part(
 
     # Should not reach here because Click validates the choice
     return 1, f"unknown part: {part!r}"
-
-
-def _parse_image_ref(
-    image_ref: str,
-) -> tuple[str, str, str]:
-    """Parse an image reference into ``(registry, repository, reference)``.
-
-    The registry must be embedded in the reference. Supported formats::
-
-        registry.io/myimage:tag
-        registry.io/myrepo/myimage:tag
-        registry.io/myimage@sha256:<hex>
-        registry.io/myrepo/myimage@sha256:<hex>
-
-    :param image_ref: The image reference string from the ``--image-ref`` flag.
-    :returns: A ``(registry, repo, reference)`` triple where ``reference``
-        is the tag or digest string (without the ``@`` prefix).
-    :raises ValueError: If the registry cannot be determined from the
-        image reference.
-    """
-    # Separate digest (@) from tag (:) — digest takes priority
-    if "@" in image_ref:
-        path_part, digest_part = image_ref.rsplit("@", 1)
-        ref = digest_part
-    elif ":" in image_ref:
-        # Could be "registry:port/repo:tag" so split on the last ":"
-        last_colon = image_ref.rfind(":")
-        # Make sure the colon is not part of a port in the registry hostname
-        # (simple check: if the part after the last colon contains a slash, it's
-        # a host:port situation — split differently)
-        before_colon = image_ref[:last_colon]
-        after_colon = image_ref[last_colon + 1:]
-        if "/" in after_colon:
-            # "registry:5000/repo/image" with no tag — use "latest"
-            path_part = image_ref
-            ref = "latest"
-        else:
-            path_part = before_colon
-            ref = after_colon
-    else:
-        path_part = image_ref
-        ref = "latest"
-
-    # Determine whether the first component of path_part is a registry hostname
-    parts = path_part.split("/")
-    first = parts[0]
-    is_registry = (
-        "." in first
-        or ":" in first
-        or first == "localhost"
-    )
-
-    if is_registry:
-        registry = first
-        repo = "/".join(parts[1:])
-    else:
-        raise ValueError(
-            f"Cannot determine registry from {image_ref!r}: "
-            "embed the registry in --image-ref (e.g. acr.io/repo:tag)"
-        )
-
-    if not repo:
-        raise ValueError(
-            f"Cannot determine repository from {image_ref!r}"
-        )
-
-    return registry, repo, ref
-
-
-def _raise_for_manifest_error(
-    response: requests.Response,
-    registry: str,
-    repo: str,
-    reference: str,
-) -> None:
-    """Raise a :class:`ManifestError` for non-2xx responses.
-
-    Attempts to parse the OCI error JSON body for a descriptive message.
-
-    :raises ManifestError: For all non-2xx status codes.
-    """
-    if 200 <= response.status_code < 300:
-        return
-
-    detail = OciErrorResponse.from_response(response).first_detail() or response.text[:200]
-
-    if response.status_code == 404:
-        raise ManifestError(
-            f"Manifest not found: {_format_ref(registry, repo, reference)}",
-            detail or f"HTTP 404",
-        )
-    if response.status_code == 401:
-        raise AuthError(
-            f"Authentication failed for {registry}",
-            detail or "HTTP 401",
-        )
-    raise ManifestError(
-        f"Registry error for {_format_ref(registry, repo, reference)}",
-        detail or f"HTTP {response.status_code}",
-    )
-
-
-def _normalize_www_authenticate(www_auth: str) -> tuple[str, str]:
-    """Normalize a WWW-Authenticate header value.
-
-    Returns a ``(normalized_www_auth, normalized_scheme)`` tuple.
-
-    - Capitalizes ``basic``/``bearer`` scheme names so that
-      :func:`registryauth.authenticate` receives the expected casing.
-    - Strips leading and trailing whitespace from each comma-separated
-      parameter to prevent parse failures in
-      ``registryauth._parse_auth_header()`` when a registry produces
-      ``Bearer realm=\"...\", service=\"...\"`` (space after comma).
-
-    :param www_auth: Raw ``WWW-Authenticate`` header value.
-    :returns: ``(normalized_www_auth, normalized_scheme)`` where
-              *normalized_www_auth* is the cleaned full header value and
-              *normalized_scheme* is the scheme portion used when building
-              the ``Authorization`` request header.
-    """
-    scheme, sep, params = www_auth.partition(" ")
-    normalized_scheme = scheme.capitalize() if scheme.lower() in ("basic", "bearer") else scheme
-    if sep and params:
-        cleaned_params = ",".join(part.strip() for part in params.split(","))
-        normalized_www_auth = f"{normalized_scheme} {cleaned_params}"
-    else:
-        normalized_www_auth = normalized_scheme
-    return normalized_www_auth, normalized_scheme
-
-
-def _format_ref(registry: str, repo: str, reference: str) -> str:
-    """Return a canonical OCI reference string.
-
-    Uses ``@`` as the separator when *reference* is a digest
-    (starts with ``sha256:`` or another algorithm prefix followed by ``:``).
-    Uses ``:`` for tag references.
-
-    :param registry: Registry hostname.
-    :param repo: Repository name.
-    :param reference: Tag or digest.
-    :returns: Canonical reference string, e.g. ``acr.io/repo:tag`` or
-              ``acr.io/repo@sha256:abc...``.
-    """
-    sep = "@" if (reference.startswith("sha256:") or reference.startswith("sha512:")) else ":"
-    return f"{registry}/{repo}{sep}{reference}"
 
 
 def _write(output_path: Optional[str], content: str) -> None:
