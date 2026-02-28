@@ -40,3 +40,10 @@ class TagError(RegShapeError):
     Error caused by a malformed or unprocessable tag-list response.
     """
     pass
+
+
+class BlobError(RegShapeError):
+    """
+    Error caused by a malformed, missing, or unprocessable blob or upload session.
+    """
+    pass
