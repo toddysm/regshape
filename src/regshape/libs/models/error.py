@@ -203,13 +203,13 @@ class OciErrorResponse:
 
         :param data: JSON string of an OCI error response body.
         :returns: An :class:`OciErrorResponse` instance.
-        :raises ValueError: If *data* is not valid JSON.
+        :raises ValueError: If *data* is not valid JSON or has the wrong type.
         """
         try:
             parsed = json.loads(data)
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, TypeError) as exc:
             raise ValueError(
-                f"OciErrorResponse.from_json: invalid JSON — {exc}"
+                f"OciErrorResponse.from_json: invalid JSON input — {exc}"
             ) from exc
         return cls.from_dict(parsed)
 
