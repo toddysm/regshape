@@ -2,8 +2,6 @@
 
 """Tests for :mod:`regshape.libs.transport.client`."""
 
-import json
-
 import pytest
 import requests
 from unittest.mock import MagicMock, patch
