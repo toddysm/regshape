@@ -6,7 +6,7 @@ import json
 
 import pytest
 import requests
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from regshape.libs.errors import AuthError, ManifestError
 from regshape.libs.manifests.operations import (
