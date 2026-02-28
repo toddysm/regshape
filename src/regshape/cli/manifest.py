@@ -32,6 +32,7 @@ from regshape.libs.decorators.call_details import http_request
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.decorators.timing import track_time
 from regshape.libs.errors import AuthError, ManifestError
+from regshape.libs.models.error import OciErrorResponse
 from regshape.libs.models.manifest import ImageIndex, ImageManifest, parse_manifest
 from regshape.libs.models.mediatype import ALL_MANIFEST_MEDIA_TYPES, OCI_IMAGE_MANIFEST
 
@@ -756,18 +757,7 @@ def _raise_for_manifest_error(
     if 200 <= response.status_code < 300:
         return
 
-    # Try to parse OCI error body
-    detail = ""
-    try:
-        err_body = response.json()
-        errors = err_body.get("errors", [])
-        if errors:
-            first = errors[0]
-            code = first.get("code", "")
-            msg = first.get("message", "")
-            detail = f"{code}: {msg}"
-    except Exception:
-        detail = response.text[:200]
+    detail = OciErrorResponse.from_response(response).first_detail() or response.text[:200]
 
     if response.status_code == 404:
         raise ManifestError(
