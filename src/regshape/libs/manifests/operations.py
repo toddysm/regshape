@@ -175,15 +175,15 @@ def _raise_for_manifest_error(
     )
     ref_str = format_ref(registry, repo, reference)
 
-    if response.status_code == 404:
-        raise ManifestError(
-            f"Manifest not found: {ref_str}",
-            detail or "HTTP 404",
-        )
     if response.status_code == 401:
         raise AuthError(
             f"Authentication failed for {registry}",
             detail or "HTTP 401",
+        )
+    if response.status_code == 404:
+        raise ManifestError(
+            f"Manifest not found: {ref_str}",
+            detail or "HTTP 404",
         )
     raise ManifestError(
         f"Registry error for {ref_str}",
