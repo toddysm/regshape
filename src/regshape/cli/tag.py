@@ -31,6 +31,7 @@ from regshape.libs.decorators.call_details import http_request
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.decorators.timing import track_time
 from regshape.libs.errors import AuthError, TagError
+from regshape.libs.models.error import OciErrorResponse
 from regshape.libs.models.tags import TagList
 
 
@@ -311,28 +312,6 @@ def _delete_tag(
 # Internal helpers — utilities
 # ===========================================================================
 
-def _parse_oci_error_detail(response: requests.Response) -> str:
-    """Extract a human-readable detail string from an OCI error response body.
-
-    Returns the first OCI error as ``"CODE: message"`` when the body is valid
-    OCI error JSON, or falls back to the raw text (truncated to 200 chars).
-
-    :param response: The HTTP response to inspect.
-    :returns: A detail string, possibly empty.
-    """
-    try:
-        err_body = response.json()
-        errors = err_body.get("errors", [])
-        if errors:
-            first = errors[0]
-            code = first.get("code", "")
-            msg = first.get("message", "")
-            return f"{code}: {msg}"
-    except Exception:
-        pass
-    return response.text[:200]
-
-
 def _raise_for_list_error(
     response: requests.Response,
     registry: str,
@@ -352,7 +331,7 @@ def _raise_for_list_error(
     if 200 <= response.status_code < 300:
         return
 
-    detail = _parse_oci_error_detail(response)
+    detail = OciErrorResponse.from_response(response).first_detail() or response.text[:200]
 
     if response.status_code == 401:
         raise AuthError(
@@ -391,7 +370,7 @@ def _raise_for_delete_error(
     if 200 <= response.status_code < 300:
         return
 
-    detail = _parse_oci_error_detail(response)
+    detail = OciErrorResponse.from_response(response).first_detail() or response.text[:200]
 
     if response.status_code == 401:
         raise AuthError(
