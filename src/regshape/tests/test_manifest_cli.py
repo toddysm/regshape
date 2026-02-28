@@ -220,8 +220,12 @@ class TestManifestGet:
             )
         assert result.exit_code == 1
 
-    def test_get_bearer_challenge_retry(self):
-        """Auth retry is handled transparently by the transport layer."""
+    def test_get_auth_handled_by_transport(self):
+        """CLI exits 0 when the transport layer resolves auth transparently.
+
+        Bearer challenge/retry logic lives in RegistryClient and is covered by
+        test_transport_client.py; the CLI only needs to propagate the result.
+        """
         with patch("regshape.cli.manifest.get_manifest",
                    return_value=(_MANIFEST_JSON, OCI_IMAGE_MANIFEST, DIGEST)):
             result = _runner().invoke(
