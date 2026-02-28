@@ -87,7 +87,7 @@ def tag():
 )
 @click.pass_context
 @track_scenario("tag list")
-def list_tags(ctx, image_ref, page_size, last, as_json, output):
+def tag_list(ctx, image_ref, page_size, last, as_json, output):
     """List tags for the repository identified by IMAGE_REF.
 
     IMAGE_REF must embed the registry (``registry/repo`` or
