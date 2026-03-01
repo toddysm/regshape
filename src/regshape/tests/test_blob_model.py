@@ -161,11 +161,24 @@ class TestBlobUploadSession:
         assert session.offset == 0
 
     def test_from_location_absolute_url_with_query(self):
-        """Query string component must be preserved in the stored path."""
+        """Query string from the Location header must be preserved in upload_path."""
         url = "https://registry.example.com/v2/repo/blobs/uploads/uuid-1?state=xyz"
         session = BlobUploadSession.from_location(url)
-        assert session.upload_path.endswith("/uuid-1?state=xyz")
+        assert session.upload_path == "/v2/repo/blobs/uploads/uuid-1?state=xyz"
+        assert "?" in session.upload_path
         assert session.session_id == "uuid-1"
+
+    def test_from_location_relative_path_with_query(self):
+        """Query string on a relative Location path must also be preserved."""
+        url = "/v2/repo/blobs/uploads/abc-123?_state=tok&ttl=300"
+        session = BlobUploadSession.from_location(url)
+        assert session.upload_path == "/v2/repo/blobs/uploads/abc-123?_state=tok&ttl=300"
+        assert session.session_id == "abc-123"
+
+    def test_from_location_no_query_has_no_question_mark(self):
+        """When the Location has no query string, upload_path must not contain '?'."""
+        session = BlobUploadSession.from_location("/v2/repo/blobs/uploads/abc-123")
+        assert "?" not in session.upload_path
 
     def test_from_location_strips_trailing_slash(self):
         session = BlobUploadSession.from_location("/v2/myrepo/blobs/uploads/abc-123/")

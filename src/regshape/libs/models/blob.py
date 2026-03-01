@@ -85,12 +85,16 @@ class BlobUploadSession:
     to track the upload path and byte offset across the multi-step
     POST → (PATCH*) → PUT call sequence.
 
-    :param upload_path: Path component of the ``Location`` URL
-        (e.g. ``"/v2/repo/blobs/uploads/abc-123"``). Always a clean
-        ``/v2/...`` path regardless of whether the registry returned an
-        absolute URL or a relative path in the ``Location`` header.
-    :param session_id: UUID at the end of *upload_path*; the final non-empty
-        path segment.
+    :param upload_path: Path (and optional preserved query string) derived
+        from the ``Location`` header, e.g.
+        ``"/v2/repo/blobs/uploads/abc-123"`` or
+        ``"/v2/repo/blobs/uploads/abc-123?_state=tok"``.
+        Many registries embed required state tokens in the query component;
+        the full path+query is preserved so that subsequent PATCH and PUT
+        calls carry those tokens unchanged.  The ``digest`` query parameter
+        is *appended* rather than replacing the existing query.
+    :param session_id: UUID at the end of the path component of
+        *upload_path*; the final non-empty path segment before any ``?``.
     :param offset: Current byte offset into the upload. Starts at ``0`` and
         is advanced by the domain layer after each successful PATCH.
     """
@@ -124,17 +128,20 @@ class BlobUploadSession:
 
         Accepts both absolute URLs and relative paths::
 
-            https://registry.example.com/v2/repo/blobs/uploads/abc-123
-            /v2/repo/blobs/uploads/abc-123
+            https://registry.example.com/v2/repo/blobs/uploads/abc-123?_state=tok
+            /v2/repo/blobs/uploads/abc-123?_state=tok
 
-        ``urllib.parse.urlparse`` is used to extract the path component so
-        that the stored :attr:`upload_path` is always a clean ``/v2/...``
-        string regardless of the registry's chosen response style.
+        ``urllib.parse.urlparse`` is used to separate the scheme/host from
+        the path and query so that the stored :attr:`upload_path` is always
+        a scheme-less ``/v2/...`` path (with any query string preserved).
+        Registries commonly embed required state tokens in the query
+        component; stripping them would break subsequent PATCH/PUT calls.
 
         :param location: Raw ``Location`` header value from a POST response.
         :returns: A :class:`BlobUploadSession` with ``offset=0``.
         :raises BlobError: If *location* is empty, the parsed path does not
-            start with ``/v2/``, or the UUID segment is absent.
+            start with ``/v2/``, or the path is too shallow to contain a
+            session ID segment.
         """
         if not location:
             raise BlobError(
@@ -148,10 +155,9 @@ class BlobUploadSession:
                 "Failed to parse upload session from Location header",
                 f"expected path starting with '/v2/', got {path!r}",
             )
-        # The session ID is the last non-empty segment of the path.
-        # Require at least two non-empty path components beyond the leading
-        # slash (i.e. '/v2/x/uuid' minimum) so that bare '/v2/' or '/v2/x'
-        # are rejected as invalid upload-session paths.
+        # The session ID is the last non-empty path segment (before any query).
+        # Require at least three non-empty segments (e.g. 'v2', 'repo', 'uuid')
+        # so that bare '/v2/' or '/v2/x' are rejected.
         parts = [p for p in path.split("/") if p]
         if len(parts) < 3:
             raise BlobError(

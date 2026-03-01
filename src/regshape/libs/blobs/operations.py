@@ -20,6 +20,7 @@ concerns — error reporting is the caller's responsibility.
 
 import hashlib
 from typing import BinaryIO, Optional
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import requests
 
@@ -199,7 +200,7 @@ def upload_blob(
     session = BlobUploadSession.from_location(location)
 
     # --- Step 2: PUT the full content ---
-    put_path = f"{session.upload_path}?digest={digest}"
+    put_path = _append_query_param(session.upload_path, "digest", digest)
     put_response = client.put(
         put_path,
         data=data,
@@ -297,7 +298,7 @@ def upload_blob_chunked(
                 pass  # keep existing path if the new Location is unparseable
 
     # --- Step 3: completing PUT ---
-    put_path = f"{session.upload_path}?digest={digest}"
+    put_path = _append_query_param(session.upload_path, "digest", digest)
     put_response = client.put(
         put_path,
         data=b"",
@@ -364,6 +365,27 @@ def mount_blob(
 # ===========================================================================
 # Private helpers
 # ===========================================================================
+
+
+def _append_query_param(upload_path: str, key: str, value: str) -> str:
+    """Append a single query parameter to *upload_path*, preserving any
+    existing query string components.
+
+    Registries may embed required session tokens in the query string of the
+    upload URL (e.g. ``?_state=...``).  This helper appends *key*=*value*
+    as an additional parameter rather than replacing the whole query, so
+    those tokens survive to the completing PUT call.
+
+    :param upload_path: Current upload path, optionally including an
+        existing query string (e.g. ``"/v2/repo/.../uuid?_state=tok"``).
+    :param key: Query parameter name to append (e.g. ``"digest"``).
+    :param value: Query parameter value to append.
+    :returns: *upload_path* with ``key=value`` appended to the query string.
+    """
+    parsed = urlparse(upload_path)
+    params = parse_qsl(parsed.query, keep_blank_values=True)
+    params.append((key, value))
+    return urlunparse(("", "", parsed.path, "", urlencode(params), ""))
 
 
 def _blob_info_from_response(

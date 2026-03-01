@@ -180,8 +180,7 @@ class TestBlobGet:
                 ["blob", "get", "--repo", REPO, "--digest", DIGEST,
                  "--chunk-size", "131072"],
             )
-        call_kwargs = mock_get.call_args
-        assert "131072" in str(call_kwargs)
+        assert mock_get.call_args.kwargs["chunk_size"] == 131072
 
 
 # ---------------------------------------------------------------------------

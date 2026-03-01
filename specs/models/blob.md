@@ -106,21 +106,29 @@ upload path and byte offset across the POST → (PATCH*) → PUT call sequence.
 ```python
 @dataclass
 class BlobUploadSession:
-    upload_path: str  # Path component of the Location URL (/v2/.../uploads/<uuid>)
-    session_id: str   # UUID at the end of upload_path
+    upload_path: str  # Path + optional query from the Location URL
+                      # e.g. /v2/.../uploads/<uuid> or /v2/.../uploads/<uuid>?_state=tok
+    session_id: str   # UUID: the final path segment of upload_path (before any '?')
     offset: int = 0   # Current byte offset; advanced after each PATCH
 ```
 
 #### Field notes
 
-- **`upload_path`** is the path component of the `Location` header value. Some
-  registries return an absolute URL (`https://registry/v2/.../uploads/uuid``)
-  and others return a relative path (`/v2/.../uploads/uuid``). The class
-  always stores only the path component so that `RegistryClient` receives a
-  clean `/v2/...` path regardless of what the registry returned.
-- **`session_id`** is the final path segment of `upload_path` (the UUID
-  assigned by the registry). It is stored separately to allow callers to log
-  or reference the session without re-parsing the path.
+- **`upload_path`** is the scheme-stripped, host-stripped form of the
+  `Location` header value: the path component **plus any query string**.
+  Some registries return an absolute URL
+  (`https://registry/v2/.../uploads/uuid?_state=tok`) and others return a
+  relative path (`/v2/.../uploads/uuid?_state=tok`). The class strips the
+  scheme and host but **preserves the query string** because many registries
+  embed required session-state tokens there (e.g. `?_state=…`). Discarding
+  those tokens would cause subsequent PATCH and PUT calls to be rejected.
+  The `digest` query parameter is appended to the existing query on the
+  completing PUT rather than replacing it (see `_append_query_param` in
+  `libs/blobs/operations.py`).
+- **`session_id`** is the final **path** segment of `upload_path` (the UUID
+  assigned by the registry), extracted before any `?` delimiter. It is
+  stored separately to allow callers to log or reference the session without
+  re-parsing the path.
 - **`offset`** starts at 0 and is advanced by the domain layer after each
   successful PATCH. It is sent as the start of the `Content-Range` header on
   the next PATCH and as the final byte count on the completing PUT.
@@ -140,19 +148,27 @@ class BlobUploadSession:
 def from_location(cls, location: str) -> "BlobUploadSession":
     """Parse a ``Location`` header value into an upload session.
 
-    Accepts both absolute URLs and relative paths:
+    Accepts both absolute URLs and relative paths, with or without a
+    query string::
 
-    - ``https://registry.example.com/v2/repo/blobs/uploads/abc-123``
-    - ``/v2/repo/blobs/uploads/abc-123``
+        https://registry.example.com/v2/repo/blobs/uploads/abc-123?_state=tok
+        /v2/repo/blobs/uploads/abc-123?_state=tok
+        /v2/repo/blobs/uploads/abc-123
 
-    The path component is extracted with ``urllib.parse.urlparse`` so the
-    stored ``upload_path`` is always a clean ``/v2/...`` path.
+    ``urllib.parse.urlparse`` separates the scheme/host from the path and
+    query.  The stored ``upload_path`` is ``<path>?<query>`` when a query
+    string is present and just ``<path>`` otherwise — the scheme and host
+    are always stripped.  The query string is preserved intact because
+    registries commonly embed required session-state tokens there.
+
+    The ``session_id`` is extracted from the path component only (before
+    any ``?``) as the final non-empty path segment.
 
     :param location: Raw ``Location`` header value from a POST response.
     :returns: A :class:`BlobUploadSession` with ``offset=0``.
-    :raises BlobError: If *location* is empty, cannot be parsed, the path
-        component does not start with ``/v2/``, or the UUID segment is
-        absent.
+    :raises BlobError: If *location* is empty, the path component does not
+        start with ``/v2/``, or the path is too shallow to contain a
+        session-ID segment.
     """
 ```
 
@@ -179,7 +195,7 @@ in-process object that is never written to disk or sent over the wire.
 | `offset` is negative | `ValueError` | Raised in `BlobUploadSession.__post_init__` |
 | `location` is empty in `from_location` | `BlobError` | Raised before parsing |
 | `location` path does not start with `/v2/` | `BlobError` | Raised after parsing |
-| UUID segment absent from `location` path | `BlobError` | Raised after parsing |
+| `location` path too shallow to contain a session-ID segment | `BlobError` | Raised after parsing |
 
 `BlobError` is a subclass of `RegShapeError` added to `libs/errors.py`,
 parallel to `ManifestError` and `TagError`.
@@ -280,14 +296,20 @@ returning.
 
 The domain function maintains a `BlobUploadSession` internally:
 
-1. Issue `POST /v2/{repo}/blobs/uploads/` → `201` response → parse
+1. Issue `POST /v2/{repo}/blobs/uploads/` → `202` response → parse
    `BlobUploadSession.from_location(response.headers["Location"])`.
 2. Read `chunk_size` bytes from `source`. If EOF on first read, fall through
    to the completing PUT immediately.
 3. For each chunk: issue `PATCH <session.upload_path>` with
    `Content-Range: {session.offset}-{session.offset + len(chunk) - 1}/*` and
-   `Content-Length: {len(chunk)}`. On `202`, update `session.offset += len(chunk)`.
-4. On EOF: issue `PUT <upload_path>?digest={digest}` with an empty body and
+   `Content-Length: {len(chunk)}`. On `202`, update `session.offset += len(chunk)`
+   and replace `session.upload_path` with the path+query from the response
+   `Location` header (if present), because some registries rotate the session
+   URL per chunk.
+4. On EOF: build the completing PUT path by **appending** `digest=<digest>` to
+   `session.upload_path` via `_append_query_param` — this merges the digest
+   into any existing query params (e.g. `?_state=tok&digest=sha256:…`) rather
+   than overwriting them. Issue `PUT <put_path>` with an empty body and
    `Content-Length: 0`. Confirm `201` response and return the
    `Docker-Content-Digest` header value.
 
@@ -348,7 +370,9 @@ treating a no-op as success.
 - `hashlib` — SHA-256 digest verification in `get_blob`
 - `dataclasses` — `@dataclass`
 - `typing` — `Optional`, `BinaryIO`
-- `urllib.parse` — `urlparse` in `BlobUploadSession.from_location`
+- `urllib.parse` — `urlparse`, `urlunparse` in `BlobUploadSession.from_location`;
+  `parse_qsl`, `urlencode`, `urlparse`, `urlunparse` in `_append_query_param`
+  (`libs/blobs/operations.py`)
 
 No third-party dependencies in the model layer.
 
@@ -359,11 +383,12 @@ No third-party dependencies in the model layer.
 - [ ] Should `get_blob` with `output_path=None` cap the in-memory buffer size
   and raise a `BlobError` if the blob exceeds it? Current proposal: no cap —
   callers that may encounter large blobs are expected to supply `output_path`.
-- [ ] Should `upload_blob_chunked` update `session.upload_path` from the
+- [x] Should `upload_blob_chunked` update `session.upload_path` from the
   `Location` header returned by each `202 PATCH` response (some registries
   rotate the upload URL per chunk), or reuse the initial path throughout?
-  Current proposal: always use the `Location` from the most recent `202`
-  response if present, fall back to the initial path if the header is absent.
+  **Resolved**: always replace with the path+query parsed from the most recent
+  `202` response `Location` header; fall back to the existing path if the
+  header is absent or unparseable.
 - [ ] Should `upload_blob` accept a `BinaryIO` source in addition to `bytes`,
   to unify the caller interface with `upload_blob_chunked`?
   Current proposal: `bytes` only for `upload_blob` (monolithic implies the
