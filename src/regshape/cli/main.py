@@ -15,6 +15,7 @@
 import click
 
 from regshape.cli.auth import auth
+from regshape.cli.blob import blob
 from regshape.cli.manifest import manifest
 from regshape.cli.tag import tag
 
@@ -62,6 +63,7 @@ def regshape(
 # ---------------------------------------------------------------------------
 
 regshape.add_command(auth)
+regshape.add_command(blob)
 regshape.add_command(manifest)
 regshape.add_command(tag)
 
