@@ -146,7 +146,17 @@ def blob_get(ctx, repo, digest, output, chunk_size):
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo_name, _ = parse_image_ref(repo)
+        registry, repo_name, ref = parse_image_ref(repo)
+        # blob_get expects --repo to be a plain "registry/repository" without any tag
+        # (":tag") or digest ("@sha256:...") suffix. Reject non-plain refs explicitly
+        # so behavior matches the documented CLI contract.
+        if ref is not None:
+            _error(
+                repo,
+                "--repo must be a plain 'registry/repository' without tag or digest "
+                "(e.g. ':tag' or '@sha256:...')",
+            )
+            sys.exit(1)
     except ValueError as exc:
         _error(repo, str(exc))
         sys.exit(1)
