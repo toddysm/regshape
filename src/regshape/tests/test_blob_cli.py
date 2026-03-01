@@ -243,6 +243,36 @@ class TestBlobDelete:
         assert result.exit_code == 0
         json.loads(result.output)
 
+    def test_delete_rejects_repo_with_tag(self):
+        with patch("regshape.cli.blob.delete_blob") as mock_delete:
+            result = _runner().invoke(
+                regshape,
+                ["blob", "delete", "--repo", f"{REPO}:v1", "--digest", DIGEST],
+            )
+        assert result.exit_code == 1
+        assert "plain" in result.output
+        mock_delete.assert_not_called()
+
+    def test_delete_rejects_repo_with_latest_tag(self):
+        with patch("regshape.cli.blob.delete_blob") as mock_delete:
+            result = _runner().invoke(
+                regshape,
+                ["blob", "delete", "--repo", f"{REPO}:latest", "--digest", DIGEST],
+            )
+        assert result.exit_code == 1
+        assert "plain" in result.output
+        mock_delete.assert_not_called()
+
+    def test_delete_rejects_repo_with_digest(self):
+        with patch("regshape.cli.blob.delete_blob") as mock_delete:
+            result = _runner().invoke(
+                regshape,
+                ["blob", "delete", "--repo", f"{REPO}@{DIGEST}", "--digest", DIGEST],
+            )
+        assert result.exit_code == 1
+        assert "plain" in result.output
+        mock_delete.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # TestBlobUpload

@@ -146,13 +146,13 @@ def blob_get(ctx, repo, digest, output, chunk_size):
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo_name, ref = parse_image_ref(repo)
+        registry, repo_name, _ = parse_image_ref(repo)
         # blob_get expects --repo to be a plain "registry/repository" without any tag
         # (":tag") or digest ("@sha256:...") suffix. Reject non-plain refs explicitly
         # so behavior matches the documented CLI contract.
-        # parse_image_ref returns "latest" as the default ref for plain refs — only
-        # reject when the caller explicitly appended a qualifier.
-        if ref != "latest" or "@" in repo:
+        # Compare the reconstructed plain form against the raw input: any qualifier
+        # (including ":latest") will cause a mismatch.
+        if repo.rstrip("/") != f"{registry}/{repo_name}":
             _error(
                 repo,
                 "--repo must be a plain 'registry/repository' without tag or digest "
@@ -218,6 +218,11 @@ def blob_delete(ctx, repo, digest):
         registry, repo_name, _ = parse_image_ref(repo)
     except ValueError as exc:
         _error(repo, str(exc))
+        sys.exit(1)
+
+    if repo.rstrip("/") != f"{registry}/{repo_name}":
+        _error(repo, "--repo must be a plain 'registry/repository' without tag or digest "
+               "(e.g. ':tag' or '@sha256:...')")
         sys.exit(1)
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
@@ -297,12 +302,12 @@ def blob_upload(ctx, repo, source_file, digest, media_type, chunked, chunk_size)
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo_name, ref = parse_image_ref(repo)
+        registry, repo_name, _ = parse_image_ref(repo)
     except ValueError as exc:
         _error(repo, str(exc))
         sys.exit(1)
 
-    if ref != "latest" or "@" in repo:
+    if repo.rstrip("/") != f"{registry}/{repo_name}":
         _error(repo, "Repository must be a plain 'registry/repository' without a tag or digest")
         sys.exit(1)
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
@@ -390,12 +395,12 @@ def blob_mount(ctx, repo, digest, from_repo):
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo_name, ref = parse_image_ref(repo)
+        registry, repo_name, _ = parse_image_ref(repo)
     except ValueError as exc:
         _error(repo, str(exc))
         sys.exit(1)
 
-    if ref != "latest" or "@" in repo:
+    if repo.rstrip("/") != f"{registry}/{repo_name}":
         _error(repo, "repository must be a plain 'registry/repo' without tag or digest")
         sys.exit(1)
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
