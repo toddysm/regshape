@@ -159,4 +159,6 @@ class BlobUploadSession:
                 f"upload path is too short to contain a session ID: {path!r}",
             )
         segment = parts[-1]
-        return cls(upload_path=path.rstrip("/"), session_id=segment)
+        clean_path = parsed.path.rstrip("/")
+        upload_url = clean_path + ("?" + parsed.query if parsed.query else "")
+        return cls(upload_path=upload_url, session_id=segment)
