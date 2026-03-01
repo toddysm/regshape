@@ -12,7 +12,7 @@ import json
 import pytest
 import requests
 from click.testing import CliRunner
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from regshape.cli.main import regshape
 from regshape.libs.errors import AuthError, BlobError
