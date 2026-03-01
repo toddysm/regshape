@@ -427,16 +427,16 @@ regshape blob mount \
 
 | Condition | Message |
 |-----------|---------|
-| Mount not accepted | `Error: Blob mount not accepted for registry.example.com/targetrepo@sha256:abc123: registry returned 202 — retry with blob upload` |
-| Auth failure | `Error: Authentication failed for registry.example.com` |
-| Registry error | `Error: Registry error for registry.example.com/targetrepo` |
+| Mount not accepted | `Error [<reference>]: Blob mount not accepted for registry.example.com/targetrepo@sha256:abc123: registry returned 202 — retry with blob upload` |
+| Auth failure | `Error [<reference>]: Authentication failed for registry.example.com` |
+| Registry error | `Error [<reference>]: Registry error for registry.example.com/targetrepo` |
 
 ---
 
 ## Global Behaviour
 
 - All output goes to **stdout** in JSON format.
-- All error messages go to **stderr** with an `Error: ` prefix.
+- All error messages go to **stderr** with an `Error [<reference>]: ` prefix, where `<reference>` is an implementation-defined diagnostic identifier.
 - The `--telemetry` flag (inherited from the root command) controls whether
   timing and scenario data are collected for each operation.
 - `--dry-run` (when supported by the telemetry decorator layer) records the
