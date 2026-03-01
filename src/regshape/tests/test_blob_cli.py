@@ -155,8 +155,7 @@ class TestBlobGet:
         data = json.loads(result.output)
         assert data["digest"] == DIGEST
         # output_path must be None when --output is not given
-        _, kwargs = mock_get.call_args
-        assert kwargs.get("output_path") is None or mock_get.call_args[0][3] is None
+        assert mock_get.call_args.kwargs["output_path"] is None
 
     def test_get_with_output_passes_path(self, tmp_path):
         output_file = str(tmp_path / "layer.tar.gz")
@@ -167,8 +166,7 @@ class TestBlobGet:
             )
         assert result.exit_code == 0, result.output
         # Check that the domain function was called with the output path
-        call_kwargs = mock_get.call_args
-        assert output_file in str(call_kwargs)
+        assert mock_get.call_args.kwargs["output_path"] == output_file
 
     def test_get_not_found_exits_1(self):
         with patch(
