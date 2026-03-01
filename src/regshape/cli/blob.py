@@ -129,19 +129,19 @@ def blob_head(ctx, repo, digest):
     default=65536,
     show_default=True,
     metavar="BYTES",
-    help="Streaming chunk size in bytes (ignored without --output).",
+    help="Streaming chunk size in bytes.",
 )
 @click.pass_context
 @track_scenario("blob get")
 def blob_get(ctx, repo, digest, output, chunk_size):
     """Download a blob and verify its digest.
 
-    When --output is supplied the blob is streamed to that file path in
-    --chunk-size byte increments.  Without --output the blob is read into
-    memory and verified but not saved — useful for checking accessibility.
+    The blob content is streamed from the registry and the SHA-256 digest is
+    verified against DIGEST. When --output is supplied the streamed content
+    is written to the specified file path; otherwise it is not saved locally.
 
-    In both cases the SHA-256 digest is verified against DIGEST before
-    reporting success.  Credentials are resolved automatically.
+    The --chunk-size option controls the size of streaming chunks used when
+    downloading the blob. Credentials are resolved automatically.
     """
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
