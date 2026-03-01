@@ -150,7 +150,9 @@ def blob_get(ctx, repo, digest, output, chunk_size):
         # blob_get expects --repo to be a plain "registry/repository" without any tag
         # (":tag") or digest ("@sha256:...") suffix. Reject non-plain refs explicitly
         # so behavior matches the documented CLI contract.
-        if ref is not None:
+        # parse_image_ref returns "latest" as the default ref for plain refs — only
+        # reject when the caller explicitly appended a qualifier.
+        if ref != "latest" or "@" in repo:
             _error(
                 repo,
                 "--repo must be a plain 'registry/repository' without tag or digest "
@@ -300,7 +302,7 @@ def blob_upload(ctx, repo, source_file, digest, media_type, chunked, chunk_size)
         _error(repo, str(exc))
         sys.exit(1)
 
-    if ref is not None:
+    if ref != "latest" or "@" in repo:
         _error(repo, "Repository must be a plain 'registry/repository' without a tag or digest")
         sys.exit(1)
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
@@ -393,7 +395,7 @@ def blob_mount(ctx, repo, digest, from_repo):
         _error(repo, str(exc))
         sys.exit(1)
 
-    if ref is not None:
+    if ref != "latest" or "@" in repo:
         _error(repo, "repository must be a plain 'registry/repo' without tag or digest")
         sys.exit(1)
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
