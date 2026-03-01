@@ -161,10 +161,10 @@ class TestBlobUploadSession:
         assert session.offset == 0
 
     def test_from_location_absolute_url_with_query(self):
-        """Query string component must not appear in the stored path."""
+        """Query string component must be preserved in the stored path."""
         url = "https://registry.example.com/v2/repo/blobs/uploads/uuid-1?state=xyz"
         session = BlobUploadSession.from_location(url)
-        assert "?" not in session.upload_path
+        assert session.upload_path.endswith("/uuid-1?state=xyz")
         assert session.session_id == "uuid-1"
 
     def test_from_location_strips_trailing_slash(self):
