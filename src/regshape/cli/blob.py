@@ -83,6 +83,14 @@ def blob_head(ctx, repo, digest):
         _error(repo, str(exc))
         sys.exit(1)
 
+    if repo.rstrip("/") != f"{registry}/{repo_name}":
+        _error(
+            repo,
+            "--repo must be a plain 'registry/repository' without tag or digest "
+            "(e.g. ':tag' or '@sha256:...')",
+        )
+        sys.exit(1)
+
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
     try:

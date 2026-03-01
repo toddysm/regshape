@@ -107,6 +107,36 @@ class TestBlobHead:
         # Must parse without error
         json.loads(result.output)
 
+    def test_head_rejects_repo_with_tag(self):
+        with patch("regshape.cli.blob.head_blob") as mock_head:
+            result = _runner().invoke(
+                regshape,
+                ["blob", "head", "--repo", f"{REPO}:v1", "--digest", DIGEST],
+            )
+        assert result.exit_code == 1
+        assert "plain" in result.output
+        mock_head.assert_not_called()
+
+    def test_head_rejects_repo_with_latest_tag(self):
+        with patch("regshape.cli.blob.head_blob") as mock_head:
+            result = _runner().invoke(
+                regshape,
+                ["blob", "head", "--repo", f"{REPO}:latest", "--digest", DIGEST],
+            )
+        assert result.exit_code == 1
+        assert "plain" in result.output
+        mock_head.assert_not_called()
+
+    def test_head_rejects_repo_with_digest(self):
+        with patch("regshape.cli.blob.head_blob") as mock_head:
+            result = _runner().invoke(
+                regshape,
+                ["blob", "head", "--repo", f"{REPO}@{DIGEST}", "--digest", DIGEST],
+            )
+        assert result.exit_code == 1
+        assert "plain" in result.output
+        mock_head.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # TestBlobGet
