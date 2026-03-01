@@ -347,8 +347,8 @@ def mount_blob(
     :raises requests.exceptions.RequestException: On transport errors.
     """
     registry = client.config.registry
-    path = f"/v2/{repo}/blobs/uploads/?from={from_repo}&mount={digest}"
-    response = client.post(path)
+    path = f"/v2/{repo}/blobs/uploads/"
+    response = client.post(path, params={"from": from_repo, "mount": digest})
 
     if response.status_code == 202:
         raise BlobError(
