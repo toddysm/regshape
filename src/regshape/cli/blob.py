@@ -285,11 +285,14 @@ def blob_upload(ctx, repo, source_file, digest, media_type, chunked, chunk_size)
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo_name, _ = parse_image_ref(repo)
+        registry, repo_name, ref = parse_image_ref(repo)
     except ValueError as exc:
         _error(repo, str(exc))
         sys.exit(1)
 
+    if ref is not None:
+        _error(repo, "Repository must be a plain 'registry/repository' without a tag or digest")
+        sys.exit(1)
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
     try:
