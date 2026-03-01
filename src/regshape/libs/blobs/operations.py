@@ -77,16 +77,18 @@ def get_blob(
     """Download a blob and verify its digest.
 
     Issues a ``GET /v2/{repo}/blobs/{digest}`` request with streaming enabled.
-    When *output_path* is supplied the response body is written to that file
-    in *chunk_size*-byte increments; otherwise the body is read fully into
-    memory.  In both cases the SHA-256 digest of the received bytes is
-    verified against *digest* before returning.
+    When *output_path* is supplied the response body is streamed to that file
+    in *chunk_size*-byte increments.  When *output_path* is ``None`` the body
+    is still consumed incrementally in chunks but only to compute the digest;
+    the content itself is not retained after verification.  In both cases the
+    SHA-256 digest of the received bytes is verified against *digest* before
+    returning.
 
     :param client: Authenticated transport client for the target registry.
     :param repo: Repository name.
     :param digest: Expected blob digest (``"sha256:..."``).
     :param output_path: File path to write the blob to. When ``None`` the
-        content is read into memory and discarded after digest verification.
+        content is streamed only for digest verification and then discarded.
     :param chunk_size: Streaming chunk size in bytes (default ``65536``).
     :returns: :class:`~regshape.libs.models.blob.BlobInfo` built from
         response headers after successful digest verification.
