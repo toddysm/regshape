@@ -380,8 +380,8 @@ class TestBlobUpload:
                     "--media-type", custom_type,
                 ],
             )
-        call_kwargs = mock_upload.call_args
-        assert custom_type in str(call_kwargs)
+        args, kwargs = mock_upload.call_args
+        assert kwargs.get("media_type") == custom_type
 
 
 # ---------------------------------------------------------------------------
