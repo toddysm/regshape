@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from regshape.libs.blobs.operations import get_blob
+from regshape.libs.blobs.operations import get_blob, upload_blob, upload_blob_chunked
 from regshape.libs.errors import BlobError
 from regshape.libs.models.blob import BlobInfo
 
@@ -227,3 +227,149 @@ class TestGetBlobReturnValue:
         assert info.digest == digest
         assert info.size == len(CONTENT)
         assert info.content_type == "application/vnd.oci.image.layer.v1.tar+gzip"
+
+
+# ===========================================================================
+# upload_blob — completing PUT uses params= for digest
+# ===========================================================================
+
+
+DIGEST = _sha256_of(CONTENT)
+
+
+def _make_post_response(location: str, status_code: int = 202) -> MagicMock:
+    """Mock POST response that returns a Location header."""
+    r = MagicMock()
+    r.status_code = status_code
+    r.headers = {"Location": location}
+    r.text = ""
+    return r
+
+
+def _make_put_response(digest: str, status_code: int = 201) -> MagicMock:
+    """Mock PUT response that confirms the digest."""
+    r = MagicMock()
+    r.status_code = status_code
+    r.headers = {"Docker-Content-Digest": digest}
+    r.text = ""
+    return r
+
+
+def _make_patch_response(location: str = "", status_code: int = 202) -> MagicMock:
+    """Mock PATCH response."""
+    r = MagicMock()
+    r.status_code = status_code
+    r.headers = {"Location": location} if location else {}
+    r.text = ""
+    return r
+
+
+class TestUploadBlobPutParams:
+
+    def test_digest_passed_as_param_not_in_path(self):
+        """The digest must be a params entry, never embedded in the path string."""
+        client = _make_client()
+        client.post.return_value = _make_post_response(
+            f"/v2/{REPO}/blobs/uploads/abc-123"
+        )
+        client.put.return_value = _make_put_response(DIGEST)
+
+        upload_blob(client=client, repo=REPO, data=CONTENT, digest=DIGEST)
+
+        _, put_kwargs = client.put.call_args
+        assert "?" not in client.put.call_args.args[0], (
+            "path passed to client.put must not contain a query string"
+        )
+        params = put_kwargs.get("params", [])
+        assert any(k == "digest" and v == DIGEST for k, v in params), (
+            "digest must appear in params"
+        )
+
+    def test_existing_session_params_preserved(self):
+        """Query params from the upload Location (e.g. _state token) must survive."""
+        client = _make_client()
+        client.post.return_value = _make_post_response(
+            f"/v2/{REPO}/blobs/uploads/abc-123?_state=tok123"
+        )
+        client.put.return_value = _make_put_response(DIGEST)
+
+        upload_blob(client=client, repo=REPO, data=CONTENT, digest=DIGEST)
+
+        _, put_kwargs = client.put.call_args
+        params = put_kwargs.get("params", [])
+        assert ("_state", "tok123") in params, "existing session token must be preserved"
+        assert any(k == "digest" for k, v in params), "digest must be present"
+
+    def test_session_param_ordering_token_before_digest(self):
+        """Existing session params must appear before digest in the params list."""
+        client = _make_client()
+        client.post.return_value = _make_post_response(
+            f"/v2/{REPO}/blobs/uploads/abc-123?_state=tok123"
+        )
+        client.put.return_value = _make_put_response(DIGEST)
+
+        upload_blob(client=client, repo=REPO, data=CONTENT, digest=DIGEST)
+
+        _, put_kwargs = client.put.call_args
+        params = put_kwargs.get("params", [])
+        keys = [k for k, v in params]
+        assert keys.index("_state") < keys.index("digest")
+
+    def test_no_session_params_only_digest(self):
+        """When upload path has no query string, params must contain only digest."""
+        client = _make_client()
+        client.post.return_value = _make_post_response(
+            f"/v2/{REPO}/blobs/uploads/abc-123"
+        )
+        client.put.return_value = _make_put_response(DIGEST)
+
+        upload_blob(client=client, repo=REPO, data=CONTENT, digest=DIGEST)
+
+        _, put_kwargs = client.put.call_args
+        params = put_kwargs.get("params", [])
+        assert params == [("digest", DIGEST)]
+
+
+class TestUploadBlobChunkedPutParams:
+
+    def test_digest_passed_as_param_not_in_path(self):
+        """Completing PUT must use params= for the digest, not a bare string concat."""
+        import io
+        client = _make_client()
+        client.post.return_value = _make_post_response(
+            f"/v2/{REPO}/blobs/uploads/abc-123"
+        )
+        client.patch.return_value = _make_patch_response()
+        client.put.return_value = _make_put_response(DIGEST)
+
+        upload_blob_chunked(
+            client=client, repo=REPO, source=io.BytesIO(CONTENT), digest=DIGEST
+        )
+
+        _, put_kwargs = client.put.call_args
+        assert "?" not in client.put.call_args.args[0]
+        params = put_kwargs.get("params", [])
+        assert any(k == "digest" and v == DIGEST for k, v in params)
+
+    def test_rotated_session_params_preserved_on_put(self):
+        """If PATCH response rotates the Location with a new _state token,
+        that token must survive to the completing PUT."""
+        import io
+        client = _make_client()
+        client.post.return_value = _make_post_response(
+            f"/v2/{REPO}/blobs/uploads/abc-123"
+        )
+        # PATCH returns a new Location with a rotated session token
+        client.patch.return_value = _make_patch_response(
+            location=f"/v2/{REPO}/blobs/uploads/abc-123?_state=rotated99"
+        )
+        client.put.return_value = _make_put_response(DIGEST)
+
+        upload_blob_chunked(
+            client=client, repo=REPO, source=io.BytesIO(CONTENT), digest=DIGEST
+        )
+
+        _, put_kwargs = client.put.call_args
+        params = put_kwargs.get("params", [])
+        assert ("_state", "rotated99") in params
+        assert any(k == "digest" for k, v in params)

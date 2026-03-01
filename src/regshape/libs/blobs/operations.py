@@ -20,7 +20,7 @@ concerns — error reporting is the caller's responsibility.
 
 import hashlib
 from typing import BinaryIO, Optional
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qsl, urlparse
 
 import requests
 
@@ -214,10 +214,12 @@ def upload_blob(
     session = BlobUploadSession.from_location(location)
 
     # --- Step 2: PUT the full content ---
-    put_path = _append_query_param(session.upload_path, "digest", digest)
+    _put_base, _put_params = _split_upload_path(session.upload_path)
+    _put_params.append(("digest", digest))
     put_response = client.put(
-        put_path,
+        _put_base,
         data=data,
+        params=_put_params,
         headers={
             "Content-Type": content_type,
             "Content-Length": str(len(data)),
@@ -312,10 +314,12 @@ def upload_blob_chunked(
                 pass  # keep existing path if the new Location is unparseable
 
     # --- Step 3: completing PUT ---
-    put_path = _append_query_param(session.upload_path, "digest", digest)
+    _put_base, _put_params = _split_upload_path(session.upload_path)
+    _put_params.append(("digest", digest))
     put_response = client.put(
-        put_path,
+        _put_base,
         data=b"",
+        params=_put_params,
         headers={
             "Content-Type": content_type,
             "Content-Length": "0",
@@ -381,25 +385,22 @@ def mount_blob(
 # ===========================================================================
 
 
-def _append_query_param(upload_path: str, key: str, value: str) -> str:
-    """Append a single query parameter to *upload_path*, preserving any
-    existing query string components.
+def _split_upload_path(upload_path: str) -> tuple[str, list[tuple[str, str]]]:
+    """Split *upload_path* into a bare path and a list of (key, value) query params.
 
     Registries may embed required session tokens in the query string of the
-    upload URL (e.g. ``?_state=...``).  This helper appends *key*=*value*
-    as an additional parameter rather than replacing the whole query, so
-    those tokens survive to the completing PUT call.
+    upload URL (e.g. ``?_state=...``).  Callers append ``digest`` to the
+    returned list and pass both the bare path and params list to
+    ``client.put(..., params=params)``, letting ``requests`` handle
+    percent-encoding rather than building the URL manually.
 
-    :param upload_path: Current upload path, optionally including an
-        existing query string (e.g. ``"/v2/repo/.../uuid?_state=tok"``).
-    :param key: Query parameter name to append (e.g. ``"digest"``).
-    :param value: Query parameter value to append.
-    :returns: *upload_path* with ``key=value`` appended to the query string.
+    :param upload_path: Upload path from :attr:`BlobUploadSession.upload_path`,
+        optionally containing a query string.
+    :returns: ``(bare_path, [(key, value), ...])`` pair; *params* preserves
+        the original ordering and allows duplicate keys.
     """
     parsed = urlparse(upload_path)
-    params = parse_qsl(parsed.query, keep_blank_values=True)
-    params.append((key, value))
-    return urlunparse(("", "", parsed.path, "", urlencode(params), ""))
+    return parsed.path, parse_qsl(parsed.query, keep_blank_values=True)
 
 
 def _blob_info_from_response(
