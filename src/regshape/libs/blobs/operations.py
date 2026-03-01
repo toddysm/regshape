@@ -33,6 +33,7 @@ from regshape.libs.transport import RegistryClient
 
 _DEFAULT_CHUNK_SIZE = 65_536
 _DEFAULT_CONTENT_TYPE = "application/octet-stream"
+_SUPPORTED_ALGORITHMS = {"sha256", "sha512"}
 
 
 # ===========================================================================
@@ -82,27 +83,40 @@ def get_blob(
     in *chunk_size*-byte increments.  When *output_path* is ``None`` the body
     is still consumed incrementally in chunks but only to compute the digest;
     the content itself is not retained after verification.  In both cases the
-    SHA-256 digest of the received bytes is verified against *digest* before
-    returning.
+    digest of the received bytes is verified against *digest* before returning.
+
+    The hash algorithm is derived from the *digest* prefix (e.g. ``sha256``
+    or ``sha512``).  Unsupported algorithms cause an immediate
+    :class:`~regshape.libs.errors.BlobError` before any network I/O.  The
+    set of supported algorithms is ``sha256`` and ``sha512``.
 
     :param client: Authenticated transport client for the target registry.
     :param repo: Repository name.
-    :param digest: Expected blob digest (``"sha256:..."``).
+    :param digest: Expected blob digest (e.g. ``"sha256:..."`` or
+        ``"sha512:..."``).
     :param output_path: File path to write the blob to. When ``None`` the
         content is streamed only for digest verification and then discarded.
     :param chunk_size: Streaming chunk size in bytes (default ``65536``).
     :returns: :class:`~regshape.libs.models.blob.BlobInfo` built from
         response headers after successful digest verification.
     :raises AuthError: On authentication failure.
-    :raises BlobError: On a non-2xx response, a digest mismatch, or an
-        I/O error when *output_path* is supplied.
+    :raises BlobError: On a non-2xx response, an unsupported digest
+        algorithm, a digest mismatch, or an I/O error when *output_path*
+        is supplied.
     :raises requests.exceptions.RequestException: On transport errors.
     """
+    algorithm, sep, _ = digest.partition(":")
+    if not sep or algorithm not in _SUPPORTED_ALGORITHMS:
+        raise BlobError(
+            f"Unsupported digest algorithm: {algorithm!r}",
+            f"supported algorithms: {', '.join(sorted(_SUPPORTED_ALGORITHMS))}",
+        )
+
     path = f"/v2/{repo}/blobs/{digest}"
     response = client.get(path, stream=True)
     _raise_for_blob_error(response, client.config.registry, repo, digest)
 
-    hasher = hashlib.sha256()
+    hasher = hashlib.new(algorithm)
 
     if output_path is not None:
         try:
@@ -117,7 +131,7 @@ def get_blob(
             if chunk:
                 hasher.update(chunk)
 
-    computed = "sha256:" + hasher.hexdigest()
+    computed = f"{algorithm}:{hasher.hexdigest()}"
     if computed != digest:
         if output_path is not None:
             import os
