@@ -358,11 +358,11 @@ class TestParseNextCursor:
 
     def test_rel_not_next_returns_none(self):
         headers = {"Link": '</v2/_catalog?last=myrepo/image&n=100>; rel="prev"'}
-        assert _parse_next_cursor(headers) == None
+        assert _parse_next_cursor(headers) is None
 
     def test_no_last_param_in_url_returns_none(self):
         headers = {"Link": '</v2/_catalog?n=100>; rel="next"'}
-        assert _parse_next_cursor(headers) == None
+        assert _parse_next_cursor(headers) is None
 
     def test_multiple_relations_picks_next(self):
         headers = {
