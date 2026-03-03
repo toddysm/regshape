@@ -154,14 +154,14 @@ domain operations layer (`libs/catalog/`), not the model.
 | Malformed JSON in `from_json` | `CatalogError` | Wraps `json.JSONDecodeError` |
 | `data` is not a dict in `from_dict` | `CatalogError` | Raised with type name |
 | `"repositories"` value is not a list after null-normalisation | `ValueError` | Raised in `__post_init__` |
-| Registry returns `404`, `405`, or `401` on `GET /v2/_catalog` | `CatalogNotSupportedError` | Raised by the operations layer; never instantiates the model |
+| Registry returns `404` or `405` on `GET /v2/_catalog` | `CatalogNotSupportedError` | Raised by the operations layer; never instantiates the model |
+| Registry returns `401` on `GET /v2/_catalog` | `AuthError` | Raised by the operations layer; signals authentication/authorisation failure for the catalog endpoint |
 
 `CatalogError` is a subclass of `RegShapeError` added to `libs/errors.py`.
 `CatalogNotSupportedError` is a subclass of `CatalogError`, also added to
 `libs/errors.py`, raised exclusively when the registry returns an HTTP status
-that signals the catalog endpoint is not implemented (`404`, `405`) or is
-deliberately hidden (`401` on `_catalog` specifically). This lets callers
-distinguish "endpoint not available" from "response was malformed".
+that signals the catalog endpoint is not implemented (`404`, `405`). This
+lets callers distinguish "endpoint not available" from "response was malformed".
 
 ```
 RegShapeError
