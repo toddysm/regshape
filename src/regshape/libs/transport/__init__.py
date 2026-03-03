@@ -16,8 +16,11 @@
 """
 
 from regshape.libs.transport.client import RegistryClient, TransportConfig
+from regshape.libs.transport.models import RegistryRequest, RegistryResponse
 
 __all__ = [
     "RegistryClient",
     "TransportConfig",
+    "RegistryRequest", 
+    "RegistryResponse",
 ]
