@@ -17,10 +17,20 @@
 
 from regshape.libs.transport.client import RegistryClient, TransportConfig
 from regshape.libs.transport.models import RegistryRequest, RegistryResponse
+from regshape.libs.transport.middleware import (
+    Middleware,
+    BaseMiddleware, 
+    MiddlewarePipeline,
+    NextHandler
+)
 
 __all__ = [
     "RegistryClient",
     "TransportConfig",
     "RegistryRequest", 
     "RegistryResponse",
+    "Middleware",
+    "BaseMiddleware",
+    "MiddlewarePipeline", 
+    "NextHandler",
 ]
