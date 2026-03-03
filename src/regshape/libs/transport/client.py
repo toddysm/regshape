@@ -319,9 +319,10 @@ class RegistryClient:
             except Exception as exc:
                 # Handle authentication errors that might come from middleware
                 if isinstance(exc, AuthError):
+                    # Re-raise AuthError with its original traceback
                     raise
-                # Convert other middleware errors to appropriate exceptions
-                raise exc
+                # Re-raise other middleware errors while preserving their tracebacks
+                raise
         else:
             # Legacy path - direct implementation without middleware
             url = f"{self.base_url}{path}"
