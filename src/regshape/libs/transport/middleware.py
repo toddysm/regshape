@@ -470,8 +470,32 @@ class CachingMiddleware(BaseMiddleware):
         return processed_response
     
     def _get_cache_key(self, request: RegistryRequest) -> str:
-        """Generate cache key from request."""
-        return f"{request.method}:{request.url}"
+        """Generate cache key from request.
+        
+        Includes HTTP method, URL, relevant headers (e.g. Accept),
+        and query parameters (if available) to avoid collisions
+        between requests that can yield different representations.
+        """
+        # Base components
+        method = getattr(request, "method", "")
+        url = getattr(request, "url", "")
+
+        # Include Accept header if headers are available
+        accept = ""
+        headers = getattr(request, "headers", None)
+        if isinstance(headers, dict):
+            accept = headers.get("Accept", "") or ""
+
+        # Include query parameters if present, normalized by sorting
+        params_component = ""
+        params = getattr(request, "params", None)
+        if isinstance(params, dict):
+            # Sort for stable ordering so equivalent param sets
+            # produce identical cache keys.
+            sorted_items = sorted(params.items())
+            params_component = "&".join(f"{k}={v}" for k, v in sorted_items)
+
+        return f"{method}:{url}:accept={accept}:params={params_component}"
     
     def _should_cache(self, response: RegistryResponse) -> bool:
         """Determine if response should be cached."""
