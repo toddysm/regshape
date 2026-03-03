@@ -47,3 +47,22 @@ class BlobError(RegShapeError):
     Error caused by a malformed, missing, or unprocessable blob or upload session.
     """
     pass
+
+
+class CatalogError(RegShapeError):
+    """
+    Error caused by a malformed or unprocessable catalog response.
+    """
+    pass
+
+
+class CatalogNotSupportedError(CatalogError):
+    """
+    Error raised when the registry does not implement the catalog endpoint.
+
+    Raised by the operations layer when ``GET /v2/_catalog`` returns an HTTP
+    status that indicates the endpoint is not available (for example,
+    ``404`` or ``405``). Callers can catch this subclass separately to
+    distinguish "endpoint not available" from "response was malformed".
+    """
+    pass
