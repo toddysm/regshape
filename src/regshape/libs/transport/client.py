@@ -96,6 +96,8 @@ class RegistryClient:
         self._username, self._password = resolve_credentials(
             config.registry, config.username, config.password
         )
+        # Store the last response for access to headers (e.g., pagination)
+        self.last_response: Optional[requests.Response] = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -158,6 +160,7 @@ class RegistryClient:
         timeout = kwargs.pop("timeout", self.config.timeout)
 
         response = http_request(url, method, headers=req_headers, timeout=timeout, **kwargs)
+        self.last_response = response
 
         if response.status_code != 401:
             return response
@@ -188,7 +191,9 @@ class RegistryClient:
         )
         req_headers["Authorization"] = f"{normalized_scheme} {auth_value}"
 
-        return http_request(url, method, headers=req_headers, timeout=timeout, **kwargs)
+        response = http_request(url, method, headers=req_headers, timeout=timeout, **kwargs)
+        self.last_response = response
+        return response
 
     # ------------------------------------------------------------------
     # HTTP method convenience wrappers

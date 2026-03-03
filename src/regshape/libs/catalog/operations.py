@@ -105,33 +105,16 @@ def list_catalog_all(
     :raises CatalogError: On any other non-2xx response or parse failure.
     :raises requests.exceptions.RequestException: On transport errors.
     """
-    registry = client.config.registry
     accumulated: list[str] = []
     cursor: Optional[str] = None
 
     while True:
-        params: dict = {}
-        if page_size is not None:
-            params["n"] = page_size
-        if cursor is not None:
-            params["last"] = cursor
-
-        response = client.get("/v2/_catalog", params=params if params else None)
-        _raise_for_catalog_error(response, registry)
-
-        try:
-            page = RepositoryCatalog.from_json(response.text)
-        except CatalogError:
-            raise
-        except Exception as exc:
-            raise CatalogError(
-                f"Failed to parse catalog response from {registry}",
-                str(exc),
-            ) from exc
-
+        # Call list_catalog to get the page
+        page = list_catalog(client, page_size=page_size, last=cursor)
         accumulated.extend(page.repositories)
 
-        cursor = _parse_next_cursor(dict(response.headers))
+        # Inspect the Link header from client.last_response for next cursor
+        cursor = _parse_next_cursor(dict(client.last_response.headers))
         if cursor is None:
             break
 
