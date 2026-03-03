@@ -13,7 +13,7 @@
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
-from abc import ABC, abstractmethod
+from abc import ABC
 from typing import Protocol, Callable
 
 from regshape.libs.transport.models import RegistryRequest, RegistryResponse
