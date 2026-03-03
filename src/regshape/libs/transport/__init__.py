@@ -21,7 +21,13 @@ from regshape.libs.transport.middleware import (
     Middleware,
     BaseMiddleware, 
     MiddlewarePipeline,
-    NextHandler
+    NextHandler,
+    # Concrete middleware implementations
+    AuthMiddleware,
+    LoggingMiddleware, 
+    RetryMiddleware,
+    CachingMiddleware,
+    RetryConfig
 )
 
 __all__ = [
@@ -33,4 +39,10 @@ __all__ = [
     "BaseMiddleware",
     "MiddlewarePipeline", 
     "NextHandler",
+    # Concrete middleware implementations
+    "AuthMiddleware",
+    "LoggingMiddleware",
+    "RetryMiddleware", 
+    "CachingMiddleware",
+    "RetryConfig",
 ]

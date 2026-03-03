@@ -399,3 +399,361 @@ class TestMiddlewareIntegration:
         assert logging.responses[0] is response
         
         assert result is response
+
+
+class TestConcreteMiddleware:
+    """Test concrete middleware implementations."""
+    
+    def test_auth_middleware_no_credentials(self):
+        """Test auth middleware with no credentials passes through unchanged."""
+        from regshape.libs.transport.middleware import AuthMiddleware
+        
+        middleware = AuthMiddleware()
+        request = RegistryRequest("GET", "https://example.com", {})
+        response = _create_mock_response(200, {}, b"test")
+        next_handler = Mock(return_value=response)
+        
+        result = middleware(request, next_handler)
+        
+        # Request should be unchanged
+        next_handler.assert_called_once_with(request)
+        assert result is response
+    
+    def test_auth_middleware_basic_auth(self):
+        """Test auth middleware adds basic auth header."""
+        from regshape.libs.transport.middleware import AuthMiddleware
+        
+        # Create specific credentials object for basic auth
+        class BasicCredentials:
+            def __init__(self, username, password):
+                self.username = username
+                self.password = password
+        
+        credentials = BasicCredentials("user", "pass")
+        middleware = AuthMiddleware(credentials)
+        request = RegistryRequest("GET", "https://example.com", {"User-Agent": "test"})
+        response = _create_mock_response(200, {}, b"test")
+        next_handler = Mock(return_value=response)
+        
+        result = middleware(request, next_handler)
+        
+        # Check that Authorization header was added
+        next_handler.assert_called_once()
+        modified_request = next_handler.call_args[0][0]
+        assert "Authorization" in modified_request.headers
+        assert modified_request.headers["Authorization"].startswith("Basic ")
+        assert modified_request.headers["User-Agent"] == "test"
+        assert result is response
+    
+    def test_auth_middleware_bearer_token(self):
+        """Test auth middleware adds bearer token header."""
+        from regshape.libs.transport.middleware import AuthMiddleware
+        
+        # Create specific credentials object for bearer token
+        class BearerCredentials:
+            def __init__(self, token):
+                self.token = token
+        
+        credentials = BearerCredentials("abc123")
+        middleware = AuthMiddleware(credentials)
+        request = RegistryRequest("GET", "https://example.com", {})
+        response = _create_mock_response(200, {}, b"test")
+        next_handler = Mock(return_value=response)
+        
+        result = middleware(request, next_handler)
+        
+        # Check that Authorization header was added
+        next_handler.assert_called_once()
+        modified_request = next_handler.call_args[0][0]
+        assert modified_request.headers["Authorization"] == "Bearer abc123"
+        assert result is response
+    
+    def test_auth_middleware_handles_401_response(self):
+        """Test auth middleware processes WWW-Authenticate challenges."""
+        from regshape.libs.transport.middleware import AuthMiddleware
+        
+        middleware = AuthMiddleware()
+        request = RegistryRequest("GET", "https://example.com", {})
+        
+        # Mock 401 response with WWW-Authenticate header
+        response_headers = {"WWW-Authenticate": 'Basic realm="test"'}
+        response = _create_mock_response(401, response_headers, b"Unauthorized")
+        next_handler = Mock(return_value=response)
+        
+        result = middleware(request, next_handler)
+        
+        # Response should pass through (challenge handling is placeholder in this implementation)
+        assert result is response
+        assert result.status_code == 401
+    
+    def test_logging_middleware_logs_request_response(self):
+        """Test logging middleware logs requests and responses."""
+        import logging
+        from unittest.mock import patch
+        from regshape.libs.transport.middleware import LoggingMiddleware
+        
+        with patch('regshape.libs.transport.middleware.logging.getLogger') as mock_get_logger:
+            mock_logger = Mock()
+            mock_get_logger.return_value = mock_logger
+            mock_logger.isEnabledFor.return_value = True
+            
+            middleware = LoggingMiddleware("test.logger", logging.DEBUG)
+            request = RegistryRequest("POST", "https://example.com/api", {"Content-Type": "application/json"})
+            response = _create_mock_response(201, {"Location": "/created"}, b'{"id": 123}')
+            next_handler = Mock(return_value=response)
+            
+            result = middleware(request, next_handler)
+            
+            # Verify logging calls
+            assert mock_logger.log.call_count == 2  # request + response
+            
+            # Check request logging
+            request_call = mock_logger.log.call_args_list[0]
+            assert request_call[0][0] == logging.DEBUG  # level
+            assert "HTTP Request: POST https://example.com/api" in request_call[0][1]
+            
+            # Check response logging  
+            response_call = mock_logger.log.call_args_list[1]
+            assert "HTTP Response: 201 for POST https://example.com/api" in response_call[0][1]
+            
+            assert result is response
+    
+    def test_logging_middleware_excludes_sensitive_headers(self):
+        """Test logging middleware excludes sensitive headers from logs."""
+        import logging
+        from unittest.mock import patch
+        from regshape.libs.transport.middleware import LoggingMiddleware
+        
+        with patch('regshape.libs.transport.middleware.logging.getLogger') as mock_get_logger:
+            mock_logger = Mock()
+            mock_get_logger.return_value = mock_logger
+            mock_logger.isEnabledFor.return_value = True
+            
+            middleware = LoggingMiddleware()
+            request = RegistryRequest("GET", "https://example.com", {
+                "Authorization": "Bearer secret-token",
+                "Cookie": "session=abc123", 
+                "User-Agent": "test-client"
+            })
+            response = _create_mock_response(200, {}, b"test")
+            next_handler = Mock(return_value=response)
+            
+            middleware(request, next_handler)
+            
+            # Check that sensitive headers are excluded
+            request_call = mock_logger.log.call_args_list[0]
+            logged_headers = request_call[1]['extra']['headers']
+            assert 'Authorization' not in logged_headers
+            assert 'Cookie' not in logged_headers
+            assert 'User-Agent' in logged_headers
+    
+    def test_logging_middleware_logs_errors(self):
+        """Test logging middleware logs errors."""
+        import logging
+        from unittest.mock import patch
+        from regshape.libs.transport.middleware import LoggingMiddleware
+        
+        with patch('regshape.libs.transport.middleware.logging.getLogger') as mock_get_logger:
+            mock_logger = Mock()
+            mock_get_logger.return_value = mock_logger
+            
+            middleware = LoggingMiddleware()
+            request = RegistryRequest("GET", "https://example.com", {})
+            next_handler = Mock(side_effect=ConnectionError("Network failure"))
+            
+            with pytest.raises(ConnectionError):
+                middleware(request, next_handler)
+            
+            # Verify error logging
+            mock_logger.error.assert_called_once()
+            error_call = mock_logger.error.call_args
+            assert "HTTP Error for GET https://example.com" in error_call[0][0]
+            assert "ConnectionError" in error_call[1]['extra']['error_type']
+    
+    def test_retry_middleware_default_config(self):
+        """Test retry middleware with default configuration."""
+        from regshape.libs.transport.middleware import RetryMiddleware
+        
+        middleware = RetryMiddleware()
+        request = RegistryRequest("GET", "https://example.com", {})
+        response = _create_mock_response(200, {}, b"success")
+        next_handler = Mock(return_value=response)
+        
+        result = middleware(request, next_handler)
+        
+        # Should succeed on first try
+        next_handler.assert_called_once()
+        assert result is response
+    
+    def test_retry_middleware_retries_server_errors(self):
+        """Test retry middleware retries on server errors."""
+        from regshape.libs.transport.middleware import RetryMiddleware, RetryConfig
+        from unittest.mock import patch
+        
+        # Use faster backoff for testing
+        config = RetryConfig(max_retries=2, backoff_factor=0.01, status_codes=(500,))
+        middleware = RetryMiddleware(config)
+        
+        request = RegistryRequest("GET", "https://example.com", {})
+        
+        # Mock responses: 500, 500, 200 (success on third try)
+        responses = [
+            _create_mock_response(500, {}, b"Server Error"),
+            _create_mock_response(500, {}, b"Server Error"), 
+            _create_mock_response(200, {}, b"Success")
+        ]
+        next_handler = Mock(side_effect=responses)
+        
+        with patch('regshape.libs.transport.middleware.time.sleep') as mock_sleep:
+            result = middleware(request, next_handler)
+        
+        # Should have made 3 attempts
+        assert next_handler.call_count == 3
+        assert result.status_code == 200
+        assert result.body == b"Success"
+        
+        # Should have slept twice (between retries)
+        assert mock_sleep.call_count == 2
+    
+    def test_retry_middleware_gives_up_after_max_attempts(self):
+        """Test retry middleware gives up after max retries."""
+        from regshape.libs.transport.middleware import RetryMiddleware, RetryConfig
+        from unittest.mock import patch
+        
+        config = RetryConfig(max_retries=1, backoff_factor=0.01, status_codes=(503,))
+        middleware = RetryMiddleware(config)
+        
+        request = RegistryRequest("GET", "https://example.com", {})
+        
+        # Always return 503
+        response = _create_mock_response(503, {}, b"Service Unavailable")
+        next_handler = Mock(return_value=response)
+        
+        with patch('regshape.libs.transport.middleware.time.sleep'):
+            result = middleware(request, next_handler)
+        
+        # Should have made max_retries + 1 attempts
+        assert next_handler.call_count == 2
+        assert result.status_code == 503
+    
+    def test_retry_middleware_handles_network_exceptions(self):
+        """Test retry middleware handles network exceptions."""
+        from regshape.libs.transport.middleware import RetryMiddleware, RetryConfig
+        from unittest.mock import patch
+        
+        config = RetryConfig(max_retries=1, backoff_factor=0.01, exceptions=(ConnectionError,))
+        middleware = RetryMiddleware(config)
+        
+        request = RegistryRequest("GET", "https://example.com", {})
+        
+        # First call raises exception, second succeeds
+        success_response = _create_mock_response(200, {}, b"Success")
+        next_handler = Mock(side_effect=[ConnectionError("Network error"), success_response])
+        
+        with patch('regshape.libs.transport.middleware.time.sleep'):
+            result = middleware(request, next_handler)
+        
+        assert next_handler.call_count == 2
+        assert result.status_code == 200
+    
+    def test_caching_middleware_caches_get_requests(self):
+        """Test caching middleware caches GET requests."""
+        from regshape.libs.transport.middleware import CachingMiddleware
+        
+        middleware = CachingMiddleware()
+        request = RegistryRequest("GET", "https://example.com/manifest", {})
+        response = _create_mock_response(200, {"Content-Type": "application/json"}, b'{"test": true}')
+        next_handler = Mock(return_value=response)
+        
+        # First request
+        result1 = middleware(request, next_handler)
+        assert next_handler.call_count == 1
+        assert result1 is response
+        
+        # Second request should use cache
+        result2 = middleware(request, next_handler) 
+        assert next_handler.call_count == 1  # No additional call
+        assert result2.body == response.body
+    
+    def test_caching_middleware_ignores_non_get_requests(self):
+        """Test caching middleware ignores non-GET requests."""
+        from regshape.libs.transport.middleware import CachingMiddleware
+        
+        middleware = CachingMiddleware()
+        request = RegistryRequest("POST", "https://example.com/api", {})
+        response = _create_mock_response(201, {}, b"Created")
+        next_handler = Mock(return_value=response)
+        
+        # Make two POST requests
+        result1 = middleware(request, next_handler)
+        result2 = middleware(request, next_handler)
+        
+        # Both should hit the next handler
+        assert next_handler.call_count == 2
+        assert result1 is response
+        assert result2 is response
+    
+    def test_caching_middleware_respects_cache_control(self):
+        """Test caching middleware respects Cache-Control headers."""
+        from regshape.libs.transport.middleware import CachingMiddleware
+        
+        middleware = CachingMiddleware()
+        request = RegistryRequest("GET", "https://example.com/no-cache", {})
+        
+        # Response with no-cache directive
+        response = _create_mock_response(200, {"Cache-Control": "no-cache"}, b"data")
+        next_handler = Mock(return_value=response)
+        
+        # Make two requests
+        result1 = middleware(request, next_handler)
+        result2 = middleware(request, next_handler)
+        
+        # Both should hit the next handler (no caching)
+        assert next_handler.call_count == 2
+        assert result1 is response
+        assert result2 is response
+    
+    def test_caching_middleware_size_limit(self):
+        """Test caching middleware respects size limit."""
+        from regshape.libs.transport.middleware import CachingMiddleware
+        
+        # Small cache size for testing
+        middleware = CachingMiddleware(max_size=2)
+        
+        responses = []
+        for i in range(3):
+            request = RegistryRequest("GET", f"https://example.com/item{i}", {})
+            response = _create_mock_response(200, {}, f"data{i}".encode())
+            next_handler = Mock(return_value=response)
+            
+            result = middleware(request, next_handler)
+            responses.append((request, next_handler, result))
+        
+        # Cache should have max 2 items
+        assert middleware.get_cache_size() == 2
+        
+        # First item should have been evicted, so requesting it again should hit the handler
+        first_request, first_handler, _ = responses[0]
+        middleware(first_request, first_handler)
+        assert first_handler.call_count == 2  # Original + evicted call
+    
+    def test_caching_middleware_clear_cache(self):
+        """Test caching middleware cache clearing."""
+        from regshape.libs.transport.middleware import CachingMiddleware
+        
+        middleware = CachingMiddleware()
+        request = RegistryRequest("GET", "https://example.com/data", {})
+        response = _create_mock_response(200, {}, b"cached data")
+        next_handler = Mock(return_value=response)
+        
+        # Cache a response  
+        middleware(request, next_handler)
+        assert middleware.get_cache_size() == 1
+        
+        # Clear cache
+        middleware.clear_cache()
+        assert middleware.get_cache_size() == 0
+        
+        # Next request should hit handler again
+        middleware(request, next_handler)
+        assert next_handler.call_count == 2

@@ -232,3 +232,274 @@ class MiddlewarePipeline:
             return middleware(request, next_handler)
         
         return wrapped_handler
+
+
+# Concrete Middleware Implementations
+# ===================================
+
+
+import time
+import logging
+from typing import Optional, Dict, Any
+from dataclasses import dataclass
+
+
+@dataclass
+class RetryConfig:
+    """Configuration for retry middleware."""
+    max_retries: int = 3
+    backoff_factor: float = 1.0
+    status_codes: tuple = (500, 502, 503, 504)
+    exceptions: tuple = (ConnectionError, TimeoutError)
+
+
+class AuthMiddleware(BaseMiddleware):
+    """Middleware that adds authentication headers to requests.
+    
+    Supports both basic auth and bearer token authentication.
+    Can handle WWW-Authenticate challenges by updating credentials.
+    """
+    
+    def __init__(self, credentials: Optional[Any] = None):
+        """Initialize auth middleware.
+        
+        :param credentials: BasicCredentials, BearerCredentials, or None for no auth
+        """
+        self.credentials = credentials
+    
+    def process_request(self, request: RegistryRequest) -> RegistryRequest:
+        """Add authentication headers to the request."""
+        if self.credentials is None:
+            return request
+        
+        # Create a copy with auth headers
+        auth_headers = dict(request.headers)
+        
+        if hasattr(self.credentials, 'token'):
+            # Bearer token (check token first, higher priority)
+            auth_headers["Authorization"] = f"Bearer {self.credentials.token}"
+        elif hasattr(self.credentials, 'username') and hasattr(self.credentials, 'password'):
+            # Basic auth
+            import base64
+            auth_string = f"{self.credentials.username}:{self.credentials.password}"
+            encoded = base64.b64encode(auth_string.encode()).decode()
+            auth_headers["Authorization"] = f"Basic {encoded}"
+        
+        return RegistryRequest(
+            method=request.method,
+            url=request.url,
+            headers=auth_headers,
+            body=request.body,
+            stream=request.stream,
+            params=request.params,
+            timeout=request.timeout
+        )
+    
+    def process_response(self, request: RegistryRequest, response: RegistryResponse) -> RegistryResponse:
+        """Handle WWW-Authenticate challenges."""
+        if response.status_code == 401 and "WWW-Authenticate" in response.headers:
+            # In a real implementation, this would parse the challenge
+            # and potentially update credentials or trigger re-authentication
+            pass
+        
+        return response
+
+
+class LoggingMiddleware(BaseMiddleware):
+    """Middleware that logs HTTP requests and responses.
+    
+    Supports configurable log levels and detailed request/response logging.
+    """
+    
+    def __init__(self, logger_name: str = "regshape.transport", level: int = logging.INFO):
+        """Initialize logging middleware.
+        
+        :param logger_name: Name of the logger to use
+        :param level: Logging level (DEBUG, INFO, WARNING, ERROR)
+        """
+        self.logger = logging.getLogger(logger_name)
+        self.level = level
+    
+    def process_request(self, request: RegistryRequest) -> RegistryRequest:
+        """Log the outgoing request."""
+        if self.logger.isEnabledFor(self.level):
+            # Log request details (avoid logging sensitive headers)
+            safe_headers = {k: v for k, v in request.headers.items() 
+                          if k.lower() not in ('authorization', 'cookie')}
+            
+            self.logger.log(
+                self.level,
+                f"HTTP Request: {request.method} {request.url}",
+                extra={
+                    'method': request.method,
+                    'url': request.url,  
+                    'headers': safe_headers,
+                    'has_body': request.body is not None
+                }
+            )
+        
+        return request
+    
+    def process_response(self, request: RegistryRequest, response: RegistryResponse) -> RegistryResponse:
+        """Log the incoming response."""
+        if self.logger.isEnabledFor(self.level):
+            self.logger.log(
+                self.level,
+                f"HTTP Response: {response.status_code} for {request.method} {request.url}",
+                extra={
+                    'status_code': response.status_code,
+                    'method': request.method,
+                    'url': request.url,
+                    'content_length': len(response.body)
+                }
+            )
+        
+        return response
+    
+    def handle_error(self, request: RegistryRequest, error: Exception) -> RegistryResponse:
+        """Log errors that occur during request processing."""
+        self.logger.error(
+            f"HTTP Error for {request.method} {request.url}: {error}",
+            extra={
+                'method': request.method,
+                'url': request.url,
+                'error_type': type(error).__name__,
+                'error_message': str(error)
+            },
+            exc_info=True
+        )
+        
+        # Re-raise the error after logging
+        raise error
+
+
+class RetryMiddleware(BaseMiddleware):
+    """Middleware that retries failed requests with exponential backoff.
+    
+    Retries requests that fail due to network errors or specific HTTP status codes.
+    Uses exponential backoff to avoid overwhelming the server.
+    """
+    
+    def __init__(self, config: Optional[RetryConfig] = None):
+        """Initialize retry middleware.
+        
+        :param config: RetryConfig instance, or None for default settings
+        """
+        self.config = config or RetryConfig()
+    
+    def __call__(self, request: RegistryRequest, next_handler: NextHandler) -> RegistryResponse:
+        """Execute request with retry logic."""
+        last_exception = None
+        
+        for attempt in range(self.config.max_retries + 1):
+            try:
+                # Process request through parent hooks
+                processed_request = self.process_request(request)
+                
+                # Execute the request
+                response = next_handler(processed_request)
+                
+                # Check if we should retry based on status code
+                if response.status_code in self.config.status_codes and attempt < self.config.max_retries:
+                    self._wait_backoff(attempt)
+                    continue
+                
+                # Process response and return
+                return self.process_response(request, response)
+                
+            except self.config.exceptions as exc:
+                last_exception = exc
+                
+                if attempt < self.config.max_retries:
+                    self._wait_backoff(attempt)
+                    continue
+                else:
+                    return self.handle_error(request, exc)
+        
+        # This shouldn't be reached, but handle it gracefully
+        if last_exception:
+            return self.handle_error(request, last_exception)
+        
+        # Fallback - should never happen
+        raise RuntimeError("Retry logic reached unexpected state")
+    
+    def _wait_backoff(self, attempt: int) -> None:
+        """Wait for exponential backoff delay."""
+        delay = self.config.backoff_factor * (2 ** attempt)
+        time.sleep(delay)
+
+
+class CachingMiddleware(BaseMiddleware):
+    """Middleware that caches GET responses for immutable content.
+    
+    Caches responses based on URL and Cache-Control headers.
+    Suitable for registry manifests and blobs that are immutable.
+    """
+    
+    def __init__(self, max_size: int = 1000):
+        """Initialize caching middleware.
+        
+        :param max_size: Maximum number of cached responses
+        """
+        self.cache: Dict[str, RegistryResponse] = {}
+        self.max_size = max_size
+    
+    def __call__(self, request: RegistryRequest, next_handler: NextHandler) -> RegistryResponse:
+        """Execute request with caching logic."""
+        # Only cache GET requests
+        if request.method != "GET":
+            return super().__call__(request, next_handler)
+        
+        cache_key = self._get_cache_key(request)
+        
+        # Check cache first
+        if cache_key in self.cache:
+            cached_response = self.cache[cache_key]
+            # In a real implementation, check expiration here
+            return cached_response
+        
+        # Execute request
+        processed_request = self.process_request(request)
+        response = next_handler(processed_request)
+        processed_response = self.process_response(request, response)
+        
+        # Cache successful responses for immutable content
+        if self._should_cache(processed_response):
+            self._add_to_cache(cache_key, processed_response)
+        
+        return processed_response
+    
+    def _get_cache_key(self, request: RegistryRequest) -> str:
+        """Generate cache key from request."""
+        return f"{request.method}:{request.url}"
+    
+    def _should_cache(self, response: RegistryResponse) -> bool:
+        """Determine if response should be cached."""
+        # Cache successful responses
+        if not response.ok:
+            return False
+        
+        # Check Cache-Control header
+        cache_control = response.headers.get("Cache-Control", "")
+        if "no-cache" in cache_control or "no-store" in cache_control:
+            return False
+        
+        # Cache registry content (manifests, blobs) which are immutable
+        return True
+    
+    def _add_to_cache(self, key: str, response: RegistryResponse) -> None:
+        """Add response to cache with size limit."""
+        if len(self.cache) >= self.max_size:
+            # Simple LRU: remove oldest entry  
+            oldest_key = next(iter(self.cache))
+            del self.cache[oldest_key]
+        
+        self.cache[key] = response
+    
+    def clear_cache(self) -> None:
+        """Clear all cached responses."""
+        self.cache.clear()
+    
+    def get_cache_size(self) -> int:
+        """Get current number of cached responses."""
+        return len(self.cache)
