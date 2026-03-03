@@ -6,21 +6,21 @@
 
 .. module:: regshape.libs.transport.client
    :platform: Unix, Windows
-   :synopsis: ``RegistryClient`` is the single HTTP entry point for all OCI
+   :synopsis: RegistryClient is the single HTTP entry point for all OCI
               registry communication. It resolves credentials once on
-              construction, handles the ``WWW-Authenticate`` challenge /
-              401 → authenticate → retry cycle, and delegates every actual
-              HTTP call to :func:`~regshape.libs.decorators.call_details.http_request`
-              so that ``--debug-calls`` telemetry is available for free.
+              construction, handles the WWW-Authenticate challenge /
+              401 -> authenticate -> retry cycle, and delegates every actual
+              HTTP call to http_request so that --debug-calls telemetry
+              is available for free.
 
-              ``TransportConfig`` is a plain dataclass that carries the
+              TransportConfig is a plain dataclass that carries the
               per-registry connection settings.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, List
 
 import requests
 
@@ -28,6 +28,11 @@ from regshape.libs.auth import registryauth
 from regshape.libs.auth.credentials import resolve_credentials
 from regshape.libs.decorators.call_details import http_request
 from regshape.libs.errors import AuthError
+from regshape.libs.transport.middleware import (
+    MiddlewarePipeline, Middleware, AuthMiddleware, LoggingMiddleware,
+    RetryMiddleware, CachingMiddleware, RetryConfig
+)
+from regshape.libs.transport.models import RegistryRequest, RegistryResponse
 
 
 # ---------------------------------------------------------------------------
@@ -36,18 +41,32 @@ from regshape.libs.errors import AuthError
 
 @dataclass
 class TransportConfig:
-    """Per-registry connection settings for :class:`RegistryClient`.
+    """Per-registry connection settings for RegistryClient.
 
     :param registry: Registry hostname, optionally with port
-        (e.g. ``"acr.io"``, ``"localhost:5000"``). Must not include a scheme.
-    :param insecure: When ``True``, use ``http://`` instead of ``https://``.
-        Defaults to ``False``.
-    :param username: Explicit username for authentication. When ``None``,
+        (e.g. "acr.io", "localhost:5000"). Must not include a scheme.
+    :param insecure: When True, use http:// instead of https://.
+        Defaults to False.
+    :param username: Explicit username for authentication. When None,
         credentials are resolved from the credential store at construction
-        time.  Supply both *username* and *password* to bypass credential
+        time.  Supply both username and password to bypass credential
         store lookup.
-    :param password: Explicit password. See *username*.
-    :param timeout: Per-request timeout in seconds. Defaults to ``30``.
+    :param password: Explicit password. See username.
+    :param timeout: Per-request timeout in seconds. Defaults to 30.
+    :param enable_middleware: When True, enables the middleware pipeline
+        for request processing. Defaults to True.
+    :param enable_logging: When True, adds logging middleware to the
+        pipeline. Defaults to False.
+    :param enable_retries: When True, adds retry middleware with exponential
+        backoff. Defaults to False.
+    :param enable_caching: When True, adds caching middleware for GET
+        requests. Defaults to False.
+    :param retry_config: Configuration for retry middleware. Only used when
+        enable_retries is True.
+    :param cache_size: Maximum number of cached responses. Only used when
+        enable_caching is True. Defaults to 100.
+    :param middlewares: Additional custom middleware to add to the pipeline.
+        These are added after the built-in middleware.
     """
 
     registry: str
@@ -55,6 +74,13 @@ class TransportConfig:
     username: Optional[str] = None
     password: Optional[str] = None
     timeout: int = 30
+    enable_middleware: bool = True
+    enable_logging: bool = False
+    enable_retries: bool = False
+    enable_caching: bool = False
+    retry_config: Optional[RetryConfig] = None
+    cache_size: int = 100
+    middlewares: List[Middleware] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.registry:
@@ -74,30 +100,33 @@ class RegistryClient:
     """HTTP client for OCI registry communication.
 
     All domain operation modules and CLI commands construct one
-    ``RegistryClient`` per invocation and pass it down rather than making
-    raw ``requests`` calls themselves.  This ensures:
+    RegistryClient per invocation and pass it down rather than making
+    raw requests calls themselves.  This ensures:
 
     - Credentials are resolved exactly once (via the credential store chain
       if not supplied explicitly).
-    - The 401 → ``WWW-Authenticate`` → authenticate → retry cycle is
+    - The 401 -> WWW-Authenticate -> authenticate -> retry cycle is
       implemented in one place.
-    - Every HTTP call goes through
-      :func:`~regshape.libs.decorators.call_details.http_request`, so
-      ``--debug-calls`` telemetry works across the entire CLI without any
-      per-command instrumentation.
+    - Every HTTP call goes through http_request, so --debug-calls telemetry 
+      works across the entire CLI without any per-command instrumentation.
 
     :param config: Connection settings for the target registry.
     """
 
     def __init__(self, config: TransportConfig) -> None:
         self.config = config
-        # Resolve credentials once — domain modules and CLI commands never
+        # Resolve credentials once - domain modules and CLI commands never
         # call resolve_credentials() directly.
         self._username, self._password = resolve_credentials(
             config.registry, config.username, config.password
         )
         # Store the last response for access to headers (e.g., pagination)
         self.last_response: Optional[requests.Response] = None
+        
+        # Initialize middleware pipeline if enabled
+        self._pipeline: Optional[MiddlewarePipeline] = None
+        if config.enable_middleware:
+            self._pipeline = self._setup_middleware_pipeline()
 
     # ------------------------------------------------------------------
     # Properties
@@ -107,65 +136,90 @@ class RegistryClient:
     def base_url(self) -> str:
         """Fully-qualified base URL for this registry.
 
-        :returns: ``"https://registry"`` or ``"http://registry"`` depending on
-            :attr:`TransportConfig.insecure`.
+        :returns: "https://registry" or "http://registry" depending on
+            TransportConfig.insecure.
         """
         scheme = "http" if self.config.insecure else "https"
         return f"{scheme}://{self.config.registry}"
 
     # ------------------------------------------------------------------
-    # Core request method
+    # Middleware setup
     # ------------------------------------------------------------------
 
-    def request(
-        self,
-        method: str,
-        path: str,
-        headers: Optional[dict] = None,
-        **kwargs,
-    ) -> requests.Response:
-        """Issue an authenticated HTTP request to the registry.
+    def _setup_middleware_pipeline(self) -> MiddlewarePipeline:
+        """Set up the middleware pipeline based on configuration."""
+        pipeline = MiddlewarePipeline()
+        
+        # Add authentication middleware if credentials are available
+        if self._username and self._password:
+            # Create credentials object
+            credentials_obj = type('BasicCredentials', (), {
+                'username': self._username,
+                'password': self._password
+            })()
+            pipeline.add_middleware(AuthMiddleware(credentials_obj))
+        
+        # Add logging middleware if enabled
+        if self.config.enable_logging:
+            pipeline.add_middleware(LoggingMiddleware("regshape.transport"))
+        
+        # Add retry middleware if enabled
+        if self.config.enable_retries:
+            retry_config = self.config.retry_config or RetryConfig()
+            pipeline.add_middleware(RetryMiddleware(retry_config))
+        
+        # Add caching middleware if enabled
+        if self.config.enable_caching:
+            pipeline.add_middleware(CachingMiddleware(self.config.cache_size))
+        
+        # Add custom middleware
+        for middleware in self.config.middlewares:
+            pipeline.add_middleware(middleware)
+        
+        return pipeline
 
-        Builds the full URL from :attr:`base_url` + *path*, then:
-
-        1. Sends the request without an ``Authorization`` header.
-        2. If the response is **401** and the registry sends a
-           ``WWW-Authenticate`` header, parses the challenge, obtains a
-           token or Basic credential, and retries with the
-           ``Authorization`` header attached.
-        3. Returns the final :class:`requests.Response` (caller decides
-           whether the status code is acceptable).
-
-        ``--debug-calls`` output is emitted automatically for every call
-        because :func:`~regshape.libs.decorators.call_details.http_request`
-        is decorated with ``@debug_call``.
-
-        :param method: HTTP method (``"GET"``, ``"HEAD"``, ``"PUT"``, etc.).
-        :param path: Path component of the URL, starting with ``/``
-            (e.g. ``"/v2/myrepo/manifests/latest"``).
-        :param headers: Optional request headers. A shallow copy is taken so
-            that the caller's dict is never mutated.
-        :param kwargs: Additional keyword arguments forwarded to
-            :func:`~regshape.libs.decorators.call_details.http_request`
-            (e.g. ``data``, ``params``, ``stream``).
-        :returns: The HTTP response from the registry.
-        :raises AuthError: If authentication fails — either no
-            ``WWW-Authenticate`` header was returned with the 401, the scheme
-            is Basic but no credentials are available, or token exchange fails.
-        :raises requests.exceptions.RequestException: On transport errors
-            (connection refused, timeout, TLS, etc.).
+    def _terminal_handler(self, request: RegistryRequest) -> RegistryResponse:
+        """Terminal handler that performs the actual HTTP request.
+        
+        This is the final handler in the middleware pipeline that converts
+        RegistryRequest to a requests call and wraps the response.
         """
-        url = f"{self.base_url}{path}"
-        req_headers = dict(headers) if headers else {}
-        timeout = kwargs.pop("timeout", self.config.timeout)
+        # Convert RegistryRequest to requests parameters
+        url = f"{self.base_url}{request.url}" if request.url.startswith('/') else request.url
+        
+        # Use http_request for telemetry (--debug-calls)
+        response = http_request(
+            url=url,
+            method=request.method,
+            headers=request.headers,
+            data=request.body,
+            stream=request.stream,
+            params=request.params,
+            timeout=request.timeout or self.config.timeout
+        )
+        
+        # Store for backward compatibility
+        self.last_response = response
+        
+        # Convert to RegistryResponse
+        return RegistryResponse.from_requests_response(response)
 
+    def _legacy_authenticate_and_retry(
+        self, 
+        method: str, 
+        url: str, 
+        req_headers: dict, 
+        timeout: int, 
+        **kwargs
+    ) -> requests.Response:
+        """Legacy authentication handling for when middleware is disabled."""
         response = http_request(url, method, headers=req_headers, timeout=timeout, **kwargs)
         self.last_response = response
 
         if response.status_code != 401:
             return response
 
-        # ── 401 handling ────────────────────────────────────────────────
+        # -- 401 handling --------------------------------------------------------
         www_auth = response.headers.get("WWW-Authenticate", "")
         if not www_auth:
             raise AuthError(
@@ -196,13 +250,81 @@ class RegistryClient:
         return response
 
     # ------------------------------------------------------------------
+    # Core request method
+    # ------------------------------------------------------------------
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        headers: Optional[dict] = None,
+        **kwargs,
+    ) -> requests.Response:
+        """Issue an authenticated HTTP request to the registry.
+
+        When middleware is enabled (default), processes the request through 
+        the middleware pipeline which can provide authentication, logging,
+        retries, caching, and custom middleware.
+
+        When middleware is disabled, falls back to the legacy implementation
+        that handles 401/WWW-Authenticate challenges manually.
+
+        --debug-calls output is emitted automatically for every call
+        because the terminal handler uses http_request from decorators.
+
+        :param method: HTTP method (GET, HEAD, PUT, etc.).
+        :param path: Path component of the URL, starting with /
+            (e.g. /v2/myrepo/manifests/latest).
+        :param headers: Optional request headers. A shallow copy is taken so
+            that the caller dict is never mutated.
+        :param kwargs: Additional keyword arguments forwarded to the HTTP
+            request (e.g. data, params, stream).
+        :returns: The HTTP response from the registry.
+        :raises AuthError: If authentication fails.
+        :raises requests.exceptions.RequestException: On transport errors.
+        """
+        req_headers = dict(headers) if headers else {}
+        timeout = kwargs.pop("timeout", self.config.timeout)
+        
+        if self._pipeline is not None:
+            # Use middleware pipeline
+            registry_request = RegistryRequest(
+                method=method,
+                url=path,
+                headers=req_headers,
+                body=kwargs.get('data'),
+                stream=kwargs.get('stream', False),
+                params=kwargs.get('params'),
+                timeout=timeout
+            )
+            
+            try:
+                registry_response = self._pipeline.execute(registry_request, self._terminal_handler)
+                # Ensure last_response is available for backward compatibility
+                # even after middleware processing
+                self.last_response = registry_response.raw_response
+                return registry_response.raw_response
+            except Exception as exc:
+                # Handle authentication errors that might come from middleware
+                if isinstance(exc, AuthError):
+                    raise
+                # Convert other middleware errors to appropriate exceptions
+                raise exc
+        else:
+            # Legacy path - direct implementation without middleware
+            url = f"{self.base_url}{path}"
+            return self._legacy_authenticate_and_retry(
+                method, url, req_headers, timeout, **kwargs
+            )
+
+    # ------------------------------------------------------------------
     # HTTP method convenience wrappers
     # ------------------------------------------------------------------
 
     def get(self, path: str, **kwargs) -> requests.Response:
         """Issue an authenticated GET request.
 
-        :param path: URL path (e.g. ``"/v2/repo/manifests/tag"``).
+        :param path: URL path (e.g. "/v2/repo/manifests/tag").
         """
         return self.request("GET", path, **kwargs)
 
@@ -247,20 +369,19 @@ class RegistryClient:
 # ---------------------------------------------------------------------------
 
 def _normalize_www_authenticate(www_auth: str) -> tuple[str, str]:
-    """Normalize a ``WWW-Authenticate`` header value.
+    """Normalize a WWW-Authenticate header value.
 
-    - Capitalises ``basic`` / ``bearer`` scheme names so that
-      :func:`~regshape.libs.auth.registryauth.authenticate` receives the
-      expected casing.
+    - Capitalises basic / bearer scheme names so that
+      registryauth.authenticate receives the expected casing.
     - Strips whitespace from each comma-separated parameter to prevent parse
       failures when a registry emits
-      ``Bearer realm=\"...\", service=\"...\"`` (space after the comma).
+      Bearer realm="...", service="..." (space after the comma).
 
-    :param www_auth: Raw ``WWW-Authenticate`` header value.
-    :returns: ``(normalized_www_auth, normalized_scheme)`` tuple where
-        *normalized_www_auth* is the normalised full value and
-        *normalized_scheme* is the scheme token used to build the
-        ``Authorization`` header (e.g. ``"Bearer"``).
+    :param www_auth: Raw WWW-Authenticate header value.
+    :returns: (normalized_www_auth, normalized_scheme) tuple where
+        normalized_www_auth is the normalised full value and
+        normalized_scheme is the scheme token used to build the
+        Authorization header (e.g. "Bearer").
     """
     scheme, sep, params = www_auth.partition(" ")
     normalized_scheme = (

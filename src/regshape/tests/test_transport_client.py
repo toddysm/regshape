@@ -51,6 +51,7 @@ def _client(insecure: bool = False, username: str = None, password: str = None):
         insecure=insecure,
         username=username,
         password=password,
+        enable_middleware=False,  # Disable middleware for legacy tests
     )
     with patch(
         "regshape.libs.transport.client.resolve_credentials",
@@ -108,7 +109,7 @@ class TestRegistryClientConstruction:
         assert c.base_url == f"http://{REGISTRY}"
 
     def test_credentials_resolved_from_store_when_not_provided(self):
-        config = TransportConfig(registry=REGISTRY)
+        config = TransportConfig(registry=REGISTRY, enable_middleware=False)
         with patch(
             "regshape.libs.transport.client.resolve_credentials",
             return_value=("alice", "secret"),
@@ -119,7 +120,7 @@ class TestRegistryClientConstruction:
         assert client._password == "secret"
 
     def test_explicit_credentials_bypass_store(self):
-        config = TransportConfig(registry=REGISTRY, username="bob", password="pass")
+        config = TransportConfig(registry=REGISTRY, username="bob", password="pass", enable_middleware=False)
         with patch(
             "regshape.libs.transport.client.resolve_credentials",
             return_value=("bob", "pass"),
@@ -207,7 +208,7 @@ class TestRegistryClientRequestNoAuth:
 
     def test_custom_timeout_in_config(self):
         ok = _make_response(200)
-        config = TransportConfig(registry=REGISTRY, timeout=60)
+        config = TransportConfig(registry=REGISTRY, timeout=60, enable_middleware=False)
         with patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)):
             client = RegistryClient(config)
         with patch("regshape.libs.transport.client.http_request", return_value=ok) as mock:
