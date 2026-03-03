@@ -166,7 +166,8 @@ class TestCatalogListCommand:
     def test_catalog_not_supported_exits_3(self):
         with patch("regshape.cli.catalog.list_catalog",
                    side_effect=CatalogNotSupportedError(
-                       "Registry does not support the catalog API"
+                       "Registry does not support the catalog API: acr.example.io",
+                       "HTTP 404"
                    )):
             result = _runner().invoke(regshape, [
                 "catalog", "list", "-r", REGISTRY,
@@ -177,7 +178,8 @@ class TestCatalogListCommand:
     def test_catalog_not_supported_all_exits_3(self):
         with patch("regshape.cli.catalog.list_catalog_all",
                    side_effect=CatalogNotSupportedError(
-                       "Registry does not support the catalog API"
+                       "Registry does not support the catalog API: acr.example.io",
+                       "HTTP 405"
                    )):
             result = _runner().invoke(regshape, [
                 "catalog", "list", "-r", REGISTRY, "--all",
@@ -194,7 +196,10 @@ class TestCatalogListCommand:
 
     def test_catalog_error_exits_1(self):
         with patch("regshape.cli.catalog.list_catalog",
-                   side_effect=CatalogError("Unexpected registry error")):
+                   side_effect=CatalogError(
+                       "Registry error for acr.example.io",
+                       "HTTP 500"
+                   )):
             result = _runner().invoke(regshape, [
                 "catalog", "list", "-r", REGISTRY,
             ])
@@ -216,7 +221,10 @@ class TestCatalogListCommand:
 
     def test_error_message_format(self):
         with patch("regshape.cli.catalog.list_catalog",
-                   side_effect=CatalogNotSupportedError("Not supported")):
+                   side_effect=CatalogNotSupportedError(
+                       "Registry does not support the catalog API: acr.example.io",
+                       "HTTP 404"
+                   )):
             result = _runner().invoke(
                 regshape,
                 ["catalog", "list", "-r", REGISTRY],
