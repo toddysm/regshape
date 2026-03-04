@@ -255,6 +255,26 @@ import requests.exceptions
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+def _get_header_ci(headers: dict, name: str, default: str = "") -> str:
+    """Case-insensitive header lookup.
+
+    ``RegistryResponse.headers`` is a plain ``dict`` whose keys preserve
+    the original casing from the server (e.g. ``Www-Authenticate`` from
+    Azure Container Registry).  This helper performs a case-insensitive
+    search so that header checks work regardless of server casing.
+    """
+    # Fast path — exact match
+    value = headers.get(name)
+    if value is not None:
+        return value
+    # Slow path — case-insensitive scan
+    lower_name = name.lower()
+    for key, value in headers.items():
+        if key.lower() == lower_name:
+            return value
+    return default
+
+
 def _normalize_www_authenticate(www_auth: str) -> tuple[str, str]:
     """Normalize a WWW-Authenticate header value.
 
@@ -359,13 +379,18 @@ class AuthMiddleware(BaseMiddleware):
             return response
 
         # ---- 401 handling ------------------------------------------------
-        www_auth = response.headers.get("WWW-Authenticate", "")
+        www_auth = _get_header_ci(response.headers, "WWW-Authenticate")
         if not www_auth:
-            raise AuthError(
-                "Authentication failed",
-                f"registry {self._registry!r} returned 401 without "
-                "a WWW-Authenticate header",
-            )
+            # Some registries (e.g. ACR) only return WWW-Authenticate on
+            # the /v2/ endpoint.  Fall back to a /v2/ probe to obtain the
+            # challenge, then retry the original request.
+            www_auth = self._probe_v2_challenge(next_handler, processed_request)
+            if not www_auth:
+                raise AuthError(
+                    "Authentication failed",
+                    f"registry {self._registry!r} returned 401 without "
+                    "a WWW-Authenticate header",
+                )
 
         auth_scheme = www_auth.split(" ", 1)[0]
         if auth_scheme.lower() == "basic" and (
@@ -399,6 +424,34 @@ class AuthMiddleware(BaseMiddleware):
         )
 
         return next_handler(retry_request)
+
+    # -- Private helpers ---------------------------------------------------
+
+    @staticmethod
+    def _probe_v2_challenge(
+        next_handler: Callable[[RegistryRequest], RegistryResponse],
+        original_request: RegistryRequest,
+    ) -> str:
+        """Issue ``GET /v2/`` to obtain a ``WWW-Authenticate`` challenge.
+
+        Some registries only return the challenge header on the ``/v2/``
+        base endpoint rather than on every 401 response.  This helper
+        sends a lightweight probe so that the caller can still negotiate
+        authentication.
+
+        :returns: The ``WWW-Authenticate`` header value, or an empty
+            string if the probe also lacks one.
+        """
+        probe = RegistryRequest(
+            method="GET",
+            url="/v2/",
+            headers={},
+            timeout=original_request.timeout,
+        )
+        probe_response = next_handler(probe)
+        if probe_response.status_code == 401:
+            return _get_header_ci(probe_response.headers, "WWW-Authenticate")
+        return ""
 
 
 class LoggingMiddleware(BaseMiddleware):
