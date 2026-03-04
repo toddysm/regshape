@@ -41,7 +41,7 @@ class TestRegistryRequest:
         assert req.timeout == 60
 
     def test_empty_method_raises_error(self):
-        with pytest.raises(ValueError, match="method must not be empty"):
+        with pytest.raises(ValueError, match="RegistryRequest\\.method must not be empty"):
             RegistryRequest(
                 method="",
                 url="https://registry.example.com/v2/",
@@ -49,7 +49,7 @@ class TestRegistryRequest:
             )
 
     def test_empty_url_raises_error(self):
-        with pytest.raises(ValueError, match="url must not be empty"):
+        with pytest.raises(ValueError, match="RegistryRequest\\.url must not be empty"):
             RegistryRequest(
                 method="GET",
                 url="",
@@ -57,7 +57,7 @@ class TestRegistryRequest:
             )
 
     def test_non_dict_headers_raises_error(self):
-        with pytest.raises(TypeError, match="headers must be a dict"):
+        with pytest.raises(TypeError, match="RegistryRequest\\.headers must be a dict"):
             RegistryRequest(
                 method="GET",
                 url="https://registry.example.com/v2/",
@@ -164,7 +164,7 @@ class TestRegistryResponse:
     def test_non_int_status_code_raises_error(self):
         mock_response = MagicMock()
         
-        with pytest.raises(TypeError, match="status_code must be an int"):
+        with pytest.raises(TypeError, match="RegistryResponse\\.status_code must be an int"):
             RegistryResponse(
                 status_code="200",
                 headers={},
@@ -175,7 +175,7 @@ class TestRegistryResponse:
     def test_non_dict_headers_raises_error(self):
         mock_response = MagicMock()
         
-        with pytest.raises(TypeError, match="headers must be a dict"):
+        with pytest.raises(TypeError, match="RegistryResponse\\.headers must be a dict"):
             RegistryResponse(
                 status_code=200,
                 headers="not-a-dict",
@@ -186,7 +186,7 @@ class TestRegistryResponse:
     def test_non_bytes_body_raises_error(self):
         mock_response = MagicMock()
         
-        with pytest.raises(TypeError, match="body must be bytes or None"):
+        with pytest.raises(TypeError, match="RegistryResponse\\.body must be bytes or None"):
             RegistryResponse(
                 status_code=200,
                 headers={},
