@@ -341,17 +341,15 @@ class LoggingMiddleware(BaseMiddleware):
     def process_request(self, request: RegistryRequest) -> RegistryRequest:
         """Log the outgoing request."""
         if self.logger.isEnabledFor(self.level):
-            # Log request details (avoid logging sensitive headers)
-            safe_headers = {k: v for k, v in request.headers.items() 
-                          if k.lower() not in ('authorization', 'cookie')}
-            
+            from regshape.libs.decorators.sanitization import redact_headers
+
             self.logger.log(
                 self.level,
                 f"HTTP Request: {request.method} {request.url}",
                 extra={
                     'method': request.method,
                     'url': request.url,  
-                    'headers': safe_headers,
+                    'headers': redact_headers(request.headers),
                     'has_body': request.body is not None
                 }
             )

@@ -519,7 +519,7 @@ class TestConcreteMiddleware:
             assert result is response
     
     def test_logging_middleware_excludes_sensitive_headers(self):
-        """Test logging middleware excludes sensitive headers from logs."""
+        """Test logging middleware redacts sensitive headers in logs."""
         import logging
         from unittest.mock import patch
         from regshape.libs.transport.middleware import LoggingMiddleware
@@ -532,7 +532,9 @@ class TestConcreteMiddleware:
             middleware = LoggingMiddleware()
             request = RegistryRequest("GET", "https://example.com", {
                 "Authorization": "Bearer secret-token",
-                "Cookie": "session=abc123", 
+                "Proxy-Authorization": "Basic dXNlcjpwYXNz",
+                "Cookie": "session=abc123",
+                "Set-Cookie": "id=xyz",
                 "User-Agent": "test-client"
             })
             response = _create_mock_response(200, {}, b"test")
@@ -540,12 +542,15 @@ class TestConcreteMiddleware:
             
             middleware(request, next_handler)
             
-            # Check that sensitive headers are excluded
+            # Sensitive headers should be present but redacted
             request_call = mock_logger.log.call_args_list[0]
             logged_headers = request_call[1]['extra']['headers']
-            assert 'Authorization' not in logged_headers
-            assert 'Cookie' not in logged_headers
-            assert 'User-Agent' in logged_headers
+            assert logged_headers['Authorization'] == 'Bearer <redacted>'
+            assert logged_headers['Proxy-Authorization'] == 'Basic <redacted>'
+            assert logged_headers['Cookie'] == '<redacted>'
+            assert logged_headers['Set-Cookie'] == '<redacted>'
+            # Non-sensitive headers are unchanged
+            assert logged_headers['User-Agent'] == 'test-client'
     
     def test_logging_middleware_logs_errors(self):
         """Test logging middleware logs errors."""
