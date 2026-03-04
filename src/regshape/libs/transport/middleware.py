@@ -407,6 +407,7 @@ class RetryMiddleware(BaseMiddleware):
     def __call__(self, request: RegistryRequest, next_handler: NextHandler) -> RegistryResponse:
         """Execute request with retry logic."""
         last_exception = None
+        processed_request = request
         
         for attempt in range(self.config.max_retries + 1):
             try:
@@ -422,7 +423,7 @@ class RetryMiddleware(BaseMiddleware):
                     continue
                 
                 # Process response and return
-                return self.process_response(request, response)
+                return self.process_response(processed_request, response)
                 
             except self.config.exceptions as exc:
                 last_exception = exc
@@ -431,11 +432,11 @@ class RetryMiddleware(BaseMiddleware):
                     self._wait_backoff(attempt)
                     continue
                 else:
-                    return self.handle_error(request, exc)
+                    return self.handle_error(processed_request, exc)
         
         # This shouldn't be reached, but handle it gracefully
         if last_exception:
-            return self.handle_error(request, last_exception)
+            return self.handle_error(processed_request, last_exception)
         
         # Fallback - should never happen
         raise RuntimeError("Retry logic reached unexpected state")

@@ -716,6 +716,40 @@ class TestConcreteMiddleware:
         assert next_handler.call_count == 2
         assert result.status_code == 200
     
+    def test_retry_middleware_passes_processed_request_to_hooks(self):
+        """Test that RetryMiddleware passes processed_request to process_response/handle_error."""
+        from regshape.libs.transport.middleware import RetryMiddleware, RetryConfig
+        from unittest.mock import patch
+        
+        captured = {}
+        
+        class TrackedRetry(RetryMiddleware):
+            def process_request(self, request):
+                # Add a header so we can distinguish processed from original
+                return RegistryRequest(
+                    method=request.method,
+                    url=request.url,
+                    headers={**request.headers, "X-Attempt": "processed"},
+                    stream=request.stream,
+                )
+            
+            def process_response(self, request, response):
+                captured['response_request'] = request
+                return response
+        
+        config = RetryConfig(max_retries=0, backoff_factor=0.01)
+        middleware = TrackedRetry(config)
+        
+        original_request = RegistryRequest("GET", "https://example.com", {})
+        response = _create_mock_response(200, {}, b"ok")
+        next_handler = Mock(return_value=response)
+        
+        with patch('regshape.libs.transport.middleware.time.sleep'):
+            middleware(original_request, next_handler)
+        
+        # process_response must see the processed request
+        assert captured['response_request'].headers.get("X-Attempt") == "processed"
+
     def test_caching_middleware_caches_get_requests(self):
         """Test caching middleware caches GET requests."""
         from regshape.libs.transport.middleware import CachingMiddleware
