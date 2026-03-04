@@ -167,9 +167,11 @@ class MiddlewarePipeline:
     def insert_middleware(self, index: int, middleware: Middleware) -> None:
         """Insert middleware at a specific position in the pipeline.
         
+        Out-of-range indexes are clamped: a large positive index appends
+        to the end, and a large negative index prepends to the beginning.
+        
         :param index: Position to insert at (0 = first to execute)
         :param middleware: Middleware component to insert
-        :raises IndexError: If index is out of bounds
         """
         self._middleware.insert(index, middleware)
     
