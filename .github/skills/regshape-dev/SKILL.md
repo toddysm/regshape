@@ -61,6 +61,57 @@ The recommended workflow is **spec → implement → test → document**, but an
 | CLI | `cli/` | `specs/cli/` | `docs/cli/` |
 | Models | `libs/models/` | `specs/models/` | `docs/library/models.md` |
 
+## GitHub Issue Management
+
+Use the GitHub CLI (`gh`) to create and manage development tracking issues directly from the skill.
+
+### Creating Issues
+
+When identifying work to be done, create GitHub issues using:
+
+```bash
+gh issue create \
+  --title "Issue Title" \
+  --body "Issue description with acceptance criteria" \
+  --label "enhancement" \
+  --label "priority-high" \
+  --assignee @me
+```
+
+### Common Issue Labels
+
+- **Priority**: `priority-high`, `priority-medium`, `priority-low`  
+- **Type**: `enhancement`, `bug`, `documentation`, `architecture`
+- **Domain**: `break-mode`, `cli`, `oci-spec`, `transport`, `models`
+- **Status**: `blocked`, `help-wanted`, `good-first-issue`
+
+### Issue Templates
+
+Use these templates for consistent issue creation:
+
+**Feature Implementation Issues:**
+- Title: `Implement [Feature Name] - [Brief Description]`
+- Include acceptance criteria checklist
+- List files to create/modify
+- Add appropriate priority and domain labels
+
+**Bug Report Issues:**
+- Title: `Bug: [Brief Description]`  
+- Include steps to reproduce, expected vs actual behavior
+- Add `bug` label and relevant domain labels
+
+**Architecture Issues:**
+- Title: `Architecture: [Component/Enhancement]`
+- Include design decisions, trade-offs, implementation notes
+- Add `architecture` label
+
+### Workflow Integration
+
+1. **When planning work**: Create issues for each major component or feature
+2. **Before coding**: Reference issue numbers in commit messages (`fixes #123`)  
+3. **During implementation**: Update issue status and add progress notes
+4. **After completion**: Close issues automatically via commit messages or PR merges
+
 ## Break/Test Mode
 
 RegShape's distinguishing feature: deliberately send malformed or non-conformant requests to test registry implementations.
