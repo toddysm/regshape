@@ -201,20 +201,11 @@ class RegistryClient:
         # Store for backward compatibility
         self.last_response = response
         
-        # Convert to RegistryResponse
-        # For streaming responses, avoid materializing response.content, which would
-        # defeat streaming and load large blobs into memory. Instead, construct a
-        # minimal RegistryResponse that exposes metadata and the raw response.
-        if request.stream:
-            return RegistryResponse(
-                status_code=response.status_code,
-                headers=response.headers,
-                body=None,
-                raw_response=response,
-            )
-        
-        # Non-streaming responses preserve existing behavior.
-        return RegistryResponse.from_requests_response(response)
+        # Convert to RegistryResponse.
+        # For streaming requests, from_requests_response(stream=True) avoids
+        # reading response.content so that the streaming iterator is preserved
+        # for callers (e.g. blob downloads).
+        return RegistryResponse.from_requests_response(response, stream=request.stream)
 
     def _legacy_authenticate_and_retry(
         self, 

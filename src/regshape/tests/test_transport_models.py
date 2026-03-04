@@ -109,6 +109,20 @@ class TestRegistryResponse:
         assert resp.body == b"Created"
         assert resp.raw_response == mock_response
 
+    def test_from_requests_response_streaming(self):
+        """stream=True should NOT read response.content."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {"Content-Type": "application/octet-stream"}
+        # content should never be accessed
+        mock_response.content = property(lambda self: (_ for _ in ()).throw(
+            AssertionError("content should not be accessed for streaming")))
+
+        resp = RegistryResponse.from_requests_response(mock_response, stream=True)
+        assert resp.status_code == 200
+        assert resp.body is None
+        assert resp.is_streaming is True
+
     def test_text_property(self):
         mock_response = MagicMock()
         mock_response.text = "Hello World"
@@ -172,13 +186,76 @@ class TestRegistryResponse:
     def test_non_bytes_body_raises_error(self):
         mock_response = MagicMock()
         
-        with pytest.raises(TypeError, match="body must be bytes"):
+        with pytest.raises(TypeError, match="body must be bytes or None"):
             RegistryResponse(
                 status_code=200,
                 headers={},
                 body="not-bytes",
                 raw_response=mock_response
             )
+
+    def test_none_body_allowed(self):
+        """Test that body=None is valid (streaming responses)."""
+        mock_response = MagicMock()
+        resp = RegistryResponse(
+            status_code=200,
+            headers={"Content-Type": "application/octet-stream"},
+            body=None,
+            raw_response=mock_response
+        )
+        assert resp.body is None
+        assert resp.is_streaming is True
+
+    def test_is_streaming_false_for_buffered(self):
+        mock_response = MagicMock()
+        resp = RegistryResponse(
+            status_code=200,
+            headers={},
+            body=b"data",
+            raw_response=mock_response
+        )
+        assert resp.is_streaming is False
+
+    def test_content_property_returns_body(self):
+        """For buffered responses, .content returns the stored body."""
+        mock_response = MagicMock()
+        resp = RegistryResponse(
+            status_code=200,
+            headers={},
+            body=b"hello",
+            raw_response=mock_response
+        )
+        assert resp.content == b"hello"
+
+    def test_content_property_lazily_reads_for_streaming(self):
+        """For streaming responses, .content reads raw_response.content once."""
+        mock_response = MagicMock()
+        mock_response.content = b"lazy-body"
+        resp = RegistryResponse(
+            status_code=200,
+            headers={},
+            body=None,
+            raw_response=mock_response
+        )
+        assert resp.is_streaming is True
+        # Accessing .content should materialise the body
+        assert resp.content == b"lazy-body"
+        assert resp.body == b"lazy-body"
+        assert resp.is_streaming is False
+
+    def test_iter_content_delegates_to_raw_response(self):
+        """iter_content should delegate to raw_response.iter_content."""
+        mock_response = MagicMock()
+        mock_response.iter_content.return_value = iter([b"chunk1", b"chunk2"])
+        resp = RegistryResponse(
+            status_code=200,
+            headers={},
+            body=None,
+            raw_response=mock_response
+        )
+        chunks = list(resp.iter_content(chunk_size=1024))
+        assert chunks == [b"chunk1", b"chunk2"]
+        mock_response.iter_content.assert_called_once_with(chunk_size=1024)
 
     def test_headers_converted_to_dict(self):
         """Test that from_requests_response converts headers properly."""

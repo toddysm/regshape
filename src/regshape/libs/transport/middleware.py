@@ -350,7 +350,7 @@ class LoggingMiddleware(BaseMiddleware):
                     'status_code': response.status_code,
                     'method': request.method,
                     'url': request.url,
-                    'content_length': len(response.body)
+                    'content_length': len(response.body) if response.body is not None else None
                 }
             )
         
