@@ -115,6 +115,60 @@ class TestBaseMiddleware:
         next_handler.assert_called_once_with(request)
         assert result is response
         assert result.headers["X-Processed"] == "true"
+
+    def test_process_response_receives_processed_request(self):
+        """Test that process_response receives the request after process_request modifications."""
+        captured = {}
+        
+        class TestMiddleware(BaseMiddleware):
+            def process_request(self, request):
+                return RegistryRequest(
+                    method=request.method,
+                    url=request.url,
+                    headers={**request.headers, "Authorization": "Bearer tok123"},
+                    stream=request.stream,
+                )
+            
+            def process_response(self, request, response):
+                captured['request'] = request
+                return response
+        
+        middleware = TestMiddleware()
+        original_request = RegistryRequest("GET", "https://example.com", {})
+        response = _create_mock_response(200, {}, b"ok")
+        next_handler = Mock(return_value=response)
+        
+        middleware(original_request, next_handler)
+        
+        # process_response must see the processed request, not the original
+        assert "Authorization" in captured['request'].headers
+        assert captured['request'].headers["Authorization"] == "Bearer tok123"
+
+    def test_handle_error_receives_processed_request(self):
+        """Test that handle_error receives the request after process_request modifications."""
+        captured = {}
+        
+        class TestMiddleware(BaseMiddleware):
+            def process_request(self, request):
+                return RegistryRequest(
+                    method=request.method,
+                    url=request.url,
+                    headers={**request.headers, "X-Trace": "abc"},
+                    stream=request.stream,
+                )
+            
+            def handle_error(self, request, error):
+                captured['request'] = request
+                return _create_mock_response(500, {}, b"error")
+        
+        middleware = TestMiddleware()
+        original_request = RegistryRequest("GET", "https://example.com", {})
+        next_handler = Mock(side_effect=RuntimeError("boom"))
+        
+        middleware(original_request, next_handler)
+        
+        # handle_error must see the processed request, not the original
+        assert captured['request'].headers.get("X-Trace") == "abc"
     
     def test_handle_error_hook(self):
         """Test that handle_error hook is called on exceptions."""

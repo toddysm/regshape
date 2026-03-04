@@ -68,6 +68,7 @@ class BaseMiddleware(ABC):
         next_handler: Callable[[RegistryRequest], RegistryResponse]
     ) -> RegistryResponse:
         """Main middleware entry point."""
+        processed_request = request
         try:
             # Allow subclasses to modify the request
             processed_request = self.process_request(request)
@@ -76,13 +77,13 @@ class BaseMiddleware(ABC):
             response = next_handler(processed_request)
             
             # Allow subclasses to modify the response  
-            processed_response = self.process_response(request, response)
+            processed_response = self.process_response(processed_request, response)
             
             return processed_response
             
         except Exception as exc:
             # Allow subclasses to handle errors
-            return self.handle_error(request, exc)
+            return self.handle_error(processed_request, exc)
     
     def process_request(self, request: RegistryRequest) -> RegistryRequest:
         """Hook for request preprocessing.
@@ -105,7 +106,7 @@ class BaseMiddleware(ABC):
         Subclasses can override this to inspect/modify the response
         after it returns from the pipeline.
         
-        :param request: The original request 
+        :param request: The processed request (after :meth:`process_request`)
         :param response: The response from downstream middleware
         :returns: The processed response (may be modified)
         """
@@ -121,7 +122,7 @@ class BaseMiddleware(ABC):
         Subclasses can override this to handle errors that occur
         in downstream middleware. Default behavior is to re-raise.
         
-        :param request: The request that caused the error
+        :param request: The processed request (after :meth:`process_request`)
         :param error: The exception that occurred
         :returns: A response (if error can be recovered)
         :raises: Re-raises the error if not handled
