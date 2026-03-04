@@ -450,17 +450,30 @@ class RetryMiddleware(BaseMiddleware):
 class CachingMiddleware(BaseMiddleware):
     """Middleware that caches GET responses for immutable content.
     
-    Caches responses based on URL and Cache-Control headers.
-    Suitable for registry manifests and blobs that are immutable.
+    Caches responses based on URL, Accept header, and query parameters.
+    Suitable for registry manifests and blobs that are content-addressed
+    and therefore immutable.
+
+    Each cached entry carries a timestamp.  When *ttl* is set, entries
+    older than *ttl* seconds are treated as stale and transparently
+    re-fetched.  When *ttl* is ``None`` (the default) entries never
+    expire — appropriate for content-addressed registry objects.
+    
+    :param max_size: Maximum number of cached responses.
+    :param ttl: Time-to-live in seconds for cached entries.  ``None``
+        means entries never expire.
     """
     
-    def __init__(self, max_size: int = 1000):
+    def __init__(self, max_size: int = 1000, ttl: Optional[float] = None):
         """Initialize caching middleware.
         
         :param max_size: Maximum number of cached responses
+        :param ttl: Time-to-live in seconds for cached entries, or
+            ``None`` for no expiration (default)
         """
-        self.cache: Dict[str, RegistryResponse] = {}
+        self.cache: Dict[str, tuple[float, RegistryResponse]] = {}
         self.max_size = max_size
+        self.ttl = ttl
     
     def __call__(self, request: RegistryRequest, next_handler: NextHandler) -> RegistryResponse:
         """Execute request with caching logic."""
@@ -472,9 +485,11 @@ class CachingMiddleware(BaseMiddleware):
         
         # Check cache first
         if cache_key in self.cache:
-            cached_response = self.cache[cache_key]
-            # In a real implementation, check expiration here
-            return cached_response
+            cached_time, cached_response = self.cache[cache_key]
+            if self.ttl is None or (time.monotonic() - cached_time) < self.ttl:
+                return cached_response
+            # Entry is stale — evict and re-fetch
+            del self.cache[cache_key]
         
         # Execute request
         processed_request = self.process_request(request)
@@ -530,13 +545,17 @@ class CachingMiddleware(BaseMiddleware):
         return True
     
     def _add_to_cache(self, key: str, response: RegistryResponse) -> None:
-        """Add response to cache with size limit."""
+        """Add response to cache with size limit.
+
+        Each entry is stored as a ``(timestamp, response)`` tuple so
+        that TTL expiration can be checked on lookup.
+        """
         if len(self.cache) >= self.max_size:
             # Simple LRU: remove oldest entry  
             oldest_key = next(iter(self.cache))
             del self.cache[oldest_key]
         
-        self.cache[key] = response
+        self.cache[key] = (time.monotonic(), response)
     
     def clear_cache(self) -> None:
         """Clear all cached responses."""

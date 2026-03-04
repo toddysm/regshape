@@ -65,6 +65,10 @@ class TransportConfig:
         enable_retries is True.
     :param cache_size: Maximum number of cached responses. Only used when
         enable_caching is True. Defaults to 100.
+    :param cache_ttl: Time-to-live in seconds for cached responses.
+        ``None`` means entries never expire, which is appropriate for
+        content-addressed registry objects (manifests, blobs). Only used
+        when enable_caching is True. Defaults to ``None``.
     :param middlewares: Additional custom middleware to add to the pipeline.
         These are added after the built-in middleware.
     """
@@ -80,6 +84,7 @@ class TransportConfig:
     enable_caching: bool = False
     retry_config: Optional[RetryConfig] = None
     cache_size: int = 100
+    cache_ttl: Optional[float] = None
     middlewares: List[Middleware] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -170,7 +175,9 @@ class RegistryClient:
         
         # Add caching middleware if enabled
         if self.config.enable_caching:
-            pipeline.add_middleware(CachingMiddleware(self.config.cache_size))
+            pipeline.add_middleware(
+                CachingMiddleware(self.config.cache_size, ttl=self.config.cache_ttl)
+            )
         
         # Add custom middleware
         for middleware in self.config.middlewares:

@@ -758,3 +758,89 @@ class TestConcreteMiddleware:
         # Next request should hit handler again
         middleware(request, next_handler)
         assert next_handler.call_count == 2
+
+    def test_caching_middleware_ttl_expires_entry(self):
+        """Test that cached entries expire after the TTL elapses."""
+        from regshape.libs.transport.middleware import CachingMiddleware
+        from unittest.mock import patch
+        import time as _time
+
+        middleware = CachingMiddleware(ttl=10.0)
+        request = RegistryRequest("GET", "https://example.com/manifest", {})
+
+        response1 = _create_mock_response(200, {}, b"v1")
+        response2 = _create_mock_response(200, {}, b"v2")
+        next_handler = Mock(side_effect=[response1, response2])
+
+        # Patch time.monotonic so we control the clock
+        clock = [1000.0]
+        with patch("regshape.libs.transport.middleware.time") as mock_time:
+            mock_time.monotonic = lambda: clock[0]
+            mock_time.sleep = _time.sleep  # keep sleep available for retry
+
+            # First request — cache miss
+            result1 = middleware(request, next_handler)
+            assert next_handler.call_count == 1
+            assert result1.body == b"v1"
+
+            # Advance clock by 5 s (within TTL) — cache hit
+            clock[0] += 5.0
+            result2 = middleware(request, next_handler)
+            assert next_handler.call_count == 1  # still cached
+            assert result2.body == b"v1"
+
+            # Advance clock past TTL — cache miss, re-fetches
+            clock[0] += 6.0  # total elapsed: 11 s > 10 s TTL
+            result3 = middleware(request, next_handler)
+            assert next_handler.call_count == 2
+            assert result3.body == b"v2"
+
+    def test_caching_middleware_no_ttl_never_expires(self):
+        """Test that entries with ttl=None never expire."""
+        from regshape.libs.transport.middleware import CachingMiddleware
+        from unittest.mock import patch
+        import time as _time
+
+        middleware = CachingMiddleware(ttl=None)
+        request = RegistryRequest("GET", "https://example.com/blob", {})
+        response = _create_mock_response(200, {}, b"immutable")
+        next_handler = Mock(return_value=response)
+
+        clock = [1000.0]
+        with patch("regshape.libs.transport.middleware.time") as mock_time:
+            mock_time.monotonic = lambda: clock[0]
+            mock_time.sleep = _time.sleep
+
+            middleware(request, next_handler)
+            assert next_handler.call_count == 1
+
+            # Advance clock by a very large amount
+            clock[0] += 999_999.0
+            middleware(request, next_handler)
+            assert next_handler.call_count == 1  # still cached
+
+    def test_caching_middleware_ttl_stale_entry_evicted(self):
+        """Test that a stale entry is removed from the cache dict."""
+        from regshape.libs.transport.middleware import CachingMiddleware
+        from unittest.mock import patch
+        import time as _time
+
+        middleware = CachingMiddleware(ttl=5.0)
+        request = RegistryRequest("GET", "https://example.com/data", {})
+        response = _create_mock_response(200, {}, b"data")
+        next_handler = Mock(return_value=response)
+
+        clock = [0.0]
+        with patch("regshape.libs.transport.middleware.time") as mock_time:
+            mock_time.monotonic = lambda: clock[0]
+            mock_time.sleep = _time.sleep
+
+            middleware(request, next_handler)
+            assert middleware.get_cache_size() == 1
+
+            # Expire the entry
+            clock[0] += 10.0
+            middleware(request, next_handler)
+            # After re-fetch, a fresh entry should be stored
+            assert middleware.get_cache_size() == 1
+            assert next_handler.call_count == 2
