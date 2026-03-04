@@ -217,15 +217,9 @@ the first 200 characters of `response.text`.
 - `regshape.libs.errors` — `AuthError`, `ReferrerError` (new)
 - `regshape.libs.models.referrer` — `ReferrerList` (new)
 - `regshape.libs.models.error` — `OciErrorResponse`
-- `regshape.libs.refs` — `format_ref`
 - `regshape.libs.transport` — `RegistryClient`
 - `regshape.libs.decorators.timing` — `track_time`
 - `regshape.libs.decorators.scenario` — `track_scenario`
-
-**External:**
-- `requests` — `requests.Response` type annotation only
-
----
 
 **External:**
 - `requests` — `requests.Response` type annotation only
