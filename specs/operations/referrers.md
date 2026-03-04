@@ -172,7 +172,7 @@ full relative URL path (including query string) for the next page.
 | Header present with `rel="next"` | Relative URL string for next page |
 | Header absent or no `rel="next"` | `None` |
 
-This follows the same pattern as `catalog.operations._parse_next_cursor`.
+This follows the same pattern as `catalog.operations._parse_next_url`.
 
 ---
 
