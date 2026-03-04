@@ -19,7 +19,6 @@ concerns — error reporting is the caller's responsibility.
 
 import re
 from typing import Optional
-from urllib.parse import parse_qs, urlparse
 
 import requests
 
