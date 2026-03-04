@@ -30,7 +30,8 @@ from regshape.libs.decorators.call_details import http_request
 from regshape.libs.errors import AuthError
 from regshape.libs.transport.middleware import (
     MiddlewarePipeline, Middleware, AuthMiddleware, LoggingMiddleware,
-    RetryMiddleware, CachingMiddleware, RetryConfig
+    RetryMiddleware, CachingMiddleware, RetryConfig,
+    _normalize_www_authenticate,
 )
 from regshape.libs.transport.models import RegistryRequest, RegistryResponse
 
@@ -152,17 +153,24 @@ class RegistryClient:
     # ------------------------------------------------------------------
 
     def _setup_middleware_pipeline(self) -> MiddlewarePipeline:
-        """Set up the middleware pipeline based on configuration."""
+        """Set up the middleware pipeline based on configuration.
+
+        AuthMiddleware is **always** added so that the 401 ->
+        WWW-Authenticate -> authenticate -> retry cycle works for
+        Basic, Bearer (authenticated), *and* Bearer (anonymous) flows.
+        """
         pipeline = MiddlewarePipeline()
         
-        # Add authentication middleware if credentials are available
-        if self._username and self._password:
-            # Create credentials object
-            credentials_obj = type('BasicCredentials', (), {
-                'username': self._username,
-                'password': self._password
-            })()
-            pipeline.add_middleware(AuthMiddleware(credentials_obj))
+        # Always add authentication middleware — the 401 challenge /
+        # retry cycle must be available even when no credentials are
+        # configured (anonymous Bearer-token flow).
+        pipeline.add_middleware(
+            AuthMiddleware(
+                username=self._username,
+                password=self._password,
+                registry=self.config.registry,
+            )
+        )
         
         # Add logging middleware if enabled
         if self.config.enable_logging:
@@ -373,34 +381,3 @@ class RegistryClient:
         :param path: URL path.
         """
         return self.request("DELETE", path, **kwargs)
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-def _normalize_www_authenticate(www_auth: str) -> tuple[str, str]:
-    """Normalize a WWW-Authenticate header value.
-
-    - Capitalises basic / bearer scheme names so that
-      registryauth.authenticate receives the expected casing.
-    - Strips whitespace from each comma-separated parameter to prevent parse
-      failures when a registry emits
-      Bearer realm="...", service="..." (space after the comma).
-
-    :param www_auth: Raw WWW-Authenticate header value.
-    :returns: (normalized_www_auth, normalized_scheme) tuple where
-        normalized_www_auth is the normalised full value and
-        normalized_scheme is the scheme token used to build the
-        Authorization header (e.g. "Bearer").
-    """
-    scheme, sep, params = www_auth.partition(" ")
-    normalized_scheme = (
-        scheme.capitalize() if scheme.lower() in ("basic", "bearer") else scheme
-    )
-    if sep and params:
-        cleaned_params = ",".join(part.strip() for part in params.split(","))
-        normalized_www_auth = f"{normalized_scheme} {cleaned_params}"
-    else:
-        normalized_www_auth = normalized_scheme
-    return normalized_www_auth, normalized_scheme

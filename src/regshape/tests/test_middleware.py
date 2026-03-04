@@ -458,8 +458,8 @@ class TestMiddlewareIntegration:
 class TestConcreteMiddleware:
     """Test concrete middleware implementations."""
     
-    def test_auth_middleware_no_credentials(self):
-        """Test auth middleware with no credentials passes through unchanged."""
+    def test_auth_middleware_no_credentials_passes_through(self):
+        """Test auth middleware with no credentials passes through unchanged on 200."""
         from regshape.libs.transport.middleware import AuthMiddleware
         
         middleware = AuthMiddleware()
@@ -469,76 +469,138 @@ class TestConcreteMiddleware:
         
         result = middleware(request, next_handler)
         
-        # Request should be unchanged
+        # Request should be unchanged (no Authorization injected upfront)
         next_handler.assert_called_once_with(request)
         assert result is response
     
-    def test_auth_middleware_basic_auth(self):
-        """Test auth middleware adds basic auth header."""
+    def test_auth_middleware_bearer_challenge_with_credentials(self):
+        """Test auth middleware handles Bearer 401 challenge with credentials."""
+        from unittest.mock import patch
         from regshape.libs.transport.middleware import AuthMiddleware
         
-        # Create specific credentials object for basic auth
-        class BasicCredentials:
-            def __init__(self, username, password):
-                self.username = username
-                self.password = password
+        middleware = AuthMiddleware(
+            username="user", password="pass", registry="example.com"
+        )
+        request = RegistryRequest("GET", "/v2/repo/manifests/latest", {})
         
-        credentials = BasicCredentials("user", "pass")
-        middleware = AuthMiddleware(credentials)
-        request = RegistryRequest("GET", "https://example.com", {"User-Agent": "test"})
-        response = _create_mock_response(200, {}, b"test")
-        next_handler = Mock(return_value=response)
+        challenge_response = _create_mock_response(
+            401,
+            {"WWW-Authenticate": 'Bearer realm="https://auth.example.com/token",service="registry.example.com",scope="repository:repo:pull"'},
+            b"Unauthorized",
+        )
+        success_response = _create_mock_response(200, {}, b"manifest-data")
         
-        result = middleware(request, next_handler)
+        next_handler = Mock(side_effect=[challenge_response, success_response])
         
-        # Check that Authorization header was added
-        next_handler.assert_called_once()
-        modified_request = next_handler.call_args[0][0]
-        assert "Authorization" in modified_request.headers
-        assert modified_request.headers["Authorization"].startswith("Basic ")
-        assert modified_request.headers["User-Agent"] == "test"
-        assert result is response
+        with patch("regshape.libs.transport.middleware.registryauth.authenticate") as mock_auth:
+            mock_auth.return_value = "a-bearer-token"
+            result = middleware(request, next_handler)
+        
+        assert result is success_response
+        assert next_handler.call_count == 2
+        # Retry request should carry the Bearer Authorization header
+        retry_request = next_handler.call_args_list[1][0][0]
+        assert retry_request.headers["Authorization"] == "Bearer a-bearer-token"
+        mock_auth.assert_called_once()
     
-    def test_auth_middleware_bearer_token(self):
-        """Test auth middleware adds bearer token header."""
+    def test_auth_middleware_basic_challenge_with_credentials(self):
+        """Test auth middleware handles Basic 401 challenge with credentials."""
+        from unittest.mock import patch
         from regshape.libs.transport.middleware import AuthMiddleware
         
-        # Create specific credentials object for bearer token
-        class BearerCredentials:
-            def __init__(self, token):
-                self.token = token
+        middleware = AuthMiddleware(
+            username="user", password="pass", registry="example.com"
+        )
+        request = RegistryRequest("GET", "/v2/", {})
         
-        credentials = BearerCredentials("abc123")
-        middleware = AuthMiddleware(credentials)
-        request = RegistryRequest("GET", "https://example.com", {})
-        response = _create_mock_response(200, {}, b"test")
-        next_handler = Mock(return_value=response)
+        challenge_response = _create_mock_response(
+            401,
+            {"WWW-Authenticate": 'Basic realm="Registry"'},
+            b"Unauthorized",
+        )
+        success_response = _create_mock_response(200, {}, b"ok")
+        next_handler = Mock(side_effect=[challenge_response, success_response])
         
-        result = middleware(request, next_handler)
+        with patch("regshape.libs.transport.middleware.registryauth.authenticate") as mock_auth:
+            mock_auth.return_value = "dXNlcjpwYXNz"  # base64(user:pass)
+            result = middleware(request, next_handler)
         
-        # Check that Authorization header was added
-        next_handler.assert_called_once()
-        modified_request = next_handler.call_args[0][0]
-        assert modified_request.headers["Authorization"] == "Bearer abc123"
-        assert result is response
+        assert result is success_response
+        assert next_handler.call_count == 2
+        retry_request = next_handler.call_args_list[1][0][0]
+        assert retry_request.headers["Authorization"] == "Basic dXNlcjpwYXNz"
     
-    def test_auth_middleware_handles_401_response(self):
-        """Test auth middleware processes WWW-Authenticate challenges."""
+    def test_auth_middleware_anonymous_bearer_token_flow(self):
+        """Test auth middleware performs anonymous Bearer token exchange."""
+        from unittest.mock import patch
         from regshape.libs.transport.middleware import AuthMiddleware
         
-        middleware = AuthMiddleware()
-        request = RegistryRequest("GET", "https://example.com", {})
+        # No credentials — anonymous flow
+        middleware = AuthMiddleware(registry="public.example.com")
+        request = RegistryRequest("GET", "/v2/library/alpine/manifests/latest", {})
         
-        # Mock 401 response with WWW-Authenticate header
-        response_headers = {"WWW-Authenticate": 'Basic realm="test"'}
-        response = _create_mock_response(401, response_headers, b"Unauthorized")
-        next_handler = Mock(return_value=response)
+        challenge_response = _create_mock_response(
+            401,
+            {"WWW-Authenticate": 'Bearer realm="https://auth.example.com/token",service="registry.example.com"'},
+            b"Unauthorized",
+        )
+        success_response = _create_mock_response(200, {}, b"manifest")
+        next_handler = Mock(side_effect=[challenge_response, success_response])
+        
+        with patch("regshape.libs.transport.middleware.registryauth.authenticate") as mock_auth:
+            mock_auth.return_value = "anon-token"
+            result = middleware(request, next_handler)
+        
+        assert result is success_response
+        # authenticate() should have been called with None username/password
+        mock_auth.assert_called_once()
+        _, call_username, call_password = mock_auth.call_args[0]
+        assert call_username is None
+        assert call_password is None
+    
+    def test_auth_middleware_401_no_www_authenticate_raises(self):
+        """Test auth middleware raises AuthError when 401 has no WWW-Authenticate."""
+        from regshape.libs.transport.middleware import AuthMiddleware
+        from regshape.libs.errors import AuthError
+        
+        middleware = AuthMiddleware(registry="example.com")
+        request = RegistryRequest("GET", "/v2/", {})
+        challenge_response = _create_mock_response(401, {}, b"Unauthorized")
+        next_handler = Mock(return_value=challenge_response)
+        
+        with pytest.raises(AuthError, match="returned 401 without a WWW-Authenticate header"):
+            middleware(request, next_handler)
+    
+    def test_auth_middleware_basic_challenge_no_credentials_raises(self):
+        """Test auth middleware raises AuthError when Basic auth requested but no credentials."""
+        from regshape.libs.transport.middleware import AuthMiddleware
+        from regshape.libs.errors import AuthError
+        
+        middleware = AuthMiddleware(registry="private.example.com")
+        request = RegistryRequest("GET", "/v2/", {})
+        challenge_response = _create_mock_response(
+            401,
+            {"WWW-Authenticate": 'Basic realm="Registry"'},
+            b"Unauthorized",
+        )
+        next_handler = Mock(return_value=challenge_response)
+        
+        with pytest.raises(AuthError, match="Basic authentication but no credentials"):
+            middleware(request, next_handler)
+    
+    def test_auth_middleware_non_401_passes_through(self):
+        """Test that non-401 error responses are not intercepted."""
+        from regshape.libs.transport.middleware import AuthMiddleware
+        
+        middleware = AuthMiddleware(username="u", password="p", registry="r")
+        request = RegistryRequest("GET", "/v2/", {})
+        forbidden = _create_mock_response(403, {}, b"Forbidden")
+        next_handler = Mock(return_value=forbidden)
         
         result = middleware(request, next_handler)
         
-        # Response should pass through (challenge handling is placeholder in this implementation)
-        assert result is response
-        assert result.status_code == 401
+        assert result is forbidden
+        next_handler.assert_called_once()
     
     def test_logging_middleware_logs_request_response(self):
         """Test logging middleware logs requests and responses."""

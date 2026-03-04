@@ -97,14 +97,17 @@ class TestRegistryClientMiddlewareSetup:
     
     @patch('regshape.libs.transport.client.resolve_credentials')
     def test_client_middleware_setup_no_credentials(self, mock_resolve):
-        """Test middleware setup when no credentials are resolved."""
+        """Test middleware setup when no credentials are resolved.
+        
+        AuthMiddleware is always added (for anonymous token flows).
+        """
         mock_resolve.return_value = (None, None)
         
         config = TransportConfig("registry.example.com")
         client = RegistryClient(config)
         
         assert client._pipeline is not None
-        assert client._pipeline.get_middleware_count() == 0  # No auth middleware added
+        assert client._pipeline.get_middleware_count() == 1  # AuthMiddleware always present
     
     @patch('regshape.libs.transport.client.resolve_credentials')
     def test_client_middleware_setup_with_credentials(self, mock_resolve):
@@ -164,23 +167,40 @@ class TestRegistryClientRequestWithMiddleware:
     @patch('regshape.libs.transport.client.resolve_credentials')
     @patch('regshape.libs.transport.client.http_request')
     def test_request_with_auth_middleware(self, mock_http_request, mock_resolve):
-        """Test request with authentication middleware."""
+        """Test request with authentication middleware handling 401 challenge."""
         mock_resolve.return_value = ("user", "pass")
-        mock_response = _create_mock_response(200, {}, b"success")
-        mock_http_request.return_value = mock_response
+        
+        # First response: 401 with WWW-Authenticate challenge
+        auth_response = Mock(spec=requests.Response)
+        auth_response.status_code = 401
+        auth_response.headers = {"WWW-Authenticate": 'Bearer realm="https://auth.example.com/token",service="registry"'}
+        auth_response.content = b"Unauthorized"
+        auth_response.text = "Unauthorized"
+
+        # Second response: success after auth
+        success_response = Mock(spec=requests.Response)
+        success_response.status_code = 200
+        success_response.headers = {}
+        success_response.content = b"success"
+        success_response.text = "success"
+        
+        mock_http_request.side_effect = [auth_response, success_response]
         
         config = TransportConfig("registry.example.com") 
         client = RegistryClient(config)
         
-        response = client.get("/v2/test/tags/list")
+        with patch("regshape.libs.transport.middleware.registryauth.authenticate") as mock_auth:
+            mock_auth.return_value = "a-bearer-token"
+            response = client.get("/v2/test/tags/list")
         
         assert response.status_code == 200
-        # Verify that http_request was called (auth middleware should add Authorization header)
-        mock_http_request.assert_called_once()
-        call_args = mock_http_request.call_args
-        headers = call_args[1]['headers']
-        assert 'Authorization' in headers
-        assert headers['Authorization'].startswith('Basic ')
+        assert mock_http_request.call_count == 2
+        # Initial request should have no Authorization header
+        initial_headers = mock_http_request.call_args_list[0][1]['headers']
+        assert 'Authorization' not in initial_headers
+        # Retry request should carry the negotiated Authorization header
+        retry_headers = mock_http_request.call_args_list[1][1]['headers']
+        assert retry_headers['Authorization'] == 'Bearer a-bearer-token'
     
     @patch('regshape.libs.transport.client.resolve_credentials')
     @patch('regshape.libs.transport.client.http_request')

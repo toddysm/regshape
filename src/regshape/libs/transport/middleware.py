@@ -16,6 +16,8 @@
 from abc import ABC
 from typing import Protocol, Callable
 
+from regshape.libs.auth import registryauth
+from regshape.libs.errors import AuthError
 from regshape.libs.transport.models import RegistryRequest, RegistryResponse
 
 
@@ -249,6 +251,37 @@ from dataclasses import dataclass, field
 import requests.exceptions
 
 
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _normalize_www_authenticate(www_auth: str) -> tuple[str, str]:
+    """Normalize a WWW-Authenticate header value.
+
+    - Capitalises basic / bearer scheme names so that
+      registryauth.authenticate receives the expected casing.
+    - Strips whitespace from each comma-separated parameter to prevent parse
+      failures when a registry emits
+      Bearer realm="...", service="..." (space after the comma).
+
+    :param www_auth: Raw WWW-Authenticate header value.
+    :returns: (normalized_www_auth, normalized_scheme) tuple where
+        normalized_www_auth is the normalised full value and
+        normalized_scheme is the scheme token used to build the
+        Authorization header (e.g. "Bearer").
+    """
+    scheme, sep, params = www_auth.partition(" ")
+    normalized_scheme = (
+        scheme.capitalize() if scheme.lower() in ("basic", "bearer") else scheme
+    )
+    if sep and params:
+        cleaned_params = ",".join(part.strip() for part in params.split(","))
+        normalized_www_auth = f"{normalized_scheme} {cleaned_params}"
+    else:
+        normalized_www_auth = normalized_scheme
+    return normalized_www_auth, normalized_scheme
+
+
 @dataclass
 class RetryConfig:
     """Configuration for retry middleware.
@@ -273,55 +306,99 @@ class RetryConfig:
 
 
 class AuthMiddleware(BaseMiddleware):
-    """Middleware that adds authentication headers to requests.
-    
-    Supports both basic auth and bearer token authentication.
-    Can handle WWW-Authenticate challenges by updating credentials.
+    """Middleware that implements the full OCI authentication cycle.
+
+    On the first request the middleware lets the call through without
+    injecting an ``Authorization`` header (matching the behaviour of the
+    legacy ``_legacy_authenticate_and_retry`` path).  When the registry
+    replies with **401 Unauthorized** and a ``WWW-Authenticate`` header,
+    the middleware:
+
+    1. Parses and normalises the challenge via
+       :func:`_normalize_www_authenticate`.
+    2. Calls :func:`registryauth.authenticate` to perform the actual
+       token / credential exchange (Basic base64 encoding *or* Bearer
+       token fetch, including the anonymous-token flow when no
+       credentials are supplied).
+    3. Retries the request with the resulting ``Authorization`` header.
+
+    This supports Basic, Bearer (authenticated), and Bearer (anonymous)
+    registry flows.
+
+    :param username: Username for authentication, or ``None``.
+    :param password: Password for authentication, or ``None``.
+    :param registry: Registry hostname, used only in error messages.
     """
-    
-    def __init__(self, credentials: Optional[Any] = None):
-        """Initialize auth middleware.
-        
-        :param credentials: BasicCredentials, BearerCredentials, or None for no auth
-        """
-        self.credentials = credentials
-    
-    def process_request(self, request: RegistryRequest) -> RegistryRequest:
-        """Add authentication headers to the request."""
-        if self.credentials is None:
-            return request
-        
-        # Create a copy with auth headers
-        auth_headers = dict(request.headers)
-        
-        if hasattr(self.credentials, 'token'):
-            # Bearer token (check token first, higher priority)
-            auth_headers["Authorization"] = f"Bearer {self.credentials.token}"
-        elif hasattr(self.credentials, 'username') and hasattr(self.credentials, 'password'):
-            # Basic auth
-            import base64
-            auth_string = f"{self.credentials.username}:{self.credentials.password}"
-            encoded = base64.b64encode(auth_string.encode()).decode()
-            auth_headers["Authorization"] = f"Basic {encoded}"
-        
-        return RegistryRequest(
-            method=request.method,
-            url=request.url,
-            headers=auth_headers,
-            body=request.body,
-            stream=request.stream,
-            params=request.params,
-            timeout=request.timeout
+
+    def __init__(
+        self,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        registry: str = "<unknown>",
+    ):
+        self._username = username
+        self._password = password
+        self._registry = registry
+
+    # -- Override __call__ to get access to next_handler for the retry ------
+
+    def __call__(
+        self,
+        request: RegistryRequest,
+        next_handler: Callable[[RegistryRequest], RegistryResponse],
+    ) -> RegistryResponse:
+        """Execute the request and handle 401 challenges."""
+        processed_request = request
+        try:
+            processed_request = self.process_request(request)
+            response = next_handler(processed_request)
+        except Exception as exc:
+            return self.handle_error(processed_request, exc)
+
+        if response.status_code != 401:
+            return response
+
+        # ---- 401 handling ------------------------------------------------
+        www_auth = response.headers.get("WWW-Authenticate", "")
+        if not www_auth:
+            raise AuthError(
+                "Authentication failed",
+                f"registry {self._registry!r} returned 401 without "
+                "a WWW-Authenticate header",
+            )
+
+        auth_scheme = www_auth.split(" ", 1)[0]
+        if auth_scheme.lower() == "basic" and (
+            self._username is None or self._password is None
+        ):
+            raise AuthError(
+                "Authentication failed",
+                "Registry requested Basic authentication but no credentials "
+                f"are available for {self._registry!r}. "
+                "Run 'regshape auth login' first.",
+            )
+
+        normalized_www_auth, normalized_scheme = _normalize_www_authenticate(
+            www_auth
         )
-    
-    def process_response(self, request: RegistryRequest, response: RegistryResponse) -> RegistryResponse:
-        """Handle WWW-Authenticate challenges."""
-        if response.status_code == 401 and "WWW-Authenticate" in response.headers:
-            # In a real implementation, this would parse the challenge
-            # and potentially update credentials or trigger re-authentication
-            pass
-        
-        return response
+        auth_value = registryauth.authenticate(
+            normalized_www_auth, self._username, self._password
+        )
+
+        # Build the retry request with the negotiated Authorization header.
+        retry_headers = dict(processed_request.headers)
+        retry_headers["Authorization"] = f"{normalized_scheme} {auth_value}"
+        retry_request = RegistryRequest(
+            method=processed_request.method,
+            url=processed_request.url,
+            headers=retry_headers,
+            body=processed_request.body,
+            stream=processed_request.stream,
+            params=processed_request.params,
+            timeout=processed_request.timeout,
+        )
+
+        return next_handler(retry_request)
 
 
 class LoggingMiddleware(BaseMiddleware):

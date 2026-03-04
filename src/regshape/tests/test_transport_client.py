@@ -7,11 +7,8 @@ import requests
 from unittest.mock import MagicMock, patch
 
 from regshape.libs.errors import AuthError
-from regshape.libs.transport.client import (
-    RegistryClient,
-    TransportConfig,
-    _normalize_www_authenticate,
-)
+from regshape.libs.transport.client import RegistryClient, TransportConfig
+from regshape.libs.transport.middleware import _normalize_www_authenticate
 
 
 # ---------------------------------------------------------------------------
