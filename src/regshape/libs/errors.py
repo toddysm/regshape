@@ -66,3 +66,10 @@ class CatalogNotSupportedError(CatalogError):
     distinguish "endpoint not available" from "response was malformed".
     """
     pass
+
+
+class ReferrerError(RegShapeError):
+    """
+    Error caused by a malformed or unprocessable referrers response.
+    """
+    pass
