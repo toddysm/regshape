@@ -241,16 +241,32 @@ class MiddlewarePipeline:
 import time
 import logging
 from typing import Optional, Dict, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+import requests.exceptions
 
 
 @dataclass
 class RetryConfig:
-    """Configuration for retry middleware."""
+    """Configuration for retry middleware.
+
+    :param max_retries: Maximum number of retry attempts.
+    :param backoff_factor: Multiplier for exponential backoff delay.
+    :param status_codes: HTTP status codes that trigger a retry.
+    :param exceptions: Exception types that trigger a retry.  Defaults to
+        ``requests.exceptions.ConnectionError`` and
+        ``requests.exceptions.Timeout`` which are the exceptions actually
+        raised by the ``requests`` library on network failures.
+    """
     max_retries: int = 3
     backoff_factor: float = 1.0
     status_codes: tuple = (500, 502, 503, 504)
-    exceptions: tuple = (ConnectionError, TimeoutError)
+    exceptions: tuple = field(
+        default_factory=lambda: (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+        )
+    )
 
 
 class AuthMiddleware(BaseMiddleware):

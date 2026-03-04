@@ -640,15 +640,16 @@ class TestConcreteMiddleware:
         """Test retry middleware handles network exceptions."""
         from regshape.libs.transport.middleware import RetryMiddleware, RetryConfig
         from unittest.mock import patch
+        import requests.exceptions
         
-        config = RetryConfig(max_retries=1, backoff_factor=0.01, exceptions=(ConnectionError,))
+        config = RetryConfig(max_retries=1, backoff_factor=0.01, exceptions=(requests.exceptions.ConnectionError,))
         middleware = RetryMiddleware(config)
         
         request = RegistryRequest("GET", "https://example.com", {})
         
         # First call raises exception, second succeeds
         success_response = _create_mock_response(200, {}, b"Success")
-        next_handler = Mock(side_effect=[ConnectionError("Network error"), success_response])
+        next_handler = Mock(side_effect=[requests.exceptions.ConnectionError("Network error"), success_response])
         
         with patch('regshape.libs.transport.middleware.time.sleep'):
             result = middleware(request, next_handler)
