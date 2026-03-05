@@ -203,6 +203,36 @@ class TestListReferrersAll:
         # Only the first page should be fetched
         assert client.get.call_count == 1
 
+    def test_client_side_filtering_applied_to_subsequent_pages(self):
+        """When the server does NOT set OCI-Filters-Applied, pages 2+
+        fetched via bare GET must still be client-side filtered."""
+        # Page 1: mixed types, no OCI-Filters-Applied header.
+        page1_body = _referrer_response_json([
+            _descriptor_dict(DIGEST, artifact_type=SBOM_TYPE),
+            _descriptor_dict(DIGEST, artifact_type=SIG_TYPE),
+        ])
+        resp1 = _make_response(
+            200, body=page1_body,
+            headers={"Link": '</v2/repo/referrers/d?last=x>; rel="next"'},
+        )
+
+        # Page 2: also mixed types, no OCI-Filters-Applied.
+        page2_body = _referrer_response_json([
+            _descriptor_dict(DIGEST_PAGE2, artifact_type=SBOM_TYPE),
+            _descriptor_dict(DIGEST_PAGE2, artifact_type=SIG_TYPE),
+        ])
+        resp2 = _make_response(200, body=page2_body)
+
+        client = _mock_client()
+        client.get.side_effect = [resp1, resp2]
+        type(client).last_response = PropertyMock(side_effect=[resp1, resp2])
+
+        result = list_referrers_all(client, REPO, DIGEST, artifact_type=SBOM_TYPE)
+
+        # Only SBOM_TYPE entries should remain from both pages.
+        assert len(result.manifests) == 2
+        assert all(m.artifact_type == SBOM_TYPE for m in result.manifests)
+
 
 # ===========================================================================
 # _raise_for_list_error — direct tests

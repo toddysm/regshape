@@ -107,7 +107,8 @@ def list_referrers_all(
     list is the ordered concatenation of every page.
 
     Client-side ``artifactType`` filtering is applied once on the final
-    merged result, not per-page.
+    merged result after all pages have been collected, ensuring pages
+    fetched via bare ``Link``-header URLs are also filtered.
 
     :param client: Authenticated transport client for the target registry.
     :param repo: Repository name (e.g. ``myrepo/myimage``).
@@ -144,6 +145,12 @@ def list_referrers_all(
             ) from exc
 
         accumulated = accumulated.merge(page)
+
+    # Client-side filtering on the final merged result when the server did
+    # not apply server-side filtering.  The first page is already filtered
+    # by list_referrers(), but subsequent pages fetched via bare GET are not.
+    if artifact_type is not None:
+        accumulated = accumulated.filter_by_artifact_type(artifact_type)
 
     return accumulated
 
