@@ -7,7 +7,7 @@ import json
 import pytest
 import requests
 from click.testing import CliRunner
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from regshape.cli.main import regshape
 from regshape.libs.errors import AuthError, ReferrerError
@@ -152,3 +152,12 @@ class TestReferrerListCommand:
         assert result.exit_code == 0
         content = outfile.read_text()
         assert DIGEST in content
+
+    def test_request_exception_exits_1(self):
+        with patch("regshape.cli.referrer.list_referrers",
+                   side_effect=requests.exceptions.ConnectionError("refused")):
+            result = _runner().invoke(regshape, [
+                "referrer", "list", "-i", IMAGE_REF,
+            ])
+        assert result.exit_code == 1
+        assert "Error" in result.output
