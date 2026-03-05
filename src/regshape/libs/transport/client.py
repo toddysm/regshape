@@ -240,11 +240,18 @@ class RegistryClient:
         # -- 401 handling --------------------------------------------------------
         www_auth = response.headers.get("WWW-Authenticate", "")
         if not www_auth:
-            raise AuthError(
-                "Authentication failed",
-                f"registry {self.config.registry!r} returned 401 without "
-                "a WWW-Authenticate header",
-            )
+            # Some registries (e.g. ACR) only return WWW-Authenticate on
+            # the /v2/ endpoint.  Fall back to a /v2/ probe.
+            v2_url = f"{self.base_url}/v2/"
+            v2_resp = http_request(v2_url, "GET", headers={}, timeout=timeout)
+            if v2_resp.status_code == 401:
+                www_auth = v2_resp.headers.get("WWW-Authenticate", "")
+            if not www_auth:
+                raise AuthError(
+                    "Authentication failed",
+                    f"registry {self.config.registry!r} returned 401 without "
+                    "a WWW-Authenticate header",
+                )
 
         auth_scheme = www_auth.split(" ", 1)[0]
         if auth_scheme.lower() == "basic" and (
