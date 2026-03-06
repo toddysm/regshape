@@ -59,10 +59,15 @@ def track_scenario(name: str):
                 result = func(*args, **kwargs)
             finally:
                 elapsed = time.perf_counter() - start
+                metrics = config.metrics if config.metrics_enabled else None
                 print_telemetry_block(
-                    name, elapsed, list(config.method_timings), config.output
+                    name, elapsed, list(config.method_timings), config.output,
+                    metrics=metrics,
                 )
                 config.method_timings.clear()
+                if config.metrics_enabled:
+                    from regshape.libs.decorators.metrics import PerformanceMetrics
+                    config.metrics = PerformanceMetrics()
             return result
         return wrapper
     return decorator
