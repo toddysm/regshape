@@ -302,17 +302,24 @@ def debug_call(func):
             raw_content_length = result.headers.get('Content-Length')
             resp_content_length = None
             if raw_content_length is not None:
-                try:
-                    resp_content_length = int(raw_content_length)
-                except (ValueError, TypeError):
-                    resp_content_length = None
+            # When streaming is enabled, avoid materializing the full body to preserve streaming semantics.
+            is_streaming = bool(kwargs.get('stream'))
+            if not is_streaming and hasattr(result, 'content'):
+                resp_body = result.content
+
+            resp_content_length = int(result.headers.get('Content-Length', 0))
+            # In streaming mode, rely only on Content-Length (if present) for received bytes.
+            if is_streaming:
+                resp_bytes_received = resp_content_length or 0
+            else:
+                resp_bytes_received = resp_content_length or len(resp_body or b"")
 
             # Record metrics if enabled
             if config.metrics_enabled:
                 config.metrics.record_request(
                     status_code=result.status_code,
                     bytes_sent=req_content_length or 0,
-                    bytes_received=resp_content_length or len(resp_body or b""),
+                    bytes_received=resp_bytes_received,
                     elapsed=elapsed,
                 )
 
