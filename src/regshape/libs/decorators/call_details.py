@@ -298,7 +298,14 @@ def debug_call(func):
             if hasattr(result, 'content'):
                 resp_body = result.content
 
-            resp_content_length = int(result.headers.get('Content-Length', 0))
+            # Parse Content-Length defensively; fall back to body length if needed
+            raw_content_length = result.headers.get('Content-Length')
+            resp_content_length = None
+            if raw_content_length is not None:
+                try:
+                    resp_content_length = int(raw_content_length)
+                except (ValueError, TypeError):
+                    resp_content_length = None
 
             # Record metrics if enabled
             if config.metrics_enabled:
