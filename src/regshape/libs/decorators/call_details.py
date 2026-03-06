@@ -206,8 +206,8 @@ def format_curl_debug_json(
             resp_ct = v
             break
 
-    body_size = len(resp_body) if resp_body else 0
-    preview = _body_preview(resp_body, resp_ct, verbosity) if resp_body else None
+    body_size = len(resp_body) if resp_body is not None else 0
+    preview = _body_preview(resp_body, resp_ct, verbosity) if resp_body is not None else None
 
     event = {
         "type": "debug_call",
