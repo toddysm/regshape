@@ -257,6 +257,7 @@ def debug_call(func):
             return func(*args, **kwargs)
 
         # Extract request details from the bound function arguments
+        params = {}
         try:
             sig = inspect.signature(func)
             bound = sig.bind(*args, **kwargs)
@@ -280,9 +281,9 @@ def debug_call(func):
         except (ValueError, TypeError):
             method, url, req_headers = 'UNKNOWN', 'UNKNOWN', {}
 
-        # Determine request content length from kwargs
+        # Determine request content length from kwargs or bound params
         req_content_length = None
-        data = kwargs.get('data') or params.get('data') if 'params' in dir() else None
+        data = kwargs.get('data') if 'data' in kwargs else params.get('data')
         if data is not None:
             if isinstance(data, (bytes, str)):
                 req_content_length = len(data) if isinstance(data, bytes) else len(data.encode('utf-8'))
@@ -293,21 +294,21 @@ def debug_call(func):
         elapsed = time.perf_counter() - start
 
         if hasattr(result, 'status_code') and hasattr(result, 'headers'):
-            # Extract response body for preview (limited read)
+            # When streaming is enabled, avoid materializing the full body to preserve streaming semantics.
+            is_streaming = bool(kwargs.get('stream'))
             resp_body = None
-            if hasattr(result, 'content'):
+            if not is_streaming and hasattr(result, 'content'):
                 resp_body = result.content
 
             # Parse Content-Length defensively; fall back to body length if needed
             raw_content_length = result.headers.get('Content-Length')
             resp_content_length = None
             if raw_content_length is not None:
-            # When streaming is enabled, avoid materializing the full body to preserve streaming semantics.
-            is_streaming = bool(kwargs.get('stream'))
-            if not is_streaming and hasattr(result, 'content'):
-                resp_body = result.content
+                try:
+                    resp_content_length = int(raw_content_length)
+                except (ValueError, TypeError):
+                    pass
 
-            resp_content_length = int(result.headers.get('Content-Length', 0))
             # In streaming mode, rely only on Content-Length (if present) for received bytes.
             if is_streaming:
                 resp_bytes_received = resp_content_length or 0
