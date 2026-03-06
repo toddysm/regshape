@@ -171,7 +171,7 @@ def _render_json_block(
         event = {
             "type": "scenario",
             "name": scenario_name,
-            "elapsed_s": round(scenario_elapsed, 6) if scenario_elapsed else 0,
+            "elapsed_s": round(scenario_elapsed, 6) if scenario_elapsed is not None else None,
             "methods": [
                 {"name": name, "elapsed_s": round(elapsed, 6)}
                 for name, elapsed in method_timings
