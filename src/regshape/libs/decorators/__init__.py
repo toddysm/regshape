@@ -23,7 +23,9 @@ import click
 
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Callable, IO
+from typing import Callable, IO, Optional
+
+from regshape.libs.decorators.metrics import PerformanceMetrics
 
 
 @dataclass
@@ -37,18 +39,33 @@ class TelemetryConfig:
         telemetry summary block at the end of the decorated workflow.
     :param debug_calls_enabled: When True, ``@debug_call`` prints each HTTP
         round-trip in ``curl -v`` style.
+    :param metrics_enabled: When True, aggregate performance metrics are
+        collected and displayed.
+    :param verbosity: Detail level for telemetry output (0=off, 1=normal,
+        2=verbose).
+    :param output_format: Output format — ``"text"`` (default) or ``"json"``.
     :param output: Writable stream for telemetry output (defaults to stderr so
         it does not interfere with structured stdout output).
+    :param log_file_path: Optional file path for telemetry log output.
+    :param log_file: File handle for log_file_path (managed by
+        telemetry_options).
     :param method_timings: Ordered list of ``(qualname, elapsed)`` pairs
         accumulated by ``@track_time`` during the current invocation. Consumed
         and cleared by ``@track_scenario`` (or by :func:`flush_telemetry` for
         commands that have no scenario wrapper).
+    :param metrics: Aggregate performance metrics.
     """
     time_methods_enabled: bool = False
     time_scenarios_enabled: bool = False
     debug_calls_enabled: bool = False
+    metrics_enabled: bool = False
+    verbosity: int = 1
+    output_format: str = "text"
     output: IO = field(default_factory=lambda: sys.stderr)
+    log_file_path: Optional[str] = None
+    log_file: Optional[IO] = field(default=None, repr=False)
     method_timings: list[tuple[str, float]] = field(default_factory=list)
+    metrics: PerformanceMetrics = field(default_factory=PerformanceMetrics)
 
 
 _telemetry_config: ContextVar[TelemetryConfig] = ContextVar(
@@ -99,6 +116,24 @@ def telemetry_options(func: Callable) -> Callable:
     :return: Wrapped callback with telemetry options registered.
     """
     @click.option(
+        "--telemetry-verbosity", "-tv",
+        type=click.IntRange(0, 2),
+        default=1,
+        help="Verbosity level for telemetry output (0=off, 1=normal, 2=verbose).",
+    )
+    @click.option(
+        "--telemetry-format",
+        type=click.Choice(["text", "json"], case_sensitive=False),
+        default="text",
+        help="Telemetry output format: text or json.",
+    )
+    @click.option(
+        "--metrics",
+        is_flag=True,
+        default=False,
+        help="Display aggregate performance metrics.",
+    )
+    @click.option(
         "--debug-calls",
         is_flag=True,
         default=False,
@@ -118,11 +153,47 @@ def telemetry_options(func: Callable) -> Callable:
     )
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        configure_telemetry(TelemetryConfig(
-            time_methods_enabled=kwargs.pop("time_methods", False),
-            time_scenarios_enabled=kwargs.pop("time_scenarios", False),
-            debug_calls_enabled=kwargs.pop("debug_calls", False),
-        ))
+        ctx = click.get_current_context()
+        log_file_path = ctx.obj.get("log_file") if ctx.obj else None
+
+        verbosity = kwargs.pop("telemetry_verbosity", 1)
+
+        # Verbosity 0 means "off" — disable all telemetry feature flags
+        # so downstream decorators and renderers are no-ops.
+        if verbosity <= 0:
+            enabled_time_methods = False
+            enabled_time_scenarios = False
+            enabled_debug_calls = False
+            enabled_metrics = False
+        else:
+            enabled_time_methods = kwargs.pop("time_methods", False)
+            enabled_time_scenarios = kwargs.pop("time_scenarios", False)
+            enabled_debug_calls = kwargs.pop("debug_calls", False)
+            enabled_metrics = kwargs.pop("metrics", False)
+
+        # Still pop the flags from kwargs when verbosity=0 so they
+        # are not forwarded to the command callback.
+        if verbosity <= 0:
+            kwargs.pop("time_methods", None)
+            kwargs.pop("time_scenarios", None)
+            kwargs.pop("debug_calls", None)
+            kwargs.pop("metrics", None)
+
+        config = TelemetryConfig(
+            time_methods_enabled=enabled_time_methods,
+            time_scenarios_enabled=enabled_time_scenarios,
+            debug_calls_enabled=enabled_debug_calls,
+            metrics_enabled=enabled_metrics,
+            verbosity=verbosity,
+            output_format=kwargs.pop("telemetry_format", "text"),
+            log_file_path=log_file_path,
+        )
+
+        # Open log file in append mode if specified
+        if config.log_file_path:
+            config.log_file = open(config.log_file_path, "a")  # noqa: SIM115
+
+        configure_telemetry(config)
         try:
             result = func(*args, **kwargs)
         finally:
@@ -130,6 +201,8 @@ def telemetry_options(func: Callable) -> Callable:
             # runs even when the command calls sys.exit() (raises SystemExit)
             from regshape.libs.decorators.output import flush_telemetry
             flush_telemetry()
+            if config.log_file is not None:
+                config.log_file.close()
         return result
     return wrapper
 
@@ -141,11 +214,13 @@ def telemetry_options(func: Callable) -> Callable:
 from regshape.libs.decorators.sanitization import SENSITIVE_HEADERS, redact_header_value, redact_headers  # noqa: E402
 from regshape.libs.decorators.timing import track_time                                          # noqa: E402
 from regshape.libs.decorators.scenario import track_scenario                                    # noqa: E402
-from regshape.libs.decorators.call_details import debug_call, format_curl_debug, http_request  # noqa: E402
-from regshape.libs.decorators.output import flush_telemetry, print_telemetry_block             # noqa: E402
+from regshape.libs.decorators.call_details import debug_call, format_curl_debug, format_curl_debug_json, http_request  # noqa: E402
+from regshape.libs.decorators.output import flush_telemetry, print_telemetry_block, telemetry_write  # noqa: E402
+from regshape.libs.decorators.metrics import PerformanceMetrics                                # noqa: E402
 
 __all__ = [
     'TelemetryConfig',
+    'PerformanceMetrics',
     'configure_telemetry',
     'get_telemetry_config',
     'telemetry_options',
@@ -156,7 +231,9 @@ __all__ = [
     'track_scenario',
     'debug_call',
     'format_curl_debug',
+    'format_curl_debug_json',
     'http_request',
     'print_telemetry_block',
     'flush_telemetry',
+    'telemetry_write',
 ]
