@@ -156,12 +156,35 @@ def telemetry_options(func: Callable) -> Callable:
         ctx = click.get_current_context()
         log_file_path = ctx.obj.get("log_file") if ctx.obj else None
 
+        verbosity = kwargs.pop("telemetry_verbosity", 1)
+
+        # Verbosity 0 means "off" — disable all telemetry feature flags
+        # so downstream decorators and renderers are no-ops.
+        if verbosity <= 0:
+            enabled_time_methods = False
+            enabled_time_scenarios = False
+            enabled_debug_calls = False
+            enabled_metrics = False
+        else:
+            enabled_time_methods = kwargs.pop("time_methods", False)
+            enabled_time_scenarios = kwargs.pop("time_scenarios", False)
+            enabled_debug_calls = kwargs.pop("debug_calls", False)
+            enabled_metrics = kwargs.pop("metrics", False)
+
+        # Still pop the flags from kwargs when verbosity=0 so they
+        # are not forwarded to the command callback.
+        if verbosity <= 0:
+            kwargs.pop("time_methods", None)
+            kwargs.pop("time_scenarios", None)
+            kwargs.pop("debug_calls", None)
+            kwargs.pop("metrics", None)
+
         config = TelemetryConfig(
-            time_methods_enabled=kwargs.pop("time_methods", False),
-            time_scenarios_enabled=kwargs.pop("time_scenarios", False),
-            debug_calls_enabled=kwargs.pop("debug_calls", False),
-            metrics_enabled=kwargs.pop("metrics", False),
-            verbosity=kwargs.pop("telemetry_verbosity", 1),
+            time_methods_enabled=enabled_time_methods,
+            time_scenarios_enabled=enabled_time_scenarios,
+            debug_calls_enabled=enabled_debug_calls,
+            metrics_enabled=enabled_metrics,
+            verbosity=verbosity,
             output_format=kwargs.pop("telemetry_format", "text"),
             log_file_path=log_file_path,
         )
