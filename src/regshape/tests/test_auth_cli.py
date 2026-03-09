@@ -206,6 +206,27 @@ class TestGetCredHelper:
                    return_value=None):
             assert _get_cred_helper(REGISTRY) is None
 
+    def test_falls_back_to_credsStore(self):
+        """When credHelpers has no entry, credsStore is used as fallback."""
+        config = {"credsStore": "desktop", "credHelpers": {"other.io": "ecr-login"}}
+        with patch("regshape.libs.auth.credentials.dockerconfig.load_config",
+                   return_value=config):
+            assert _get_cred_helper(REGISTRY) == "desktop"
+
+    def test_credHelpers_takes_priority_over_credsStore(self):
+        """Per-registry credHelpers entry wins over global credsStore."""
+        config = {"credsStore": "desktop", "credHelpers": {REGISTRY: "ecr-login"}}
+        with patch("regshape.libs.auth.credentials.dockerconfig.load_config",
+                   return_value=config):
+            assert _get_cred_helper(REGISTRY) == "ecr-login"
+
+    def test_credsStore_empty_string_returns_none(self):
+        """An empty credsStore value should be treated as absent."""
+        config = {"credsStore": ""}
+        with patch("regshape.libs.auth.credentials.dockerconfig.load_config",
+                   return_value=config):
+            assert _get_cred_helper(REGISTRY) is None
+
 
 # ===========================================================================
 # TestStoreCredentials
