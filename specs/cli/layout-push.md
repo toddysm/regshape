@@ -334,6 +334,22 @@ skipped, bytes uploaded).
 
 ---
 
+## Progress Bars
+
+The CLI command displays progress bars (via Click's progress bar support) to
+give real-time feedback during uploads:
+
+- **Blob upload progress** — one progress bar per blob, indicating bytes
+  uploaded vs total size. Blobs that are skipped (already present) show a
+  skip message instead.
+- **Overall manifest progress** — a top-level progress bar tracking manifests
+  pushed out of total.
+
+In `--json` mode, progress bars are suppressed and only the final JSON result
+is printed. Progress bars are also suppressed when stdout is not a TTY.
+
+---
+
 ## Implementation Notes
 
 - Add `push` as a new Click command under the existing `layout` group in
@@ -348,3 +364,4 @@ skipped, bytes uploaded).
   it and treat as "blob not present" rather than a fatal error.
 - When `--verbose` is set, print each HTTP request/response summary
   (handled automatically by the transport middleware and `--debug-calls`).
+- Progress bars use `click.progressbar()` for each blob upload.
