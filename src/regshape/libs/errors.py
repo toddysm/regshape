@@ -73,3 +73,10 @@ class ReferrerError(RegShapeError):
     Error caused by a malformed or unprocessable referrers response.
     """
     pass
+
+
+class LayoutError(RegShapeError):
+    """
+    Error caused by an invalid or inconsistent OCI Image Layout on disk.
+    """
+    pass
