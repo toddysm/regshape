@@ -33,15 +33,41 @@ def _parse_auth_header(auth_header: str) -> dict:
     :rtype: dict
     """
     scheme = auth_header.split(" ")[0]
-    params = auth_header[len(scheme):].strip()
+    params_str = auth_header[len(scheme):].strip()
 
-    params = params.split(",")
-    params = [param.replace('"', '') for param in params]
-    params = [param.split('=', 1) for param in params]
-    auth_header = dict(params)
-    auth_header['scheme'] = scheme
+    # Split on commas that are outside quoted strings so that values
+    # containing commas (e.g. scope="repository:repo:pull,push") are
+    # kept intact.
+    params = _split_auth_params(params_str)
+    result = {}
+    for param in params:
+        param = param.strip()
+        if '=' not in param:
+            continue
+        key, value = param.split('=', 1)
+        result[key.strip()] = value.strip().strip('"')
+    result['scheme'] = scheme
 
-    return auth_header
+    return result
+
+
+def _split_auth_params(params_str: str) -> list:
+    """Split a WWW-Authenticate parameter string on commas outside quotes."""
+    parts = []
+    current = []
+    in_quotes = False
+    for ch in params_str:
+        if ch == '"':
+            in_quotes = not in_quotes
+            current.append(ch)
+        elif ch == ',' and not in_quotes:
+            parts.append(''.join(current))
+            current = []
+        else:
+            current.append(ch)
+    if current:
+        parts.append(''.join(current))
+    return parts
 
 def _get_basic_auth(username: str, password: str) -> str:
     """
@@ -126,6 +152,13 @@ def _get_auth_token(
         log.error(e)
         raise AuthError("Token request failed", f"Request to {realm} failed: {e}")
 
+    # If the standard GET failed with 401 and we have a password, try an
+    # OAuth2 refresh-token exchange via POST.  This is needed for registries
+    # like ACR where `az acr login` stores a refresh token (JWT) in the
+    # Docker credential store instead of a plain username/password pair.
+    if response.status_code == 401 and password:
+        response = _try_refresh_token_exchange(realm, query_params, password)
+
     # Parse the response
     if response.status_code != 200:
         log.error(f"Token request failed with status {response.status_code}")
@@ -140,6 +173,45 @@ def _get_auth_token(
         raise AuthError("Token response missing token field")
 
     return token
+
+
+def _try_refresh_token_exchange(
+        realm: str,
+        query_params: dict,
+        refresh_token: str,
+) -> requests.Response:
+    """Attempt an OAuth2 ``refresh_token`` grant against *realm*.
+
+    Registries like Azure Container Registry store a refresh token (JWT) in
+    the Docker credential store (via ``az acr login``).  These tokens cannot
+    be exchanged with a standard GET + Basic-Auth request; instead the token
+    endpoint expects a POST with ``grant_type=refresh_token``.
+
+    :param realm: Token endpoint URL from the ``WWW-Authenticate`` header.
+    :param query_params: ``service`` and optional ``scope`` parameters.
+    :param refresh_token: The refresh token (password value from the
+        credential store).
+    :returns: The :class:`requests.Response` from the POST.
+    :raises AuthError: On connection or transport errors.
+    """
+    post_data = {
+        'grant_type': 'refresh_token',
+        'refresh_token': refresh_token,
+    }
+    post_data.update(query_params)
+
+    log.debug("Attempting OAuth2 refresh-token exchange at %s", realm)
+    try:
+        return requests.post(realm, data=post_data)
+    except requests.exceptions.ConnectionError as e:
+        log.error(e)
+        raise AuthError("Token request failed", f"Unable to connect to {realm}")
+    except requests.exceptions.Timeout as e:
+        log.error(e)
+        raise AuthError("Token request failed", f"Connection to {realm} timed out")
+    except requests.exceptions.RequestException as e:
+        log.error(e)
+        raise AuthError("Token request failed", f"Request to {realm} failed: {e}")
 
 def authenticate(
         auth_header: str,
@@ -156,9 +228,10 @@ def authenticate(
     :rtype: str
     """
     auth_header = _parse_auth_header(auth_header)
-    if auth_header['scheme'] == 'Basic':
+    scheme = auth_header['scheme'].lower()
+    if scheme == 'basic':
         return _get_basic_auth(username, password)
-    elif auth_header['scheme'] == 'Bearer':
+    elif scheme == 'bearer':
         return _get_auth_token(auth_header, username, password)
     else:
         log.error(f"Unknown authentication method: {auth_header['scheme']}")

@@ -67,6 +67,7 @@ def _make_response(status_code: int, www_auth: str = None, text: str = "{}") -> 
     resp = MagicMock(spec=requests.Response)
     resp.status_code = status_code
     resp.text = text
+    resp.content = text.encode("utf-8")
     headers = {}
     if www_auth:
         headers["WWW-Authenticate"] = www_auth

@@ -15,6 +15,7 @@
 
 from dataclasses import dataclass
 from typing import Optional, Union, Iterable, Dict, Any
+from collections.abc import Mapping
 
 import requests
 
@@ -82,7 +83,7 @@ class RegistryResponse:
         """Validate response fields."""
         if not isinstance(self.status_code, int):
             raise TypeError("RegistryResponse.status_code must be an int")
-        if not isinstance(self.headers, dict):
+        if not isinstance(self.headers, Mapping):
             raise TypeError("RegistryResponse.headers must be a dict")
         if self.body is not None and not isinstance(self.body, bytes):
             raise TypeError("RegistryResponse.body must be bytes or None")
@@ -109,9 +110,12 @@ class RegistryResponse:
             to preserve streaming.  Defaults to ``False``.
         :returns: A :class:`RegistryResponse` instance.
         """
+        # Preserve the CaseInsensitiveDict from requests.Response so
+        # that header lookups in middleware are case-insensitive per
+        # HTTP spec (RFC 7230 §3.2).
         return cls(
             status_code=response.status_code,
-            headers=dict(response.headers),
+            headers=response.headers,
             body=None if stream else response.content,
             raw_response=response,
         )
