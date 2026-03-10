@@ -721,7 +721,7 @@ def validate(ctx, layout_path):
 def _short_digest(digest: str) -> str:
     """Return a truncated digest for display."""
     if ":" in digest:
-        return digest[:7 + 1 + 12]  # "sha256:" + 12 hex chars
+        return digest[:7 + 12]  # "sha256:" + 12 hex chars
     return digest[:12]
 
 
