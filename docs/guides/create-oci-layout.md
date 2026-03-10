@@ -41,7 +41,7 @@ State is automatically persisted between steps in a staging file
 ## Step 1 — Initialise the layout
 
 ```bash
-regshape layout init --output ./my-image
+regshape layout init --path ./my-image
 ```
 
 This creates the directory structure, writes the `oci-layout` marker,
@@ -63,7 +63,7 @@ content-addressed descriptor.
 
 ```bash
 regshape layout add layer \
-  --layout ./my-image \
+  --path ./my-image \
   --file ./layer.tar.gz
 ```
 
@@ -74,7 +74,7 @@ compresses it with gzip. You can override this with `--compress-format zstd`.
 ```bash
 # Force zstd compression for an uncompressed tar
 regshape layout add layer \
-  --layout ./my-image \
+  --path ./my-image \
   --file ./layer.tar \
   --compress-format zstd
 ```
@@ -84,7 +84,7 @@ layer at add time, or add/update them later with `layout annotate layer`.
 
 ```bash
 regshape layout add layer \
-  --layout ./my-image \
+  --path ./my-image \
   --file ./layer.tar.gz \
   --annotation org.opencontainers.image.created=2026-03-08 \
   --annotation com.example.layer.role=base
@@ -99,7 +99,7 @@ order they are added.
 
 ```bash
 regshape layout generate config \
-  --layout ./my-image \
+  --path ./my-image \
   --architecture amd64 \
   --os linux \
   --media-type application/vnd.oci.image.config.v1+json
@@ -123,7 +123,7 @@ Generated config sha256:abc123... (312 bytes)
 
 ```bash
 regshape layout generate manifest \
-  --layout ./my-image \
+  --path ./my-image \
   --ref-name latest \
   --media-type application/vnd.oci.image.manifest.v1+json
 ```
@@ -143,7 +143,7 @@ Generated manifest [latest] sha256:def456... (578 bytes)
 At any point you can inspect what has been staged:
 
 ```bash
-regshape layout status --layout ./my-image
+regshape layout status --path ./my-image
 ```
 
 ```
@@ -161,7 +161,7 @@ Add `--json` to any command for machine-readable output.
 ## Viewing the index
 
 ```bash
-regshape layout show --layout ./my-image
+regshape layout show --path ./my-image
 ```
 
 Prints `index.json` as pretty-printed JSON.
@@ -171,7 +171,7 @@ Prints `index.json` as pretty-printed JSON.
 ## Validating the layout
 
 ```bash
-regshape layout validate --layout ./my-image
+regshape layout validate --path ./my-image
 ```
 
 Checks that:
@@ -194,7 +194,7 @@ Merge (or replace) annotations on a staged layer without touching the blob:
 
 ```bash
 regshape layout annotate layer \
-  --layout ./my-image \
+  --path ./my-image \
   --index 0 \
   --annotation com.example.role=base
 ```
@@ -208,7 +208,7 @@ config blob is automatically deleted.
 
 ```bash
 regshape layout update config \
-  --layout ./my-image \
+  --path ./my-image \
   --architecture arm64
 ```
 
@@ -224,7 +224,7 @@ and `index.json` is updated atomically.
 
 ```bash
 regshape layout annotate manifest \
-  --layout ./my-image \
+  --path ./my-image \
   --annotation org.opencontainers.image.version=1.2.0
 ```
 
@@ -234,34 +234,34 @@ regshape layout annotate manifest \
 
 ```bash
 # 1. Initialise
-regshape layout init --output ./my-image
+regshape layout init --path ./my-image
 
 # 2. Add layers
 regshape layout add layer \
-  --layout ./my-image \
+  --path ./my-image \
   --file ./base.tar.gz \
   --media-type application/vnd.oci.image.layer.v1.tar+gzip
 
 regshape layout add layer \
-  --layout ./my-image \
+  --path ./my-image \
   --file ./app.tar.gz \
   --media-type application/vnd.oci.image.layer.v1.tar+gzip
 
 # 3. Generate config
 regshape layout generate config \
-  --layout ./my-image \
+  --path ./my-image \
   --architecture amd64 \
   --os linux \
   --media-type application/vnd.oci.image.config.v1+json
 
 # 4. Generate manifest
 regshape layout generate manifest \
-  --layout ./my-image \
+  --path ./my-image \
   --ref-name latest \
   --media-type application/vnd.oci.image.manifest.v1+json
 
 # 5. Validate
-regshape layout validate --layout ./my-image
+regshape layout validate --path ./my-image
 ```
 
 ---

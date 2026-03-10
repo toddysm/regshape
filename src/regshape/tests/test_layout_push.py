@@ -314,7 +314,7 @@ class TestPushCLI:
 
         result = _runner().invoke(regshape, [
             "layout", "push",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--dest", "registry.io/myrepo:latest",
         ])
         assert result.exit_code == 0, result.output
@@ -348,7 +348,7 @@ class TestPushCLI:
 
         result = _runner().invoke(regshape, [
             "layout", "push",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--dest", "registry.io/myrepo:latest",
             "--json",
         ])
@@ -362,7 +362,7 @@ class TestPushCLI:
 
         result = _runner().invoke(regshape, [
             "layout", "push",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--dest", "registry.io/myrepo:latest",
             "--dry-run",
         ])
@@ -376,7 +376,7 @@ class TestPushCLI:
 
         result = _runner().invoke(regshape, [
             "layout", "push",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--dest", "registry.io/myrepo:latest",
             "--dry-run",
             "--json",
@@ -392,7 +392,7 @@ class TestPushCLI:
 
         result = _runner().invoke(regshape, [
             "layout", "push",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--dest", "nope",
         ])
         assert result.exit_code != 0
@@ -405,7 +405,7 @@ class TestPushCLI:
 
         result = _runner().invoke(regshape, [
             "layout", "push",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--dest", "registry.io/myrepo:latest",
         ])
         assert result.exit_code == 1
@@ -425,7 +425,7 @@ class TestPushCLI:
 
         result = _runner().invoke(regshape, [
             "layout", "push",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--dest", "registry.io/myrepo:latest",
             "--force",
         ])
@@ -449,7 +449,7 @@ class TestPushCLI:
 
         result = _runner().invoke(regshape, [
             "layout", "push",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--dest", "registry.io/myrepo:latest",
             "--chunked",
             "--chunk-size", "1048576",

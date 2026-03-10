@@ -52,7 +52,7 @@ regshape layout push [OPTIONS]
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--layout` | `-l` | path | required | Root directory of a valid, completed OCI Image Layout (must have at least one manifest in `index.json`) |
+| `--path` | `-p` | path | required | Root directory of a valid, completed OCI Image Layout (must have at least one manifest in `index.json`) |
 | `--dest` | `-d` | string | required | Destination image reference — `registry/repo` or `registry/repo:tag`. If a tag is included it overrides the `ref.name` annotation in `index.json` for single-manifest layouts. See [Reference Resolution](#reference-resolution). |
 | `--force` | | flag | `false` | Skip the `HEAD` existence check and upload every blob unconditionally |
 | `--chunked` | | flag | `false` | Use the chunked (streaming) upload protocol for blobs instead of monolithic |
@@ -217,47 +217,47 @@ Push complete: 1 manifest, 2 blobs uploaded, 1 blob skipped.
 ```bash
 # Basic push — single manifest with tag from ref.name annotation
 regshape layout push \
-  --layout ./my-image \
+  --path ./my-image \
   --dest registry.io/myrepo/myimage
 
 # Override the tag
 regshape layout push \
-  --layout ./my-image \
+  --path ./my-image \
   --dest registry.io/myrepo/myimage:v2.0
 
 # Force re-upload of all blobs (skip existence checks)
 regshape layout push \
-  --layout ./my-image \
+  --path ./my-image \
   --dest registry.io/myrepo/myimage:latest \
   --force
 
 # Use chunked uploads for large layers
 regshape layout push \
-  --layout ./my-image \
+  --path ./my-image \
   --dest registry.io/myrepo/myimage:latest \
   --chunked \
   --chunk-size 1048576
 
 # Dry-run to see what would be pushed
 regshape layout push \
-  --layout ./my-image \
+  --path ./my-image \
   --dest registry.io/myrepo/myimage:latest \
   --dry-run
 
 # Push to an insecure (HTTP) registry with verbose output
 regshape --insecure --verbose layout push \
-  --layout ./my-image \
+  --path ./my-image \
   --dest localhost:5000/myimage:latest
 
 # JSON output for scripting
 regshape layout push \
-  --layout ./my-image \
+  --path ./my-image \
   --dest registry.io/myrepo/myimage:latest \
   --json
 
 # Parallel blob uploads (4 concurrent)
 regshape layout push \
-  --layout ./my-image \
+  --path ./my-image \
   --dest registry.io/myrepo/myimage:latest \
   --concurrency 4
 ```
@@ -270,20 +270,20 @@ Build a layout and push it in one session:
 
 ```bash
 # Build the layout (offline)
-regshape layout init --output ./my-image
-regshape layout add layer --layout ./my-image --file ./rootfs.tar.gz
-regshape layout add layer --layout ./my-image --file ./app.tar.gz
+regshape layout init --path ./my-image
+regshape layout add layer --path ./my-image --file ./rootfs.tar.gz
+regshape layout add layer --path ./my-image --file ./app.tar.gz
 regshape layout generate config \
-  --layout ./my-image --architecture amd64 --os linux
+  --path ./my-image --architecture amd64 --os linux
 regshape layout generate manifest \
-  --layout ./my-image --ref-name latest
+  --path ./my-image --ref-name latest
 
 # Validate before pushing
-regshape layout validate --layout ./my-image
+regshape layout validate --path ./my-image
 
 # Push to registry
 regshape layout push \
-  --layout ./my-image \
+  --path ./my-image \
   --dest myregistry.azurecr.io/myapp:latest
 ```
 

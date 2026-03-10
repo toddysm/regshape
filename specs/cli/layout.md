@@ -52,7 +52,7 @@ Creates the `oci-layout` marker, `blobs/sha256/` directory, an empty
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--output` | `-o` | path | required | Directory path to initialise as an OCI Image Layout |
+| `--path` | `-p` | path | required | Directory path to initialise as an OCI Image Layout |
 
 #### Behaviour
 
@@ -85,7 +85,7 @@ Initialised OCI Image Layout at /path/to/layout
 #### Examples
 
 ```bash
-regshape layout init --output ./my-image
+regshape layout init --path ./my-image
 ```
 
 ---
@@ -114,7 +114,7 @@ or changed later with `layout annotate layer`.
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--layout` | `-l` | path | required | Root directory of an initialised OCI Image Layout |
+| `--path` | `-p` | path | required | Root directory of an initialised OCI Image Layout |
 | `--file` | `-f` | path | required | Path to the layer file |
 | `--compress-format` | | `gzip`\|`zstd` | `gzip` | Compression algorithm to apply when the input is not already a supported compressed tar |
 | `--media-type` | | string | inferred | Layer media type; if omitted, inferred from the (possibly compressed) content and confirmed interactively |
@@ -207,27 +207,27 @@ Staged layer:
 
 ```bash
 # Already compressed: use as-is, confirm media type interactively
-regshape layout add layer --layout ./my-image --file ./layer.tar.gz
+regshape layout add layer --path ./my-image --file ./layer.tar.gz
 
 # Raw tar: auto-compressed with gzip (default)
-regshape layout add layer --layout ./my-image --file ./layer.tar
+regshape layout add layer --path ./my-image --file ./layer.tar
 
 # Raw tar: compress with zstd instead
 regshape layout add layer \
-  --layout ./my-image \
+  --path ./my-image \
   --file ./layer.tar \
   --compress-format zstd
 
 # Add with layer annotations
 regshape layout add layer \
-  --layout ./my-image \
+  --path ./my-image \
   --file ./layer.tar.gz \
   --annotation org.opencontainers.image.created=2026-03-08 \
   --annotation com.example.layer.role=base
 
 # Explicit media type, no interactive prompt
 regshape layout add layer \
-  --layout ./my-image \
+  --path ./my-image \
   --file ./layer.tar.gz \
   --media-type application/vnd.oci.image.layer.v1.tar+gzip
 ```
@@ -255,7 +255,7 @@ These annotations are embedded in the manifest's `layers` array when
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--layout` | `-l` | path | required | Root directory of an initialised OCI Image Layout |
+| `--path` | `-p` | path | required | Root directory of an initialised OCI Image Layout |
 | `--index` | `-i` | integer | required | 0-based index of the staged layer to annotate (see `layout status`) |
 | `--annotation` | | key=value | required (≥1) | Annotation to add; may be specified multiple times |
 | `--replace` | | flag | `False` | Replace all existing annotations on this layer instead of merging |
@@ -304,13 +304,13 @@ Updated layer [0]:
 ```bash
 # Add an annotation to layer 0
 regshape layout annotate layer \
-  --layout ./my-image \
+  --path ./my-image \
   --index 0 \
   --annotation org.opencontainers.image.created=2026-03-08
 
 # Replace all annotations on layer 1
 regshape layout annotate layer \
-  --layout ./my-image \
+  --path ./my-image \
   --index 1 \
   --annotation com.example.role=patches \
   --replace
@@ -333,7 +333,7 @@ a new digest.
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--layout` | `-l` | path | required | Root directory of an initialised OCI Image Layout |
+| `--path` | `-p` | path | required | Root directory of an initialised OCI Image Layout |
 | `--annotation` | | key=value | required (≥1) | Manifest-level annotation to add; may be specified multiple times |
 | `--replace` | | flag | `False` | Replace all existing `manifest.annotations` instead of merging |
 
@@ -390,13 +390,13 @@ Updated manifest:
 ```bash
 # Add version and creation-date annotations
 regshape layout annotate manifest \
-  --layout ./my-image \
+  --path ./my-image \
   --annotation org.opencontainers.image.version=1.0.0 \
   --annotation org.opencontainers.image.created=2026-03-08
 
 # Replace all manifest annotations
 regshape layout annotate manifest \
-  --layout ./my-image \
+  --path ./my-image \
   --annotation org.opencontainers.image.title="My Image" \
   --replace
 ```
@@ -422,7 +422,7 @@ defaults and asks for confirmation.
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--layout` | `-l` | path | required | Root directory of an initialised OCI Image Layout |
+| `--path` | `-p` | path | required | Root directory of an initialised OCI Image Layout |
 | `--architecture` | | string | `amd64` | Target CPU architecture (proposed as default; confirmed interactively if not given) |
 | `--os` | | string | `linux` | Target operating system (proposed as default; confirmed interactively if not given) |
 | `--media-type` | | string | `application/vnd.oci.image.config.v1+json` | Config media type; proposed as default and confirmed interactively if not given |
@@ -488,11 +488,11 @@ Generated config:
 
 ```bash
 # Interactive prompts for all fields
-regshape layout generate config --layout ./my-image
+regshape layout generate config --path ./my-image
 
 # Provide all fields explicitly (no prompts)
 regshape layout generate config \
-  --layout ./my-image \
+  --path ./my-image \
   --architecture arm64 \
   --os linux \
   --media-type application/vnd.oci.image.config.v1+json \
@@ -518,7 +518,7 @@ annotations after generation, use `layout annotate manifest`.
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--layout` | `-l` | path | required | Root directory of an initialised OCI Image Layout |
+| `--path` | `-p` | path | required | Root directory of an initialised OCI Image Layout |
 | `--ref-name` | | string | `None` | Human-readable reference name (e.g. `latest`, `v1.2.3`); prompted if not given |
 | `--media-type` | | string | `application/vnd.oci.image.manifest.v1+json` | Manifest media type; proposed as default and confirmed interactively if not given |
 | `--annotation` | | key=value (multiple) | `None` | Annotations embedded in the manifest JSON |
@@ -590,11 +590,11 @@ Generated manifest:
 
 ```bash
 # Interactive prompts
-regshape layout generate manifest --layout ./my-image
+regshape layout generate manifest --path ./my-image
 
 # Explicit options
 regshape layout generate manifest \
-  --layout ./my-image \
+  --path ./my-image \
   --ref-name latest \
   --annotation org.opencontainers.image.version=1.0.0
 ```
@@ -621,7 +621,7 @@ a warning is printed advising you to re-run `layout generate manifest`.
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--layout` | `-l` | path | required | Root directory of an initialised OCI Image Layout |
+| `--path` | `-p` | path | required | Root directory of an initialised OCI Image Layout |
 | `--architecture` | | string | *(keep existing)* | New target CPU architecture; omit to keep current value |
 | `--os` | | string | *(keep existing)* | New target OS; omit to keep current value |
 | `--annotation` | | key=value | `None` | Annotation to merge into `config.Labels`; may be specified multiple times |
@@ -676,18 +676,18 @@ to reference the updated config.
 ```bash
 # Change only the architecture
 regshape layout update config \
-  --layout ./my-image \
+  --path ./my-image \
   --architecture arm64
 
 # Add labels to the config
 regshape layout update config \
-  --layout ./my-image \
+  --path ./my-image \
   --annotation org.opencontainers.image.version=1.0.0 \
   --annotation org.opencontainers.image.vendor=Acme
 
 # Replace all labels
 regshape layout update config \
-  --layout ./my-image \
+  --path ./my-image \
   --annotation org.opencontainers.image.title="My Image" \
   --replace-annotations
 ```
@@ -706,7 +706,7 @@ pipeline.
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--layout` | `-l` | path | required | Root directory of an OCI Image Layout |
+| `--path` | `-p` | path | required | Root directory of an OCI Image Layout |
 
 #### Behaviour
 
@@ -758,7 +758,7 @@ The raw contents of `.regshape-stage.json`:
 #### Examples
 
 ```bash
-regshape layout status --layout ./my-image
+regshape layout status --path ./my-image
 ```
 
 ---
@@ -771,7 +771,7 @@ Print the `index.json` of an OCI Image Layout.
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--layout` | `-l` | path | required | Root directory of an OCI Image Layout |
+| `--path` | `-p` | path | required | Root directory of an OCI Image Layout |
 
 #### Behaviour
 
@@ -810,7 +810,7 @@ Pretty-printed `index.json`:
 #### Examples
 
 ```bash
-regshape layout show --layout ./my-image
+regshape layout show --path ./my-image
 ```
 
 ---
@@ -823,7 +823,7 @@ Validate the structural and content integrity of an OCI Image Layout.
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--layout` | `-l` | path | required | Root directory of an OCI Image Layout to validate |
+| `--path` | `-p` | path | required | Root directory of an OCI Image Layout to validate |
 
 #### Behaviour
 
@@ -853,7 +853,7 @@ Error: blob sha256:deadbeef... referenced by index.json does not exist
 #### Examples
 
 ```bash
-regshape layout validate --layout ./my-image
+regshape layout validate --path ./my-image
 ```
 
 ---
@@ -864,11 +864,11 @@ Build an OCI Image Layout for a two-layer container image:
 
 ```bash
 # 1. Initialise the layout
-regshape layout init --output ./my-image
+regshape layout init --path ./my-image
 
 # 2. Add the base layer (raw tar — auto-compressed with gzip)
 regshape layout add layer \
-  --layout ./my-image \
+  --path ./my-image \
   --file ./rootfs.tar \
   --annotation com.example.layer.role=base
 # → "Input file is not compressed. Compressing with gzip..."
@@ -876,45 +876,45 @@ regshape layout add layer \
 
 # 3. Add a second layer (already gzip — used as-is)
 regshape layout add layer \
-  --layout ./my-image \
+  --path ./my-image \
   --file ./patches.tar.gz
 
 # 4. Add annotations to layer 1 after the fact
 regshape layout annotate layer \
-  --layout ./my-image \
+  --path ./my-image \
   --index 1 \
   --annotation com.example.layer.role=patches
 
 # 5. Check staging state
-regshape layout status --layout ./my-image
+regshape layout status --path ./my-image
 
 # 6. Generate the image config
 regshape layout generate config \
-  --layout ./my-image \
+  --path ./my-image \
   --architecture amd64 \
   --os linux
 
 # 7. (Optional) Modify the config to correct the architecture
 regshape layout update config \
-  --layout ./my-image \
+  --path ./my-image \
   --architecture arm64
 
 # 8. Generate the manifest and register in index.json
 regshape layout generate manifest \
-  --layout ./my-image \
+  --path ./my-image \
   --ref-name latest \
   --annotation org.opencontainers.image.version=1.0.0
 
 # 9. (Optional) Add more manifest annotations after the fact
 regshape layout annotate manifest \
-  --layout ./my-image \
+  --path ./my-image \
   --annotation org.opencontainers.image.created=2026-03-08
 
 # 10. Show the final index.json
-regshape layout show --layout ./my-image
+regshape layout show --path ./my-image
 
 # 11. Validate the layout
-regshape layout validate --layout ./my-image
+regshape layout validate --path ./my-image
 ```
 
 ---
@@ -923,8 +923,8 @@ regshape layout validate --layout ./my-image
 
 | Scenario | Message |
 |----------|---------|
-| `--output` already initialised | `Error: <path> is already an OCI Image Layout` |
-| `--layout` not an initialised layout | `Error: <path> is not an OCI Image Layout (missing oci-layout file)` |
+| `--path` already initialised | `Error: <path> is already an OCI Image Layout` |
+| `--path` not an initialised layout | `Error: <path> is not an OCI Image Layout (missing oci-layout file)` |
 | `--file` not found | `Error: File not found: <path>` |
 | Unknown extension, no `--media-type` given | `Error: cannot infer media type for '<ext>'; use --media-type` |
 | Compression error | `Error: failed to compress <path>: <reason>` |

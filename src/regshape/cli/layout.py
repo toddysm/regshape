@@ -158,8 +158,9 @@ def update():
 @layout.command("init")
 @telemetry_options
 @click.option(
-    "--output",
-    "-o",
+    "--path",
+    "-p",
+    "layout_path",
     required=True,
     type=click.Path(),
     metavar="DIR",
@@ -168,18 +169,18 @@ def update():
 @click.option("--json", "as_json", is_flag=True, default=False, help="Output JSON.")
 @click.pass_context
 @track_scenario("layout init")
-def init_cmd(ctx, output, as_json):
+def init_cmd(ctx, layout_path, as_json):
     """Initialise a new, empty OCI Image Layout at DIR."""
     try:
-        init_layout(output)
+        init_layout(layout_path)
     except (LayoutError, OSError) as exc:
-        _error(output, str(exc))
+        _error(layout_path, str(exc))
         sys.exit(1)
 
     if as_json:
-        click.echo(json.dumps({"layout_path": str(output)}, indent=2))
+        click.echo(json.dumps({"layout_path": str(layout_path)}, indent=2))
     else:
-        click.echo(f"Initialised OCI Image Layout at {output}")
+        click.echo(f"Initialised OCI Image Layout at {layout_path}")
 
 
 # ===========================================================================
@@ -190,7 +191,7 @@ def init_cmd(ctx, output, as_json):
 @add.command("layer")
 @telemetry_options
 @click.option(
-    "--layout", "-l", "layout_path",
+    "--path", "-p", "layout_path",
     required=True,
     type=click.Path(exists=True),
     metavar="DIR",
@@ -282,7 +283,7 @@ def add_layer(ctx, layout_path, layer_file, compress_format, media_type, raw_ann
 @annotate.command("layer")
 @telemetry_options
 @click.option(
-    "--layout", "-l", "layout_path",
+    "--path", "-p", "layout_path",
     required=True,
     type=click.Path(exists=True),
     metavar="DIR",
@@ -338,7 +339,7 @@ def annotate_layer(ctx, layout_path, layer_index, raw_annotations, replace, as_j
 @annotate.command("manifest")
 @telemetry_options
 @click.option(
-    "--layout", "-l", "layout_path",
+    "--path", "-p", "layout_path",
     required=True,
     type=click.Path(exists=True),
     metavar="DIR",
@@ -380,7 +381,7 @@ def annotate_manifest_cmd(ctx, layout_path, raw_annotations, replace, as_json):
 @generate.command("config")
 @telemetry_options
 @click.option(
-    "--layout", "-l", "layout_path",
+    "--path", "-p", "layout_path",
     required=True,
     type=click.Path(exists=True),
     metavar="DIR",
@@ -457,7 +458,7 @@ def generate_config_cmd(
 @generate.command("manifest")
 @telemetry_options
 @click.option(
-    "--layout", "-l", "layout_path",
+    "--path", "-p", "layout_path",
     required=True,
     type=click.Path(exists=True),
     metavar="DIR",
@@ -531,7 +532,7 @@ def generate_manifest_cmd(
 @update.command("config")
 @telemetry_options
 @click.option(
-    "--layout", "-l", "layout_path",
+    "--path", "-p", "layout_path",
     required=True,
     type=click.Path(exists=True),
     metavar="DIR",
@@ -612,7 +613,7 @@ def update_config_cmd(
 @layout.command("status")
 @telemetry_options
 @click.option(
-    "--layout", "-l", "layout_path",
+    "--path", "-p", "layout_path",
     required=True,
     type=click.Path(exists=True),
     metavar="DIR",
@@ -655,8 +656,8 @@ def status(ctx, layout_path, as_json):
 @layout.command("show")
 @telemetry_options
 @click.option(
-    "--layout",
-    "-l",
+    "--path",
+    "-p",
     "layout_path",
     required=True,
     type=click.Path(exists=True),
@@ -687,8 +688,8 @@ def show(ctx, layout_path):
 @layout.command("validate")
 @telemetry_options
 @click.option(
-    "--layout",
-    "-l",
+    "--path",
+    "-p",
     "layout_path",
     required=True,
     type=click.Path(exists=True),
@@ -738,7 +739,7 @@ def _format_size(size: int) -> str:
 @layout.command("push")
 @telemetry_options
 @click.option(
-    "--layout", "-l", "layout_path",
+    "--path", "-p", "layout_path",
     required=True,
     type=click.Path(exists=True),
     metavar="DIR",
