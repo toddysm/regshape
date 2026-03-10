@@ -857,6 +857,10 @@ def push_cmd(ctx, layout_path, dest, force, chunked, chunk_size, dry_run, as_jso
     except (AuthError, BlobError, ManifestError) as exc:
         _error(dest_display, str(exc))
         sys.exit(1)
+    finally:
+        if current_bar[0] is not None:
+            current_bar[0].__exit__(None, None, None)
+            current_bar[0] = None
 
     # --- Output ---
     if as_json:
