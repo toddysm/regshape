@@ -57,7 +57,6 @@ regshape layout push [OPTIONS]
 | `--force` | | flag | `false` | Skip the `HEAD` existence check and upload every blob unconditionally |
 | `--chunked` | | flag | `false` | Use the chunked (streaming) upload protocol for blobs instead of monolithic |
 | `--chunk-size` | | integer | `65536` | Chunk size in bytes when `--chunked` is enabled |
-| `--concurrency` | `-c` | integer | `1` | Number of parallel blob uploads (min 1, max 8). Default is sequential. |
 | `--dry-run` | | flag | `false` | Validate the layout and print what *would* be pushed without making any network calls |
 
 Global options `--insecure`, `--verbose`, `--json`, and the telemetry family
@@ -255,11 +254,6 @@ regshape layout push \
   --dest registry.io/myrepo/myimage:latest \
   --json
 
-# Parallel blob uploads (4 concurrent)
-regshape layout push \
-  --path ./my-image \
-  --dest registry.io/myrepo/myimage:latest \
-  --concurrency 4
 ```
 
 ---
@@ -293,7 +287,7 @@ regshape layout push \
 
 The CLI command delegates to a library function in `libs/layout/operations.py`:
 
-### `push_layout(layout_path, client, repo, tag_override, force, chunked, chunk_size, concurrency) -> PushResult`
+### `push_layout(layout_path, client, repo, tag_override, force, chunked, chunk_size) -> PushResult`
 
 **Parameters:**
 
@@ -305,7 +299,6 @@ The CLI command delegates to a library function in `libs/layout/operations.py`:
 - `force: bool` — Skip existence checks when `True`.
 - `chunked: bool` — Use chunked upload protocol when `True`.
 - `chunk_size: int` — Chunk size (only used when `chunked=True`).
-- `concurrency: int` — Number of parallel blob uploads.
 
 **Returns:** A `PushResult` (dataclass or dict) containing the per-manifest
 push report and summary statistics (manifests pushed, blobs uploaded, blobs
@@ -357,9 +350,6 @@ is printed. Progress bars are also suppressed when stdout is not a TTY.
 - Implement `push_layout()` in `src/regshape/libs/layout/operations.py`
   and export it from `libs/layout/__init__.py`.
 - Decorate the library function with `@track_scenario("layout push")`.
-- For `--concurrency > 1`, use `concurrent.futures.ThreadPoolExecutor`
-  to parallelise blob uploads. The manifest push is always sequential
-  (after all blobs are confirmed).
 - The `head_blob` call may return a `BlobError` with status 404 — catch
   it and treat as "blob not present" rather than a fatal error.
 - When `--verbose` is set, print each HTTP request/response summary
