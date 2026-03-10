@@ -14,7 +14,6 @@
 """
 
 import hashlib
-import io
 import json
 import os
 import tempfile
@@ -973,14 +972,16 @@ def push_layout(
                                   size=blob_desc.size,
                                   media_type=blob_desc.media_type)
 
-            blob_data = read_blob(layout, blob_desc.digest)
             if chunked:
-                upload_blob_chunked(
-                    client, repo, io.BytesIO(blob_data),
-                    blob_desc.digest,
-                    chunk_size=chunk_size,
-                )
+                blob_file_path = _blob_path(layout, blob_desc.digest)
+                with open(blob_file_path, "rb") as blob_fh:
+                    upload_blob_chunked(
+                        client, repo, blob_fh,
+                        blob_desc.digest,
+                        chunk_size=chunk_size,
+                    )
             else:
+                blob_data = read_blob(layout, blob_desc.digest)
                 upload_blob(client, repo, blob_data, blob_desc.digest)
 
             uploaded_digests.add(blob_desc.digest)
