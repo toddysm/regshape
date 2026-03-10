@@ -718,6 +718,19 @@ def validate(ctx, layout_path):
 # ===========================================================================
 
 
+def _has_explicit_ref(dest: str) -> bool:
+    """Return True if *dest* contains an explicit tag or digest.
+
+    A digest is indicated by ``@``.  An explicit tag is a ``:`` that
+    appears after the last ``/`` (so registry port colons like
+    ``localhost:5000/repo`` are not mistaken for tags).
+    """
+    if "@" in dest:
+        return True
+    last_slash = dest.rfind("/")
+    return ":" in dest[last_slash + 1:]
+
+
 def _short_digest(digest: str) -> str:
     """Return a truncated digest for display."""
     if ":" in digest:
@@ -784,7 +797,7 @@ def push_cmd(ctx, layout_path, dest, force, chunked, chunk_size, dry_run, as_jso
         _error(layout_path, str(exc))
         sys.exit(1)
 
-    tag_override = reference if reference != "latest" or ":" in dest or "@" in dest else None
+    tag_override = reference if reference != "latest" or _has_explicit_ref(dest) else None
 
     # --- Dry-run mode ---
     if dry_run:
