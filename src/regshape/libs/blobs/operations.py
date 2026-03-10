@@ -476,15 +476,18 @@ def _raise_for_blob_error(
         raise BlobError(
             f"Blob not found: {registry}/{repo}@{digest}",
             detail or "HTTP 404",
+            status_code=404,
         )
     if response.status_code == 405:
         raise BlobError(
             "Operation not supported by this registry",
             detail or "HTTP 405",
+            status_code=405,
         )
     raise BlobError(
         f"Registry error for {registry}/{repo}",
         detail or f"HTTP {response.status_code}",
+        status_code=response.status_code,
     )
 
 

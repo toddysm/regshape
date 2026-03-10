@@ -947,7 +947,9 @@ def push_layout(
                 try:
                     head_blob(client, repo, blob_desc.digest)
                     exists = True
-                except BlobError:
+                except BlobError as exc:
+                    if exc.status_code is not None and exc.status_code != 404:
+                        raise
                     exists = False
 
             if exists:
