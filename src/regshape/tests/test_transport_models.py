@@ -257,7 +257,7 @@ class TestRegistryResponse:
         assert chunks == [b"chunk1", b"chunk2"]
         mock_response.iter_content.assert_called_once_with(chunk_size=1024)
 
-    def test_headers_converted_to_dict(self):
+    def test_headers_preserve_case_insensitive_lookup(self):
         """Test that from_requests_response preserves case-insensitive headers."""
         mock_response = MagicMock()
         mock_response.status_code = 200
