@@ -99,12 +99,17 @@ manifests. Each manifest is pushed by its digest, and if it carries an
    a. Read the manifest blob via `read_blob(layout, descriptor.digest)`.
    b. Parse the manifest to extract layer and config descriptors.
    c. **Upload blobs** — for each blob descriptor (layers + config):
-      - Read blob bytes via `read_blob(layout, blob.digest)`.
       - Unless `--force`: call `head_blob(client, repo, blob.digest)`.
-        If 2xx, print skip message and continue.
-      - Call `upload_blob(client, repo, data, blob.digest, blob.media_type)`
-        (or `upload_blob_chunked` when `--chunked`).
-      - Print confirmation with digest and size.
+        If 2xx, invoke skip callback and continue. If `BlobError` with
+        status 404 (or no status), treat as "not present"; re-raise any
+        other `BlobError`.
+      - For monolithic uploads: read blob bytes via
+        `read_blob(layout, blob.digest)` and call
+        `upload_blob(client, repo, data, blob.digest, blob.media_type)`.
+      - For chunked uploads (`--chunked`): open the blob file directly
+        from disk and call `upload_blob_chunked(...)` to stream without
+        loading the entire blob into memory.
+      - Invoke progress callback with digest and size.
    d. **Push manifest** — determine the reference:
       - If `--dest` included a tag and this is the only manifest: use
         that tag.
@@ -120,10 +125,14 @@ Steps 1-3 execute normally. For steps 5a–5d the command prints what it
 *would* do without making any network calls:
 
 ```
-[dry-run] Would upload blob sha256:aaa... (1048576 bytes)
-[dry-run] Would upload blob sha256:bbb... (312 bytes)
-[dry-run] Would push manifest sha256:ccc... as 'latest'
+[dry-run] Layout ./my-image -> registry.io/myrepo/myimage
+
+[dry-run] Would upload blob sha256:aaa...bbb (1.0 MB)
+[dry-run] Would upload blob sha256:ccc...ddd (312 B)
+[dry-run] Would push manifest sha256:eee...fff as 'latest'
 ```
+
+Digests and sizes are formatted the same way as in the normal push output.
 
 ---
 
@@ -131,17 +140,39 @@ Steps 1-3 execute normally. For steps 5a–5d the command prints what it
 
 ### Plain text (default)
 
-```
-Pushing layout ./my-image → registry.io/myrepo/myimage
+When stderr is a TTY, each blob upload is shown as a Click progress bar
+that completes in one step (per-byte streaming progress is not available
+from the library upload). When stderr is *not* a TTY, simple
+"Uploading / Uploaded" lines are printed instead.
 
-  Manifest [latest] sha256:def456... (1 of 1)
-    Layer  sha256:aaa... (1048576 bytes) uploading... done
-    Layer  sha256:bbb... (524288 bytes)  exists, skipping
-    Config sha256:ccc... (312 bytes)     uploading... done
-    Manifest sha256:def456... → latest   pushed
-
-Push complete: 1 manifest, 2 blobs uploaded, 1 blob skipped.
 ```
+Pushing layout ./my-image -> registry.io/myrepo/myimage
+
+  sha256:aaa...bbb (1.0 MB)  [####################################]  1048576/1048576
+  sha256:ccc...ddd (512.0 KB) exists, skipping
+  sha256:eee...fff (312 B)   [####################################]  312/312
+  Manifest sha256:def456...ghi -> latest  pushed
+
+Push complete: 1 manifest(s), 2 blob(s) uploaded, 1 blob(s) skipped.
+```
+
+Non-TTY output (e.g. piped to a file):
+
+```
+Pushing layout ./my-image -> registry.io/myrepo/myimage
+
+  Uploading sha256:aaa...bbb (1.0 MB)...
+  Uploaded  sha256:aaa...bbb
+  sha256:ccc...ddd (512.0 KB) exists, skipping
+  Uploading sha256:eee...fff (312 B)...
+  Uploaded  sha256:eee...fff
+  Manifest sha256:def456...ghi -> latest  pushed
+
+Push complete: 1 manifest(s), 2 blob(s) uploaded, 1 blob(s) skipped.
+```
+
+Digests are truncated to `sha256:` + 12 hex characters in plain-text
+output. Sizes use human-friendly units (B, KB, MB, GB).
 
 ### JSON (`--json`)
 
@@ -287,7 +318,7 @@ regshape layout push \
 
 The CLI command delegates to a library function in `libs/layout/operations.py`:
 
-### `push_layout(layout_path, client, repo, tag_override, force, chunked, chunk_size) -> PushResult`
+### `push_layout(layout_path, client, repo, tag_override, force, chunked, chunk_size, progress_callback) -> PushResult`
 
 **Parameters:**
 
@@ -299,6 +330,9 @@ The CLI command delegates to a library function in `libs/layout/operations.py`:
 - `force: bool` — Skip existence checks when `True`.
 - `chunked: bool` — Use chunked upload protocol when `True`.
 - `chunk_size: int` — Chunk size (only used when `chunked=True`).
+- `progress_callback: Callable | None` — Optional callable invoked as
+  `progress_callback(event, **kwargs)` for UI feedback. Events:
+  `"blob_start"`, `"blob_skip"`, `"blob_done"`, `"manifest_done"`.
 
 **Returns:** A `PushResult` (dataclass or dict) containing the per-manifest
 push report and summary statistics (manifests pushed, blobs uploaded, blobs
@@ -329,17 +363,19 @@ skipped, bytes uploaded).
 
 ## Progress Bars
 
-The CLI command displays progress bars (via Click's progress bar support) to
-give real-time feedback during uploads:
+The CLI command uses `click.progressbar()` to give visual feedback during
+uploads:
 
-- **Blob upload progress** — one progress bar per blob, indicating bytes
-  uploaded vs total size. Blobs that are skipped (already present) show a
-  skip message instead.
-- **Overall manifest progress** — a top-level progress bar tracking manifests
-  pushed out of total.
+- **Blob upload progress** — one progress bar per blob. The bar is opened
+  when the upload starts and completed in a single update when the upload
+  finishes (per-byte streaming progress is not currently available from the
+  library upload functions). Blobs that are skipped (already present) show
+  a skip message instead of a progress bar.
+- There is **no** overall manifest-level progress bar.
 
-In `--json` mode, progress bars are suppressed and only the final JSON result
-is printed. Progress bars are also suppressed when stdout is not a TTY.
+In `--json` mode, progress bars are suppressed and only the final JSON
+result is printed. Progress bars are also suppressed when stderr is not
+a TTY; simple text lines are printed instead (see Output Format above).
 
 ---
 
@@ -354,4 +390,8 @@ is printed. Progress bars are also suppressed when stdout is not a TTY.
   it and treat as "blob not present" rather than a fatal error.
 - When `--verbose` is set, print each HTTP request/response summary
   (handled automatically by the transport middleware and `--debug-calls`).
-- Progress bars use `click.progressbar()` for each blob upload.
+- Progress bars use `click.progressbar()` for each blob upload. The bar is
+  completed in one step because the library upload functions do not expose
+  per-byte progress callbacks.
+- Chunked uploads open the blob file directly from disk for streaming
+  instead of loading the entire blob into memory via `read_blob()`.
