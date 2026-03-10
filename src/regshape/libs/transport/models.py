@@ -70,12 +70,13 @@ class RegistryResponse:
     :attr:`raw_response` directly.
     
     :param status_code: HTTP status code
-    :param headers: Response headers as key-value dict  
+    :param headers: Response headers as a mapping (e.g. dict or
+        ``CaseInsensitiveDict``)
     :param body: Response body as bytes, or ``None`` for streaming responses
     :param raw_response: Original requests.Response for streaming access
     """
     status_code: int
-    headers: Dict[str, str]
+    headers: Mapping[str, str]
     body: Optional[bytes]
     raw_response: requests.Response
 
@@ -84,7 +85,7 @@ class RegistryResponse:
         if not isinstance(self.status_code, int):
             raise TypeError("RegistryResponse.status_code must be an int")
         if not isinstance(self.headers, Mapping):
-            raise TypeError("RegistryResponse.headers must be a dict")
+            raise TypeError("RegistryResponse.headers must be a mapping")
         if self.body is not None and not isinstance(self.body, bytes):
             raise TypeError("RegistryResponse.body must be bytes or None")
 

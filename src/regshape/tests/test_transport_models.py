@@ -175,7 +175,7 @@ class TestRegistryResponse:
     def test_non_dict_headers_raises_error(self):
         mock_response = MagicMock()
         
-        with pytest.raises(TypeError, match="RegistryResponse\\.headers must be a dict"):
+        with pytest.raises(TypeError, match="RegistryResponse\\.headers must be a mapping"):
             RegistryResponse(
                 status_code=200,
                 headers="not-a-dict",
