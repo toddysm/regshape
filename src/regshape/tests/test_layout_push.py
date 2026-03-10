@@ -56,6 +56,22 @@ def _build_layout(tmp_path, ref_name="latest"):
     return layout_dir
 
 
+def _build_multi_manifest_layout(tmp_path):
+    """Create a layout with two manifests for testing."""
+    layout_dir = tmp_path / "layout"
+    init_layout(layout_dir)
+    layer = _make_gzip(b"test layer content")
+    stage_layer(layout_dir, layer, OCI_IMAGE_LAYER_TAR_GZIP)
+    generate_config(layout_dir)
+    generate_manifest(layout_dir, ref_name="v1")
+    # Stage a second layer + config + manifest to get two entries in index.json
+    layer2 = _make_gzip(b"second layer content")
+    stage_layer(layout_dir, layer2, OCI_IMAGE_LAYER_TAR_GZIP)
+    generate_config(layout_dir)
+    generate_manifest(layout_dir, ref_name="v2")
+    return layout_dir
+
+
 def _mock_client(registry="registry.io"):
     """Return a mock RegistryClient."""
     client = MagicMock()
@@ -458,3 +474,15 @@ class TestPushCLI:
         call_kwargs = mock_push.call_args[1]
         assert call_kwargs["chunked"] is True
         assert call_kwargs["chunk_size"] == 1048576
+
+    def test_dry_run_rejects_tag_override_with_multiple_manifests(self, tmp_path):
+        layout_dir = _build_multi_manifest_layout(tmp_path)
+
+        result = _runner().invoke(regshape, [
+            "layout", "push",
+            "--path", str(layout_dir),
+            "--dest", "registry.io/myrepo:custom_tag",
+            "--dry-run",
+        ])
+        assert result.exit_code != 0
+        assert "tag override" in result.output.lower() or "multiple" in result.output.lower()

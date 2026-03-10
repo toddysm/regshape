@@ -914,6 +914,14 @@ def _push_dry_run(layout_path, registry, repo, tag_override, as_json):
         _error(layout_path, "index.json contains no manifests")
         sys.exit(1)
 
+    if tag_override and len(index.manifests) > 1:
+        _error(
+            layout_path,
+            f"tag override supplied but index.json has {len(index.manifests)} manifests; "
+            "omit the tag or push a single-manifest layout",
+        )
+        sys.exit(1)
+
     from regshape.libs.layout import read_blob as _rb
 
     results = []
