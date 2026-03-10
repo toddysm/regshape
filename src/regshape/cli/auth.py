@@ -17,13 +17,12 @@ import sys
 import click
 import requests
 
-from regshape.libs.auth import registryauth
 from regshape.libs.auth.credentials import erase_credentials, resolve_credentials, store_credentials
 from regshape.libs.decorators import telemetry_options
-from regshape.libs.decorators.call_details import http_request
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.decorators.timing import track_time
 from regshape.libs.errors import AuthError
+from regshape.libs.transport.client import RegistryClient, TransportConfig
 
 
 @click.group()
@@ -70,11 +69,10 @@ def login(ctx, registry, username, password, password_stdin, docker_config):
     ~/.docker/config.json.  If both flags are omitted and no stored credentials
     are found, the command prompts interactively.
 
-    Verification is performed by issuing a direct HTTP GET to ``/v2/`` using
-    the ``requests`` client so that the full Bearer challenge/401-retry cycle
-    is executed automatically (required for Docker Hub and similar token-based
-    registries). This will migrate to ``RegistryClient`` once the transport
-    layer is available.
+    Verification is performed by issuing ``GET /v2/`` through
+    :class:`RegistryClient`, which handles the full Bearer challenge /
+    401-retry cycle (including the OAuth2 refresh-token exchange for
+    registries like ACR).
     """
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
@@ -163,14 +161,12 @@ def logout(ctx, registry, docker_config):
 def _verify_credentials(registry: str, username: str, password: str, insecure: bool = False) -> None:
     """
     Verify *username* and *password* against *registry* by issuing
-    ``GET /v2/`` and completing the full Bearer challenge cycle.
+    ``GET /v2/`` through :class:`RegistryClient`.
 
-    Uses the ``requests`` library directly with the existing
-    :func:`~regshape.libs.auth.registryauth.authenticate` helper so that the
-    ``RegistryClient`` (not yet constructed at CLI setup time) is not required.
-
-    The URL scheme defaults to HTTPS but switches to HTTP when *insecure* is
-    ``True`` (set via the global ``--insecure`` flag).
+    All authentication logic (401 challenge handling, WWW-Authenticate
+    parsing, Bearer token exchange including the OAuth2 refresh-token
+    fallback) is implemented inside the transport layer so that every
+    auth flow in the CLI goes through the same code path.
 
     :param registry: Registry hostname.
     :param username: Username to verify.
@@ -179,33 +175,23 @@ def _verify_credentials(registry: str, username: str, password: str, insecure: b
     :raises AuthError: If authentication is rejected.
     :raises requests.exceptions.RequestException: On connection errors.
     """
-    scheme = "http" if insecure else "https"
-    url = f"{scheme}://{registry}/v2/"
-
-    # First request — expect a challenge or immediate success
-    response = http_request(url, "GET", timeout=10)
+    config = TransportConfig(
+        registry=registry,
+        insecure=insecure,
+        username=username,
+        password=password,
+        timeout=10,
+    )
+    client = RegistryClient(config)
+    response = client.get("/v2/")
 
     if response.status_code == 200:
-        return  # No auth required (unusual but valid)
+        return
 
-    if response.status_code == 401:
-        www_auth = response.headers.get("WWW-Authenticate", "")
-        if not www_auth:
-            raise AuthError("Login failed", "Registry returned 401 without WWW-Authenticate header")
-
-        auth_value = registryauth.authenticate(www_auth, username, password)
-        auth_scheme = www_auth.split(" ")[0]
-        auth_headers = {"Authorization": f"{auth_scheme} {auth_value}"}
-
-        retry = http_request(url, "GET", headers=auth_headers, timeout=10)
-        if retry.status_code == 200:
-            return
-        raise AuthError(
-            "Login failed",
-            f"authentication rejected (status {retry.status_code})",
-        )
-
-    raise AuthError("Login failed", f"unexpected status {response.status_code}")
+    raise AuthError(
+        "Login failed",
+        f"authentication rejected (status {response.status_code})",
+    )
 
 
 def _error(registry: str, reason: str) -> None:

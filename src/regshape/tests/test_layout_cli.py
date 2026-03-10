@@ -55,14 +55,14 @@ def _full_pipeline(layout_dir):
 class TestLayoutInitCLI:
     def test_init_creates_layout(self, tmp_path):
         output = str(tmp_path / "layout")
-        result = _runner().invoke(regshape, ["layout", "init", "--output", output])
+        result = _runner().invoke(regshape, ["layout", "init", "--path", output])
         assert result.exit_code == 0, result.output
         assert "Initialised" in result.output
 
     def test_init_json_output(self, tmp_path):
         output = str(tmp_path / "layout")
         result = _runner().invoke(
-            regshape, ["layout", "init", "--output", output, "--json"]
+            regshape, ["layout", "init", "--path", output, "--json"]
         )
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
@@ -71,7 +71,7 @@ class TestLayoutInitCLI:
     def test_init_fails_if_already_exists(self, tmp_path):
         output = str(tmp_path / "layout")
         init_layout(tmp_path / "layout")
-        result = _runner().invoke(regshape, ["layout", "init", "--output", output])
+        result = _runner().invoke(regshape, ["layout", "init", "--path", output])
         assert result.exit_code != 0
 
 
@@ -89,7 +89,7 @@ class TestLayoutAddLayerCLI:
 
         result = _runner().invoke(regshape, [
             "layout", "add", "layer",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--file", str(layer_file),
             "--media-type", OCI_IMAGE_LAYER_TAR_GZIP,
         ])
@@ -104,7 +104,7 @@ class TestLayoutAddLayerCLI:
 
         result = _runner().invoke(regshape, [
             "layout", "add", "layer",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--file", str(layer_file),
             "--media-type", OCI_IMAGE_LAYER_TAR_GZIP,
             "--json",
@@ -123,7 +123,7 @@ class TestLayoutAddLayerCLI:
 
         result = _runner().invoke(regshape, [
             "layout", "add", "layer",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--file", str(layer_file),
             "--media-type", OCI_IMAGE_LAYER_TAR_GZIP,
             "--annotation", "com.example.role=base",
@@ -142,7 +142,7 @@ class TestLayoutAddLayerCLI:
 
         result = _runner().invoke(regshape, [
             "layout", "add", "layer",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--file", str(layer_file),
             "--media-type", OCI_IMAGE_LAYER_TAR_GZIP,
         ])
@@ -154,7 +154,7 @@ class TestLayoutAddLayerCLI:
         layer_file.write_bytes(_make_gzip(b"content"))
         result = _runner().invoke(regshape, [
             "layout", "add", "layer",
-            "--layout", str(tmp_path / "nolayout"),
+            "--path", str(tmp_path / "nolayout"),
             "--file", str(layer_file),
             "--media-type", OCI_IMAGE_LAYER_TAR_GZIP,
         ])
@@ -178,7 +178,7 @@ class TestLayoutAnnotateLayerCLI:
         layout_dir = self._setup(tmp_path)
         result = _runner().invoke(regshape, [
             "layout", "annotate", "layer",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--index", "0",
             "--annotation", "org.opencontainers.image.created=2026-03-08",
         ])
@@ -189,7 +189,7 @@ class TestLayoutAnnotateLayerCLI:
         layout_dir = self._setup(tmp_path)
         result = _runner().invoke(regshape, [
             "layout", "annotate", "layer",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--index", "0",
             "--annotation", "k=v",
             "--json",
@@ -203,7 +203,7 @@ class TestLayoutAnnotateLayerCLI:
         layout_dir = self._setup(tmp_path)
         result = _runner().invoke(regshape, [
             "layout", "annotate", "layer",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--index", "99",
             "--annotation", "k=v",
         ])
@@ -226,7 +226,7 @@ class TestLayoutAnnotateManifestCLI:
         layout_dir = self._setup(tmp_path)
         result = _runner().invoke(regshape, [
             "layout", "annotate", "manifest",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--annotation", "org.opencontainers.image.version=1.0.0",
         ])
         assert result.exit_code == 0, result.output
@@ -236,7 +236,7 @@ class TestLayoutAnnotateManifestCLI:
         layout_dir = self._setup(tmp_path)
         result = _runner().invoke(regshape, [
             "layout", "annotate", "manifest",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--annotation", "k=v",
             "--json",
         ])
@@ -249,7 +249,7 @@ class TestLayoutAnnotateManifestCLI:
         init_layout(layout_dir)
         result = _runner().invoke(regshape, [
             "layout", "annotate", "manifest",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--annotation", "k=v",
         ])
         assert result.exit_code != 0
@@ -268,7 +268,7 @@ class TestLayoutGenerateConfigCLI:
 
         result = _runner().invoke(regshape, [
             "layout", "generate", "config",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--architecture", "arm64",
             "--os", "linux",
             "--media-type", "application/vnd.oci.image.config.v1+json",
@@ -283,7 +283,7 @@ class TestLayoutGenerateConfigCLI:
 
         result = _runner().invoke(regshape, [
             "layout", "generate", "config",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--architecture", "amd64",
             "--os", "linux",
             "--media-type", "application/vnd.oci.image.config.v1+json",
@@ -298,7 +298,7 @@ class TestLayoutGenerateConfigCLI:
         init_layout(layout_dir)
         result = _runner().invoke(regshape, [
             "layout", "generate", "config",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--architecture", "amd64",
             "--os", "linux",
             "--media-type", "application/vnd.oci.image.config.v1+json",
@@ -323,7 +323,7 @@ class TestLayoutGenerateManifestCLI:
         layout_dir = self._setup_with_config(tmp_path)
         result = _runner().invoke(regshape, [
             "layout", "generate", "manifest",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--ref-name", "latest",
             "--media-type", "application/vnd.oci.image.manifest.v1+json",
         ])
@@ -334,7 +334,7 @@ class TestLayoutGenerateManifestCLI:
         layout_dir = self._setup_with_config(tmp_path)
         result = _runner().invoke(regshape, [
             "layout", "generate", "manifest",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--ref-name", "v1.0",
             "--media-type", "application/vnd.oci.image.manifest.v1+json",
             "--json",
@@ -350,7 +350,7 @@ class TestLayoutGenerateManifestCLI:
         stage_layer(layout_dir, _make_gzip(b"layer"), OCI_IMAGE_LAYER_TAR_GZIP)
         result = _runner().invoke(regshape, [
             "layout", "generate", "manifest",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--ref-name", "latest",
             "--media-type", "application/vnd.oci.image.manifest.v1+json",
         ])
@@ -374,7 +374,7 @@ class TestLayoutUpdateConfigCLI:
         layout_dir = self._setup(tmp_path)
         result = _runner().invoke(regshape, [
             "layout", "update", "config",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--architecture", "arm64",
         ])
         assert result.exit_code == 0, result.output
@@ -384,7 +384,7 @@ class TestLayoutUpdateConfigCLI:
         layout_dir = self._setup(tmp_path)
         result = _runner().invoke(regshape, [
             "layout", "update", "config",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--architecture", "arm64",
             "--json",
         ])
@@ -398,7 +398,7 @@ class TestLayoutUpdateConfigCLI:
 
         result = _runner().invoke(regshape, [
             "layout", "update", "config",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--architecture", "arm64",
             "--json",
         ])
@@ -412,7 +412,7 @@ class TestLayoutUpdateConfigCLI:
         stage_layer(layout_dir, _make_gzip(b"l"), OCI_IMAGE_LAYER_TAR_GZIP)
         result = _runner().invoke(regshape, [
             "layout", "update", "config",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--architecture", "arm64",
         ])
         assert result.exit_code != 0
@@ -429,7 +429,7 @@ class TestLayoutStatusCLI:
         init_layout(layout_dir)
         result = _runner().invoke(regshape, [
             "layout", "status",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
         ])
         assert result.exit_code == 0, result.output
         assert "Layers staged: 0" in result.output
@@ -439,7 +439,7 @@ class TestLayoutStatusCLI:
         init_layout(layout_dir)
         result = _runner().invoke(regshape, [
             "layout", "status",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
             "--json",
         ])
         assert result.exit_code == 0, result.output
@@ -453,7 +453,7 @@ class TestLayoutStatusCLI:
         stage_layer(layout_dir, _make_gzip(b"layer"), OCI_IMAGE_LAYER_TAR_GZIP)
         result = _runner().invoke(regshape, [
             "layout", "status",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
         ])
         assert result.exit_code == 0, result.output
         assert "Layers staged: 1" in result.output
@@ -470,7 +470,7 @@ class TestLayoutShowCLI:
         init_layout(layout_dir)
         result = _runner().invoke(regshape, [
             "layout", "show",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
         ])
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
@@ -489,7 +489,7 @@ class TestLayoutValidateCLI:
         init_layout(layout_dir)
         result = _runner().invoke(regshape, [
             "layout", "validate",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
         ])
         assert result.exit_code == 0, result.output
         assert "valid" in result.output
@@ -500,7 +500,7 @@ class TestLayoutValidateCLI:
         _full_pipeline(layout_dir)
         result = _runner().invoke(regshape, [
             "layout", "validate",
-            "--layout", str(layout_dir),
+            "--path", str(layout_dir),
         ])
         assert result.exit_code == 0, result.output
         assert "valid" in result.output

@@ -102,6 +102,18 @@ class TestParseAuthHeader:
         assert result['realm'] == 'https://auth.example.com/token?service=reg'
         assert result['service'] == 'registry.example.com'
 
+    def test_scope_with_comma_in_value(self):
+        """Commas inside quoted scope values (pull,push) must be preserved."""
+        header = (
+            'Bearer realm="https://auth.example.com/token",'
+            'service="registry.example.com",'
+            'scope="repository:test/myartifact:pull,push"'
+        )
+        result = registryauth._parse_auth_header(header)
+        assert result['scope'] == 'repository:test/myartifact:pull,push'
+        assert result['service'] == 'registry.example.com'
+        assert result['realm'] == 'https://auth.example.com/token'
+
 
 # ===========================================================================
 # registryauth._get_basic_auth
@@ -196,10 +208,37 @@ class TestGetAuthToken:
 
     def test_raises_auth_error_on_non_200_status(self):
         header = self._header()
-        with patch('regshape.libs.auth.registryauth.requests.get') as mock_get:
+        with patch('regshape.libs.auth.registryauth.requests.get') as mock_get, \
+             patch('regshape.libs.auth.registryauth.requests.post') as mock_post:
             mock_get.return_value = MagicMock(status_code=401, text='{"errors":[]}')
+            mock_post.return_value = MagicMock(status_code=401, text='{"errors":[]}')
             with pytest.raises(AuthError):
                 registryauth._get_auth_token(header, 'user', 'wrongpass')
+
+    def test_falls_back_to_refresh_token_post_on_401(self):
+        """When GET returns 401, tries POST with grant_type=refresh_token."""
+        header = self._header(scope='repository:myrepo:pull')
+        with patch('regshape.libs.auth.registryauth.requests.get') as mock_get, \
+             patch('regshape.libs.auth.registryauth.requests.post') as mock_post:
+            mock_get.return_value = MagicMock(status_code=401, text='{}')
+            mock_post.return_value = _token_response('refreshed-tok')
+            token = registryauth._get_auth_token(header, '<token>', 'eyJhbGci...')
+        assert token == 'refreshed-tok'
+        post_data = mock_post.call_args[1]['data']
+        assert post_data['grant_type'] == 'refresh_token'
+        assert post_data['refresh_token'] == 'eyJhbGci...'
+        assert post_data['service'] == 'registry.example.com'
+        assert post_data['scope'] == 'repository:myrepo:pull'
+
+    def test_no_refresh_fallback_without_credentials(self):
+        """When GET returns 401 with no password, no POST is attempted."""
+        header = self._header()
+        with patch('regshape.libs.auth.registryauth.requests.get') as mock_get, \
+             patch('regshape.libs.auth.registryauth.requests.post') as mock_post:
+            mock_get.return_value = MagicMock(status_code=401, text='{}')
+            with pytest.raises(AuthError):
+                registryauth._get_auth_token(header)
+        mock_post.assert_not_called()
 
     def test_raises_auth_error_on_connection_error(self):
         header = self._header()
@@ -247,6 +286,23 @@ class TestAuthenticate:
         header = 'Digest realm="example.com",nonce="abc123"'
         with pytest.raises(AuthError):
             registryauth.authenticate(header)
+
+    def test_bearer_scheme_case_insensitive(self):
+        """Scheme comparison is case-insensitive per RFC 7235."""
+        for scheme in ('bearer', 'BEARER', 'Bearer', 'bEaReR'):
+            header = f'{scheme} realm="https://auth.example.com/token",service="registry.example.com"'
+            with patch('regshape.libs.auth.registryauth.requests.get') as mock_get:
+                mock_get.return_value = _token_response('tok')
+                result = registryauth.authenticate(header, 'u', 'p')
+            assert result == 'tok', f"Failed for scheme: {scheme}"
+
+    def test_basic_scheme_case_insensitive(self):
+        """Basic scheme comparison is case-insensitive per RFC 7235."""
+        for scheme in ('basic', 'BASIC', 'Basic'):
+            header = f'{scheme} realm="https://registry.example.com"'
+            result = registryauth.authenticate(header, 'alice', 'secret')
+            expected = base64.b64encode(b'alice:secret').decode('utf-8')
+            assert result == expected, f"Failed for scheme: {scheme}"
 
 
 # ===========================================================================

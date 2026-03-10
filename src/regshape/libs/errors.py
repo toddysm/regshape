@@ -46,7 +46,11 @@ class BlobError(RegShapeError):
     """
     Error caused by a malformed, missing, or unprocessable blob or upload session.
     """
-    pass
+
+    def __init__(self, message: str = None, cause: str = None, *args: object,
+                 status_code: int = None) -> None:
+        super().__init__(message, cause, *args)
+        self.status_code = status_code
 
 
 class CatalogError(RegShapeError):

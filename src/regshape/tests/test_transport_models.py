@@ -175,7 +175,7 @@ class TestRegistryResponse:
     def test_non_dict_headers_raises_error(self):
         mock_response = MagicMock()
         
-        with pytest.raises(TypeError, match="RegistryResponse\\.headers must be a dict"):
+        with pytest.raises(TypeError, match="RegistryResponse\\.headers must be a mapping"):
             RegistryResponse(
                 status_code=200,
                 headers="not-a-dict",
@@ -257,23 +257,19 @@ class TestRegistryResponse:
         assert chunks == [b"chunk1", b"chunk2"]
         mock_response.iter_content.assert_called_once_with(chunk_size=1024)
 
-    def test_headers_converted_to_dict(self):
-        """Test that from_requests_response converts headers properly."""
+    def test_headers_preserve_case_insensitive_lookup(self):
+        """Test that from_requests_response preserves case-insensitive headers."""
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.content = b""
-        
-        # Create a simple dict-like object for headers
-        class MockHeaders:
-            def __init__(self):
-                self.data = {"Content-Type": "application/json", "Content-Length": "123"}
-            
-            def __iter__(self):
-                return iter(self.data.items())
-        
-        mock_response.headers = MockHeaders()
-        
+
+        # Use a requests-style CaseInsensitiveDict
+        from requests.structures import CaseInsensitiveDict
+        mock_response.headers = CaseInsensitiveDict(
+            {"Content-Type": "application/json", "Content-Length": "123"}
+        )
+
         resp = RegistryResponse.from_requests_response(mock_response)
-        assert isinstance(resp.headers, dict)
-        assert resp.headers["Content-Type"] == "application/json"
-        assert resp.headers["Content-Length"] == "123"
+        # Case-insensitive lookup must work
+        assert resp.headers["content-type"] == "application/json"
+        assert resp.headers["CONTENT-LENGTH"] == "123"

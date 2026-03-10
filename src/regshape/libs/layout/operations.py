@@ -17,10 +17,12 @@ import hashlib
 import json
 import os
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Union
 
-from regshape.libs.errors import LayoutError
+from regshape.libs.decorators.scenario import track_scenario
+from regshape.libs.errors import BlobError, LayoutError
 from regshape.libs.models.descriptor import Descriptor
 from regshape.libs.models.manifest import ImageIndex, ImageManifest, parse_manifest
 from regshape.libs.models.mediatype import OCI_IMAGE_INDEX
@@ -791,3 +793,228 @@ def update_manifest_annotations(
         digest=new_digest,
         size=new_size,
     )
+
+
+# ===========================================================================
+# Push operations
+# ===========================================================================
+
+
+@dataclass
+class BlobPushReport:
+    """Report for a single blob push action."""
+
+    digest: str
+    size: int
+    media_type: str
+    action: str  # "uploaded", "skipped"
+
+
+@dataclass
+class ManifestPushReport:
+    """Report for pushing a single manifest and its blobs."""
+
+    digest: str
+    reference: str
+    media_type: str
+    blobs: list[BlobPushReport] = field(default_factory=list)
+    status: str = "pushed"
+
+
+@dataclass
+class PushResult:
+    """Aggregated result of a layout push operation."""
+
+    layout_path: str
+    destination: str
+    manifests: list[ManifestPushReport] = field(default_factory=list)
+    manifests_pushed: int = 0
+    blobs_uploaded: int = 0
+    blobs_skipped: int = 0
+    bytes_uploaded: int = 0
+
+
+def _collect_blob_descriptors(manifest: ImageManifest) -> list[Descriptor]:
+    """Return all blob descriptors (layers + config) from a manifest."""
+    blobs: list[Descriptor] = []
+    blobs.extend(manifest.layers)
+    blobs.append(manifest.config)
+    return blobs
+
+
+@track_scenario("layout push")
+def push_layout(
+    layout_path: Union[str, Path],
+    client,
+    repo: str,
+    tag_override: Union[str, None] = None,
+    force: bool = False,
+    chunked: bool = False,
+    chunk_size: int = 65536,
+    progress_callback=None,
+) -> PushResult:
+    """Push an OCI Image Layout to a remote registry.
+
+    Reads the layout's ``index.json`` to discover all manifests and their
+    referenced blobs (layers and configs), uploads every blob, then pushes
+    each manifest.
+
+    :param layout_path: Root of a valid, completed OCI Image Layout.
+    :param client: An authenticated
+        :class:`~regshape.libs.transport.RegistryClient`.
+    :param repo: Target repository name (e.g. ``"myrepo/myimage"``).
+    :param tag_override: If provided, overrides ``ref.name`` annotation
+        for single-manifest layouts. Must be ``None`` when the layout
+        contains multiple manifests.
+    :param force: If ``True``, skip ``HEAD`` existence checks and upload
+        all blobs unconditionally.
+    :param chunked: If ``True``, use the chunked upload protocol.
+    :param chunk_size: Chunk size in bytes (used when *chunked* is ``True``).
+    :param progress_callback: Optional callable invoked as
+        ``progress_callback(event, **kwargs)`` for UI feedback.  Events:
+        ``"blob_start"``, ``"blob_skip"``, ``"blob_done"``,
+        ``"manifest_done"``.
+    :returns: A :class:`PushResult` with per-manifest reports and summary
+        statistics.
+    :raises LayoutError: If the layout is invalid or incomplete.
+    :raises regshape.libs.errors.AuthError: On authentication failure.
+    :raises regshape.libs.errors.BlobError: On blob upload failure.
+    :raises regshape.libs.errors.ManifestError: On manifest push failure.
+    """
+    from regshape.libs.blobs import head_blob, upload_blob, upload_blob_chunked
+    from regshape.libs.manifests import push_manifest
+
+    layout = _lp(layout_path)
+    validate_layout(layout)
+
+    index = _read_index(layout)
+    if not index.manifests:
+        raise LayoutError(
+            "index.json contains no manifests",
+            "run 'layout generate manifest' first",
+        )
+
+    if tag_override and len(index.manifests) > 1:
+        raise LayoutError(
+            f"tag override supplied but index.json has {len(index.manifests)} manifests",
+            "omit the tag or push a single-manifest layout",
+        )
+
+    result = PushResult(
+        layout_path=str(layout),
+        destination=f"{client.config.registry}/{repo}",
+    )
+
+    # Track blobs already uploaded in this session to avoid duplicate work
+    uploaded_digests: set[str] = set()
+
+    for entry_idx, entry in enumerate(index.manifests):
+        manifest_bytes = read_blob(layout, entry.digest)
+        manifest_obj = parse_manifest(manifest_bytes.decode("utf-8"))
+        if not isinstance(manifest_obj, ImageManifest):
+            raise LayoutError(
+                f"manifest {entry.digest} is not an OCI Image Manifest",
+                f"got {type(manifest_obj).__name__}",
+            )
+
+        blob_descs = _collect_blob_descriptors(manifest_obj)
+        manifest_report = ManifestPushReport(
+            digest=entry.digest,
+            reference="",
+            media_type=entry.media_type,
+        )
+
+        # -- Upload blobs --
+        for blob_desc in blob_descs:
+            if blob_desc.digest in uploaded_digests:
+                blob_report = BlobPushReport(
+                    digest=blob_desc.digest,
+                    size=blob_desc.size,
+                    media_type=blob_desc.media_type,
+                    action="skipped",
+                )
+                manifest_report.blobs.append(blob_report)
+                result.blobs_skipped += 1
+                if progress_callback:
+                    progress_callback("blob_skip", digest=blob_desc.digest,
+                                      size=blob_desc.size)
+                continue
+
+            # Check existence unless --force
+            exists = False
+            if not force:
+                try:
+                    head_blob(client, repo, blob_desc.digest)
+                    exists = True
+                except BlobError as exc:
+                    if exc.status_code is not None and exc.status_code != 404:
+                        raise
+                    exists = False
+
+            if exists:
+                uploaded_digests.add(blob_desc.digest)
+                blob_report = BlobPushReport(
+                    digest=blob_desc.digest,
+                    size=blob_desc.size,
+                    media_type=blob_desc.media_type,
+                    action="skipped",
+                )
+                manifest_report.blobs.append(blob_report)
+                result.blobs_skipped += 1
+                if progress_callback:
+                    progress_callback("blob_skip", digest=blob_desc.digest,
+                                      size=blob_desc.size)
+                continue
+
+            # Upload
+            if progress_callback:
+                progress_callback("blob_start", digest=blob_desc.digest,
+                                  size=blob_desc.size,
+                                  media_type=blob_desc.media_type)
+
+            if chunked:
+                blob_file_path = _blob_path(layout, blob_desc.digest)
+                with open(blob_file_path, "rb") as blob_fh:
+                    upload_blob_chunked(
+                        client, repo, blob_fh,
+                        blob_desc.digest,
+                        chunk_size=chunk_size,
+                    )
+            else:
+                blob_data = read_blob(layout, blob_desc.digest)
+                upload_blob(client, repo, blob_data, blob_desc.digest)
+
+            uploaded_digests.add(blob_desc.digest)
+            blob_report = BlobPushReport(
+                digest=blob_desc.digest,
+                size=blob_desc.size,
+                media_type=blob_desc.media_type,
+                action="uploaded",
+            )
+            manifest_report.blobs.append(blob_report)
+            result.blobs_uploaded += 1
+            result.bytes_uploaded += blob_desc.size
+            if progress_callback:
+                progress_callback("blob_done", digest=blob_desc.digest,
+                                  size=blob_desc.size)
+
+        # -- Determine reference --
+        if tag_override:
+            reference = tag_override
+        elif entry.annotations and "org.opencontainers.image.ref.name" in entry.annotations:
+            reference = entry.annotations["org.opencontainers.image.ref.name"]
+        else:
+            reference = entry.digest
+
+        manifest_report.reference = reference
+
+        # -- Push manifest --
+        push_manifest(client, repo, reference, manifest_bytes, entry.media_type)
+        manifest_report.status = "pushed"
+        result.manifests.append(manifest_report)
+        result.manifests_pushed += 1
+        if progress_callback:
+            progress_callback("manifest_done", digest=entry.digest,
+                              reference=reference)
+
+    return result

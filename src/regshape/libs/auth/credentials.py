@@ -205,8 +205,13 @@ def _get_cred_helper(
         docker_config_path: Optional[str] = None,
 ) -> Optional[str]:
     """
-    Return the credential helper name configured for *registry* in the Docker
-    config ``credHelpers`` map, or ``None`` if no helper is configured.
+    Return the credential helper name configured for *registry*.
+
+    Resolution order:
+
+    1. Per-registry ``credHelpers`` entry (e.g. ``"cgr.dev": "cgr"``).
+    2. Global ``credsStore`` default (e.g. ``"credsStore": "desktop"``).
+    3. ``None`` — no helper configured.
 
     :param registry: The registry hostname.
     :type registry: str
@@ -218,7 +223,12 @@ def _get_cred_helper(
     config = dockerconfig.load_config(docker_config_path)
     if not config:
         return None
-    return config.get("credHelpers", {}).get(registry)
+    # Per-registry override takes precedence
+    helper = config.get("credHelpers", {}).get(registry)
+    if helper:
+        return helper
+    # Fall back to the global default credential store
+    return config.get("credsStore") or None
 
 
 def _get_auth_from_config(
