@@ -512,7 +512,7 @@ def push_image(
         registry, repo, reference = parse_image_ref(dest)
 
         config = TransportConfig(
-            base_url=f"{'http' if insecure else 'https'}://{registry}",
+            registry=registry,
             insecure=insecure,
         )
         client = RegistryClient(config)
