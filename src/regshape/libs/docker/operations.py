@@ -133,11 +133,11 @@ def _extract_docker_save_tar(image_ref: str, client: docker_sdk.DockerClient) ->
     """
     try:
         image = client.images.get(image_ref)
-    except ImageNotFound as exc:
+    except ImageNotFound:
         raise DockerError(
             f"Image {image_ref!r} not found in local Docker store",
-            str(exc),
-        ) from exc
+            "run 'regshape docker list' to see available images",
+        )
     except APIError as exc:
         raise DockerError(
             f"Docker API error while fetching image {image_ref!r}",
@@ -369,6 +369,20 @@ def export_image(
     :raises LayoutError: On filesystem / layout errors.
     """
     output = Path(output_path)
+
+    # Validate output path before talking to Docker
+    if output.exists():
+        if (output / "oci-layout").exists():
+            raise LayoutError(
+                f"{output} is already an OCI Image Layout",
+                "oci-layout file already exists; use a new directory or remove the existing layout",
+            )
+        if any(output.iterdir()):
+            raise LayoutError(
+                f"Output directory {output} already exists and is not empty",
+                "use a new directory or remove the existing contents",
+            )
+
     client = _get_docker_client()
 
     # Extract docker save tar

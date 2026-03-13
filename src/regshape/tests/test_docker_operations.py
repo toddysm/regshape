@@ -399,6 +399,38 @@ class TestExportImage:
         output = tmp_path / "layout"
         with pytest.raises(DockerError, match="not found in local Docker store"):
             export_image("nonexistent:latest", output)
+    def test_export_fails_if_output_is_existing_layout(self, tmp_path):
+        output = tmp_path / "layout"
+        output.mkdir()
+        (output / "oci-layout").write_text('{"imageLayoutVersion": "1.0.0"}')
+
+        with pytest.raises(LayoutError, match="already an OCI Image Layout"):
+            export_image("testimage:latest", output)
+
+    def test_export_fails_if_output_dir_not_empty(self, tmp_path):
+        output = tmp_path / "layout"
+        output.mkdir()
+        (output / "somefile.txt").write_text("hello")
+
+        with pytest.raises(LayoutError, match="not empty"):
+            export_image("testimage:latest", output)
+    @patch("regshape.libs.docker.operations._get_docker_client")
+    def test_export_fails_if_output_is_existing_layout(self, mock_get_client, tmp_path):
+        output = tmp_path / "layout"
+        output.mkdir()
+        (output / "oci-layout").write_text('{"imageLayoutVersion": "1.0.0"}')
+
+        with pytest.raises(LayoutError, match="already an OCI Image Layout"):
+            export_image("testimage:latest", output)
+
+    @patch("regshape.libs.docker.operations._get_docker_client")
+    def test_export_fails_if_output_dir_not_empty(self, mock_get_client, tmp_path):
+        output = tmp_path / "layout"
+        output.mkdir()
+        (output / "somefile.txt").write_text("hello")
+
+        with pytest.raises(LayoutError, match="not empty"):
+            export_image("testimage:latest", output)
 
     @patch("regshape.libs.docker.operations._get_docker_client")
     def test_export_layers_are_gzip_compressed(self, mock_get_client, tmp_path):
