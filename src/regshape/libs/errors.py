@@ -84,3 +84,10 @@ class LayoutError(RegShapeError):
     Error caused by an invalid or inconsistent OCI Image Layout on disk.
     """
     pass
+
+
+class DockerError(RegShapeError):
+    """
+    Error caused by a Docker daemon interaction failure.
+    """
+    pass
