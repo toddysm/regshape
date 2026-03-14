@@ -61,17 +61,17 @@ def ping(ctx, registry, as_json):
 
     try:
         result = ping_registry(client)
-    except AuthError:
+    except AuthError as exc:
         # A 401/403 during token negotiation means the registry *is*
         # reachable but requires credentials.  Report success with a hint.
         if as_json:
             click.echo(json.dumps({
                 "registry": registry,
                 "reachable": True,
-                "status_code": 401,
                 "api_version": None,
                 "latency_ms": None,
                 "note": "Registry requires authentication",
+                "error": str(exc),
             }, indent=2))
         else:
             click.echo(f"Registry {registry} is reachable")
