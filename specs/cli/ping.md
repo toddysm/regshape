@@ -167,9 +167,7 @@ Failure:
 {
   "registry": "ghcr.io",
   "reachable": false,
-  "status_code": 503,
-  "api_version": null,
-  "latency_ms": 150.7
+  "error": "503 Service Unavailable"
 }
 ```
 
