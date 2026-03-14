@@ -219,7 +219,7 @@ Failure:
 - Successful ping → exit code 0, plain text contains "is reachable"
 - Successful ping with `--json` → exit code 0, valid JSON with expected keys
 - Unreachable registry → exit code 1, error message
-- Auth failure → exit code 1, auth error message
+- Auth failure → exit code 0, message indicates registry is reachable but authentication failed
 - `--registry` option is required → exit code 2 (Click usage error)
 
 ## Dependencies
