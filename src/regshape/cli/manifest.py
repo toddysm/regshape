@@ -15,18 +15,18 @@
 
 import json
 import sys
-from typing import Optional
 
 import click
 import requests
 
+from regshape.cli.formatting import emit_error, emit_json, emit_text, format_key_value
 from regshape.libs.decorators import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import AuthError, ManifestError
 from regshape.libs.manifests import delete_manifest, get_manifest, head_manifest, push_manifest
 from regshape.libs.models.manifest import ImageIndex, ImageManifest, parse_manifest
 from regshape.libs.models.mediatype import ALL_MANIFEST_MEDIA_TYPES, OCI_IMAGE_MANIFEST
-from regshape.libs.refs import format_ref, parse_image_ref
+from regshape.libs.refs import parse_image_ref
 from regshape.libs.transport import RegistryClient, TransportConfig
 
 # ---------------------------------------------------------------------------
@@ -119,8 +119,7 @@ def get(ctx, image_ref, accept, part, output, raw):
     try:
         registry, repo, reference = parse_image_ref(image_ref)
     except ValueError as exc:
-        _error(image_ref, str(exc))
-        sys.exit(1)
+        emit_error(image_ref, str(exc))
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
@@ -132,31 +131,27 @@ def get(ctx, image_ref, accept, part, output, raw):
             accept=accept or _DEFAULT_ACCEPT,
         )
     except (AuthError, ManifestError, requests.exceptions.RequestException) as exc:
-        _error(image_ref, str(exc))
-        sys.exit(1)
+        emit_error(image_ref, str(exc))
 
     if raw:
-        _write(output, body)
+        emit_text(body, output)
         return
 
     # Parse and optionally extract a specific field
     try:
         parsed = parse_manifest(body)
     except ManifestError as exc:
-        _error(image_ref, f"Failed to parse manifest: {exc}")
-        sys.exit(1)
+        emit_error(image_ref, f"Failed to parse manifest: {exc}")
 
     if part:
         exit_code, result = _extract_part(parsed, part)
         if exit_code != 0:
-            _error(image_ref, result)
-            sys.exit(exit_code)
-        _write(output, result)
+            emit_error(image_ref, result, exit_code)
+        emit_text(result, output)
         return
 
     # Full manifest output
-    manifest_dict = json.loads(parsed.to_json())
-    _write(output, json.dumps(manifest_dict, indent=2))
+    emit_json(json.loads(parsed.to_json()), output)
 
 
 # ===========================================================================
@@ -192,8 +187,7 @@ def info(ctx, image_ref, accept):
     try:
         registry, repo, reference = parse_image_ref(image_ref)
     except ValueError as exc:
-        _error(image_ref, str(exc))
-        sys.exit(1)
+        emit_error(image_ref, str(exc))
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
@@ -205,12 +199,13 @@ def info(ctx, image_ref, accept):
             accept=accept or _DEFAULT_ACCEPT,
         )
     except (AuthError, ManifestError, requests.exceptions.RequestException) as exc:
-        _error(image_ref, str(exc))
-        sys.exit(1)
+        emit_error(image_ref, str(exc))
 
-    click.echo(f"Digest:       {digest}")
-    click.echo(f"Media Type:   {media_type}")
-    click.echo(f"Size:         {size}")
+    click.echo(format_key_value([
+        ("Digest", digest),
+        ("Media Type", media_type),
+        ("Size", str(size)),
+    ]))
 
 
 # ===========================================================================
@@ -248,8 +243,7 @@ def descriptor(ctx, image_ref, accept):
     try:
         registry, repo, reference = parse_image_ref(image_ref)
     except ValueError as exc:
-        _error(image_ref, str(exc))
-        sys.exit(1)
+        emit_error(image_ref, str(exc))
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
@@ -261,14 +255,13 @@ def descriptor(ctx, image_ref, accept):
             accept=accept or _DEFAULT_ACCEPT,
         )
     except (AuthError, ManifestError, requests.exceptions.RequestException) as exc:
-        _error(image_ref, str(exc))
-        sys.exit(1)
+        emit_error(image_ref, str(exc))
 
-    click.echo(json.dumps({
+    emit_json({
         "mediaType": media_type,
         "digest": digest,
         "size": size,
-    }, indent=2))
+    })
 
 
 # ===========================================================================
@@ -328,8 +321,7 @@ def put(ctx, image_ref, manifest_file, from_stdin, content_type):
     try:
         registry, repo, reference = parse_image_ref(image_ref)
     except ValueError as exc:
-        _error(image_ref, str(exc))
-        sys.exit(1)
+        emit_error(image_ref, str(exc))
 
     # Read manifest body
     if manifest_file:
@@ -357,8 +349,7 @@ def put(ctx, image_ref, manifest_file, from_stdin, content_type):
             content_type=content_type,
         )
     except (AuthError, ManifestError, requests.exceptions.RequestException) as exc:
-        _error(image_ref, str(exc))
-        sys.exit(1)
+        emit_error(image_ref, str(exc))
 
     click.echo(f"Pushed: {digest}")
 
@@ -391,16 +382,15 @@ def delete(ctx, image_ref):
     try:
         registry, repo, reference = parse_image_ref(image_ref)
     except ValueError as exc:
-        _error(image_ref, str(exc))
-        sys.exit(1)
+        emit_error(image_ref, str(exc))
 
     if not reference.startswith("sha256:") and not reference.startswith("sha512:"):
-        _error(
+        emit_error(
             image_ref,
             "manifest delete requires a digest reference (@sha256:...); "
             "tag references are not supported by the OCI spec for delete operations",
+            exit_code=2,
         )
-        sys.exit(2)
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
@@ -411,8 +401,7 @@ def delete(ctx, image_ref):
             digest=reference,
         )
     except (AuthError, ManifestError, requests.exceptions.RequestException) as exc:
-        _error(image_ref, str(exc))
-        sys.exit(1)
+        emit_error(image_ref, str(exc))
 
     click.echo(f"Deleted: {reference}")
 
@@ -453,21 +442,4 @@ def _extract_part(
     return 1, f"unknown part: {part!r}"
 
 
-def _write(output_path: Optional[str], content: str) -> None:
-    """Write *content* to a file or stdout.
 
-    :param output_path: File path, or ``None`` to write to stdout.
-    :param content: Text to write.
-    """
-    if output_path:
-        with open(output_path, "w", encoding="utf-8") as fh:
-            fh.write(content)
-            if not content.endswith("\n"):
-                fh.write("\n")
-    else:
-        click.echo(content)
-
-
-def _error(reference: str, reason: str) -> None:
-    """Print an error message to stderr, prefixed with the image reference."""
-    click.echo(f"Error [{reference}]: {reason}", err=True)

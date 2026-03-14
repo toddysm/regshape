@@ -12,11 +12,10 @@
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
-import sys
-
 import click
 import requests
 
+from regshape.cli.formatting import emit_error
 from regshape.libs.auth.credentials import erase_credentials, resolve_credentials, store_credentials
 from regshape.libs.decorators import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
@@ -102,11 +101,9 @@ def login(ctx, registry, username, password, password_stdin, docker_config):
     try:
         _verify_credentials(registry, resolved_username, resolved_password, insecure=insecure)
     except AuthError as e:
-        _error(registry, str(e))
-        sys.exit(1)
+        emit_error(registry, str(e))
     except requests.exceptions.RequestException as e:
-        _error(registry, str(e))
-        sys.exit(1)
+        emit_error(registry, str(e))
 
     # --- Persist credentials ------------------------------------------------
     try:
@@ -117,8 +114,7 @@ def login(ctx, registry, username, password, password_stdin, docker_config):
             docker_config_path=docker_config,
         )
     except AuthError as e:
-        _error(registry, f"Could not store credentials: {e}")
-        sys.exit(1)
+        emit_error(registry, f"Could not store credentials: {e}")
 
     # --- Success output ------------------------------------------------------
     click.echo("Login succeeded.")
@@ -144,8 +140,7 @@ def logout(ctx, registry, docker_config):
     try:
         found = erase_credentials(registry, docker_config_path=docker_config)
     except AuthError as e:
-        _error(registry, str(e))
-        sys.exit(1)
+        emit_error(registry, str(e))
 
     if found:
         click.echo(f"Removing login credentials for {registry}.")
@@ -194,6 +189,3 @@ def _verify_credentials(registry: str, username: str, password: str, insecure: b
     )
 
 
-def _error(registry: str, reason: str) -> None:
-    """Print an error message to stderr."""
-    click.echo(f"Error for {registry}: {reason}", err=True)

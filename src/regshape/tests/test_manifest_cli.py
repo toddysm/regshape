@@ -269,9 +269,9 @@ class TestManifestInfo:
                 ["manifest", "info", "-i", f"{REGISTRY}/{REPO}:{TAG}"],
             )
         assert result.exit_code == 0, result.output
-        assert "Digest:" in result.output
+        assert "Digest" in result.output
         assert DIGEST in result.output
-        assert "Media Type:" in result.output
+        assert "Media Type" in result.output
 
     def test_info_404_exits_1(self):
         with patch("regshape.cli.manifest.head_manifest",

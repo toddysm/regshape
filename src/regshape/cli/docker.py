@@ -12,11 +12,9 @@
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
-import json
-import sys
-
 import click
 
+from regshape.cli.formatting import emit_error, emit_json
 from regshape.libs.docker import export_image, list_images, push_image
 from regshape.libs.errors import AuthError, BlobError, DockerError, LayoutError, ManifestError
 
@@ -36,10 +34,6 @@ def _format_size(size_bytes: int) -> str:
         return f"{size_bytes / 1024:.0f}KB"
     return f"{size_bytes}B"
 
-
-def _error(context: str, reason: str) -> None:
-    """Print an error message to stderr."""
-    click.echo(f"Error [{context}]: {reason}", err=True)
 
 
 # ===========================================================================
@@ -72,8 +66,7 @@ def list_cmd(ctx, name_filter, as_json):
     try:
         images = list_images(name_filter=name_filter)
     except DockerError as exc:
-        _error("docker list", str(exc))
-        sys.exit(1)
+        emit_error("docker list", str(exc))
 
     if as_json:
         output = [
@@ -88,7 +81,7 @@ def list_cmd(ctx, name_filter, as_json):
             }
             for img in images
         ]
-        click.echo(json.dumps(output, indent=2))
+        emit_json(output)
     else:
         if not images:
             click.echo("No images found.")
@@ -154,8 +147,7 @@ def export_cmd(ctx, image, output, platform, as_json):
     try:
         export_image(image, output, platform=platform)
     except (DockerError, LayoutError) as exc:
-        _error("docker export", str(exc))
-        sys.exit(1)
+        emit_error("docker export", str(exc))
 
     if as_json:
         result = {
@@ -164,7 +156,7 @@ def export_cmd(ctx, image, output, platform, as_json):
         }
         if platform:
             result["platform"] = platform
-        click.echo(json.dumps(result, indent=2))
+        emit_json(result)
     else:
         msg = f"Exported {image} to OCI layout at {output}"
         if platform:
@@ -232,8 +224,7 @@ def push_cmd(ctx, image, dest, platform, force, chunked, chunk_size, as_json):
             chunk_size=chunk_size,
         )
     except (DockerError, LayoutError, AuthError, BlobError, ManifestError) as exc:
-        _error("docker push", str(exc))
-        sys.exit(1)
+        emit_error("docker push", str(exc))
 
     if as_json:
         output = {
@@ -249,7 +240,7 @@ def push_cmd(ctx, image, dest, platform, force, chunked, chunk_size, as_json):
         }
         if platform:
             output["platform"] = platform
-        click.echo(json.dumps(output, indent=2))
+        emit_json(output)
     else:
         total_manifests = len(result.manifests)
         total_uploaded = sum(
