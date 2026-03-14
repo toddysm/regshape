@@ -177,7 +177,7 @@ Failure:
 
 | Code | Meaning |
 |------|---------|
-| 0 | Registry is reachable (HTTP 200) |
+| 0 | Registry is reachable (HTTP 200 or authentication required, e.g. HTTP 401/403) |
 | 1 | Registry is not reachable or error occurred |
 
 ## Error Messages
