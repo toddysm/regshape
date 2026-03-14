@@ -17,6 +17,7 @@ import click
 from regshape.cli.auth import auth
 from regshape.cli.blob import blob
 from regshape.cli.catalog import catalog
+from regshape.cli.docker import docker
 from regshape.cli.layout import layout
 from regshape.cli.manifest import manifest
 from regshape.cli.referrer import referrer
@@ -68,6 +69,7 @@ def regshape(
 regshape.add_command(auth)
 regshape.add_command(blob)
 regshape.add_command(catalog)
+regshape.add_command(docker)
 regshape.add_command(layout)
 regshape.add_command(manifest)
 regshape.add_command(referrer)
