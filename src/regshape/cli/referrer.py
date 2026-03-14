@@ -136,6 +136,9 @@ def referrer_list(ctx, image_ref, artifact_type, fetch_all, as_json, output):
         emit_json(result.to_dict(), output)
     else:
         if not result.manifests:
+            if output:
+                # Ensure the output file is created even when there are no referrers
+                emit_text("", output)
             return
         rows = [
             [d.digest, d.artifact_type or "", str(d.size)]
