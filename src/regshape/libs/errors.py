@@ -91,3 +91,10 @@ class DockerError(RegShapeError):
     Error caused by a Docker daemon interaction failure.
     """
     pass
+
+
+class PingError(RegShapeError):
+    """
+    Error caused by a failed registry ping (connection, DNS, timeout).
+    """
+    pass

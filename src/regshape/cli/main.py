@@ -20,6 +20,7 @@ from regshape.cli.catalog import catalog
 from regshape.cli.docker import docker
 from regshape.cli.layout import layout
 from regshape.cli.manifest import manifest
+from regshape.cli.ping import ping
 from regshape.cli.referrer import referrer
 from regshape.cli.tag import tag
 
@@ -72,6 +73,7 @@ regshape.add_command(catalog)
 regshape.add_command(docker)
 regshape.add_command(layout)
 regshape.add_command(manifest)
+regshape.add_command(ping)
 regshape.add_command(referrer)
 regshape.add_command(tag)
 
