@@ -221,7 +221,7 @@ def _docker_config_to_oci(config_data: bytes) -> bytes:
         if key in config:
             oci_config[key] = config[key]
 
-    return json.dumps(oci_config, indent=2).encode("utf-8")
+    return json.dumps(oci_config, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
 def _build_oci_manifest(
