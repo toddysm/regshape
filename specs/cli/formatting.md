@@ -77,7 +77,7 @@ Print tabular data with aligned columns.
 
 **Parameters:**
 - `rows` — List of row data, each row a list of string values.
-- `headers` — Optional column headers. When provided, printed first with a separator line.
+- `headers` — Optional column headers. When provided, printed first as a header row.
 
 **Behavior:**
 - Calculates column widths from the maximum length in each column (including headers).
