@@ -4,7 +4,7 @@
 
 import pytest
 import requests
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from regshape.libs.errors import AuthError, PingError
 from regshape.libs.ping.operations import PingResult, ping
