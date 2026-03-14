@@ -126,9 +126,11 @@ class TestEmitTable:
         out = capsys.readouterr().out
         lines = out.strip().split("\n")
         # All values in col2 should start at the same column
-        col2_positions = [line.index("COL2" if i == 0 else line.split()[-1])
-                          for i, line in enumerate(lines)]
-        # Simpler check: all lines have consistent spacing
+        second_col_values = ["COL2", "x", "y"]
+        col2_positions = [
+            line.index(value) for line, value in zip(lines, second_col_values)
+        ]
+        assert len(set(col2_positions)) == 1
         assert len(lines) == 3
 
     def test_empty_rows(self, capsys):
