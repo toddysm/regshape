@@ -145,31 +145,25 @@ def _extract_docker_save_tar(image_ref: str, client: docker_sdk.DockerClient) ->
             str(exc),
         ) from exc
 
-        # Stream the docker save output into a temporary file to avoid
-        # accumulating the entire tar archive in memory via a chunk list.
-        tmp_file = tempfile.SpooledTemporaryFile()
+    try:
         chunks = []
-            tmp_file.write(chunk)
-        tmp_file.seek(0)
+        for chunk in image.save(named=True):
+            chunks.append(chunk)
         tar_bytes = b"".join(chunks)
     except APIError as exc:
         raise DockerError(
             f"Docker API error while saving image {image_ref!r}",
             str(exc),
         ) from exc
+
     tar_buffer = io.BytesIO(tar_bytes)
-        tar = tarfile.open(fileobj=tmp_file, mode="r")
+    try:
         tar = tarfile.open(fileobj=tar_buffer, mode="r")
     except tarfile.TarError as exc:
         raise DockerError(
             f"Failed to read docker save tar for {image_ref!r}",
             str(exc),
         ) from exc
-    # Read the tar bytes from the temporary file to preserve the original
-    # return value while avoiding an extra in-memory copy via BytesIO.
-    tmp_file.seek(0)
-    tar_bytes = tmp_file.read()
-
 
     # Parse manifest.json from the Docker save tar
     try:

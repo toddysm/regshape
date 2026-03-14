@@ -10,6 +10,7 @@ import hashlib
 import io
 import json
 import tarfile
+import tempfile
 
 import pytest
 from unittest.mock import MagicMock, patch
@@ -18,6 +19,7 @@ from regshape.libs.docker.operations import (
     DockerImageInfo,
     export_image,
     list_images,
+    push_image,
     _compress_gzip,
     _docker_config_to_oci,
     _ensure_gzip,
@@ -462,3 +464,112 @@ class TestExportImage:
             layer_bytes = (output / "blobs" / "sha256" / layer_hex).read_bytes()
             # Verify gzip magic bytes
             assert layer_bytes[:2] == b"\x1f\x8b", "Layer should be gzip-compressed"
+
+
+# ---------------------------------------------------------------------------
+# Tests: push_image
+# ---------------------------------------------------------------------------
+
+
+class TestPushImage:
+    @patch("regshape.libs.docker.operations.push_layout")
+    @patch("regshape.libs.docker.operations.export_image")
+    def test_push_calls_export_and_push_layout(self, mock_export, mock_push_layout):
+        mock_push_result = MagicMock()
+        mock_push_layout.return_value = mock_push_result
+
+        result = push_image(
+            "nginx:latest",
+            "registry.io/myrepo/nginx:v1",
+            insecure=False,
+            force=True,
+            chunked=True,
+            chunk_size=131072,
+        )
+
+        # export_image was called with a temp layout path
+        mock_export.assert_called_once()
+        call_args = mock_export.call_args
+        assert call_args[0][0] == "nginx:latest"
+        assert call_args[1]["platform"] is None
+
+        # push_layout was called with correct params
+        mock_push_layout.assert_called_once()
+        push_kwargs = mock_push_layout.call_args[1]
+        assert push_kwargs["repo"] == "myrepo/nginx"
+        assert push_kwargs["tag_override"] == "v1"
+        assert push_kwargs["force"] is True
+        assert push_kwargs["chunked"] is True
+        assert push_kwargs["chunk_size"] == 131072
+
+        assert result is mock_push_result
+
+    @patch("regshape.libs.docker.operations.push_layout")
+    @patch("regshape.libs.docker.operations.export_image")
+    def test_push_passes_platform_to_export(self, mock_export, mock_push_layout):
+        mock_push_layout.return_value = MagicMock()
+
+        push_image(
+            "nginx:latest",
+            "registry.io/myrepo/nginx:v1",
+            platform="linux/arm64",
+        )
+
+        call_kwargs = mock_export.call_args[1]
+        assert call_kwargs["platform"] == "linux/arm64"
+
+    @patch("regshape.libs.docker.operations.push_layout")
+    @patch("regshape.libs.docker.operations.export_image")
+    def test_push_uses_insecure_for_transport_config(self, mock_export, mock_push_layout):
+        mock_push_layout.return_value = MagicMock()
+
+        push_image(
+            "nginx:latest",
+            "registry.io/myrepo/nginx:v1",
+            insecure=True,
+        )
+
+        push_kwargs = mock_push_layout.call_args[1]
+        client = push_kwargs["client"]
+        assert client.config.insecure is True
+
+    @patch("regshape.libs.docker.operations.push_layout")
+    @patch("regshape.libs.docker.operations.export_image")
+    def test_push_cleans_up_temp_dir_on_success(self, mock_export, mock_push_layout, tmp_path):
+        import os
+        mock_push_layout.return_value = MagicMock()
+
+        created_dirs = []
+        original_mkdtemp = tempfile.mkdtemp
+
+        def tracking_mkdtemp(**kwargs):
+            d = original_mkdtemp(**kwargs)
+            created_dirs.append(d)
+            return d
+
+        with patch("regshape.libs.docker.operations.tempfile.mkdtemp", side_effect=tracking_mkdtemp):
+            push_image("nginx:latest", "registry.io/myrepo/nginx:v1")
+
+        assert len(created_dirs) == 1
+        assert not os.path.exists(created_dirs[0])
+
+    @patch("regshape.libs.docker.operations.push_layout")
+    @patch("regshape.libs.docker.operations.export_image")
+    def test_push_cleans_up_temp_dir_on_failure(self, mock_export, mock_push_layout):
+        import os
+        mock_export.side_effect = DockerError("export failed", "test")
+
+        created_dirs = []
+        original_mkdtemp = tempfile.mkdtemp
+
+        def tracking_mkdtemp(**kwargs):
+            d = original_mkdtemp(**kwargs)
+            created_dirs.append(d)
+            return d
+
+        with patch("regshape.libs.docker.operations.tempfile.mkdtemp", side_effect=tracking_mkdtemp):
+            with pytest.raises(DockerError):
+                push_image("nginx:latest", "registry.io/myrepo/nginx:v1")
+
+        assert len(created_dirs) == 1
+        assert not os.path.exists(created_dirs[0])
