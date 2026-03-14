@@ -256,7 +256,12 @@ def _convert_single_image(
     # 1. Read and convert config
     config_path = docker_manifest_entry["Config"]
     raw_config = _read_tar_member(tar, config_path)
-    config_json = json.loads(raw_config)
+    try:
+        config_json = json.loads(raw_config)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise DockerError(
+            f"Failed to parse Docker image config '{config_path}' as JSON"
+        ) from exc
     architecture = config_json.get("architecture", "unknown")
     os_name = config_json.get("os", "unknown")
 
