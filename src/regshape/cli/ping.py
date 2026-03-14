@@ -79,7 +79,8 @@ def ping(ctx, registry, as_json):
                        "Run 'regshape auth login' to configure credentials.")
         return
     except PingError as exc:
-        _error(registry, str(exc), as_json)
+        detail = str(exc.__cause__) if getattr(exc, "__cause__", None) is not None else str(exc)
+        _error(registry, detail, as_json)
         sys.exit(1)
     except requests.exceptions.RequestException as exc:
         _error(registry, str(exc), as_json)
