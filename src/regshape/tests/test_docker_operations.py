@@ -414,8 +414,11 @@ class TestExportImage:
 
         with pytest.raises(LayoutError, match="not empty"):
             export_image("testimage:latest", output)
+
     @patch("regshape.libs.docker.operations._get_docker_client")
-    def test_export_fails_if_output_is_existing_layout(self, mock_get_client, tmp_path):
+    def test_export_fails_if_output_is_existing_layout_with_mocked_client(
+        self, mock_get_client, tmp_path
+    ):
         output = tmp_path / "layout"
         output.mkdir()
         (output / "oci-layout").write_text('{"imageLayoutVersion": "1.0.0"}')
@@ -424,7 +427,9 @@ class TestExportImage:
             export_image("testimage:latest", output)
 
     @patch("regshape.libs.docker.operations._get_docker_client")
-    def test_export_fails_if_output_dir_not_empty(self, mock_get_client, tmp_path):
+    def test_export_fails_if_output_dir_not_empty_with_mocked_client(
+        self, mock_get_client, tmp_path
+    ):
         output = tmp_path / "layout"
         output.mkdir()
         (output / "somefile.txt").write_text("hello")
