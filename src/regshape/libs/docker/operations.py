@@ -125,10 +125,10 @@ def _parse_platform_string(platform_str: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
-def _extract_docker_save_tar(image_ref: str, client: docker_sdk.DockerClient) -> tuple[dict, tarfile.TarFile, bytes]:
+def _extract_docker_save_tar(image_ref: str, client: docker_sdk.DockerClient) -> tuple[list[dict], tarfile.TarFile, bytes]:
     """Save a Docker image and extract its tar contents.
 
-    :returns: Tuple of (parsed manifest.json list, TarFile object, raw tar bytes).
+    :returns: Tuple of (parsed ``manifest.json`` list of dicts, TarFile object, raw tar bytes).
     :raises DockerError: On image-not-found or API errors.
     """
     try:
