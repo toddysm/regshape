@@ -18,6 +18,7 @@ import hashlib
 import io
 import json
 import logging
+import os
 import tarfile
 import tempfile
 from dataclasses import dataclass
@@ -303,7 +304,15 @@ def _write_index_json(layout_path: Path, index: ImageIndex) -> None:
     """Write an OCI Image Index to layout_path/index.json."""
     content = json.dumps(json.loads(index.to_json()), indent=2).encode("utf-8")
     index_file = layout_path / "index.json"
-    index_file.write_bytes(content)
+
+    # Write atomically via a temporary file then replace.
+    with tempfile.NamedTemporaryFile(
+        mode="wb", dir=layout_path, delete=False
+    ) as tmp_file:
+        tmp_file.write(content)
+        tmp_path = Path(tmp_file.name)
+
+    os.replace(tmp_path, index_file)
 
 
 # ===========================================================================
