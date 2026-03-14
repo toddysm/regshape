@@ -113,6 +113,6 @@ def _error(registry: str, detail: str, as_json: bool = False) -> None:
             "registry": registry,
             "reachable": False,
             "error": detail,
-        })
+        }, err=True)
     else:
         click.echo(f"Error: Registry {registry} is not reachable: {detail}", err=True)

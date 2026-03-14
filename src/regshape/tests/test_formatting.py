@@ -42,6 +42,12 @@ class TestEmitJson:
         assert json.loads(content) == {"a": 1}
         assert content.endswith("\n")
 
+    def test_err_goes_to_stderr(self, capsys):
+        emit_json({"error": "fail"}, err=True)
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert json.loads(captured.err) == {"error": "fail"}
+
 
 # ===========================================================================
 # emit_text
@@ -62,6 +68,12 @@ class TestEmitText:
         out_file = str(tmp_path / "out.txt")
         emit_text("hello\n", output_path=out_file)
         assert open(out_file).read() == "hello\n"
+
+    def test_err_goes_to_stderr(self, capsys):
+        emit_text("oops", err=True)
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "oops" in captured.err
 
 
 # ===========================================================================

@@ -19,21 +19,24 @@ from typing import Optional
 import click
 
 
-def emit_json(data: dict | list, output_path: Optional[str] = None) -> None:
+def emit_json(data: dict | list, output_path: Optional[str] = None, err: bool = False) -> None:
     """Format and emit a JSON object with 2-space indentation.
 
     :param data: Serializable dict or list.
     :param output_path: If provided, write to file instead of stdout.
+    :param err: If ``True``, write to stderr instead of stdout.
     """
     content = json.dumps(data, indent=2)
-    emit_text(content, output_path)
+    emit_text(content, output_path, err=err)
 
 
-def emit_text(content: str, output_path: Optional[str] = None) -> None:
+def emit_text(content: str, output_path: Optional[str] = None, err: bool = False) -> None:
     """Emit plain text content to stdout or a file.
 
     :param content: Text string to output.
     :param output_path: If provided, write to file instead of stdout.
+    :param err: If ``True``, write to stderr instead of stdout (ignored
+        when *output_path* is set).
     """
     if output_path:
         with open(output_path, "w", encoding="utf-8") as fh:
@@ -41,7 +44,7 @@ def emit_text(content: str, output_path: Optional[str] = None) -> None:
             if not content.endswith("\n"):
                 fh.write("\n")
     else:
-        click.echo(content)
+        click.echo(content, err=err)
 
 
 def emit_error(reference: str, reason: str, exit_code: int = 1) -> None:
