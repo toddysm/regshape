@@ -410,6 +410,7 @@ def export_image(
 
     manifest_descriptors: list[Descriptor] = []
 
+    available_platforms = []
     for entry in docker_manifests:
         # Read config to get platform info
         config_path = entry["Config"]
@@ -420,6 +421,8 @@ def export_image(
 
         # Apply platform filter
         if platform is not None:
+            # Record available platforms for error reporting if no match is found
+            available_platforms.append(f"{img_os}/{img_arch}")
             if img_os != filter_os or img_arch != filter_arch:
                 continue
 
@@ -440,24 +443,9 @@ def export_image(
 
     if not manifest_descriptors:
         if platform is not None:
-            # Collect available platforms for the error message
-            available = []
-            for entry in docker_manifests:
-                config_path = entry["Config"]
-                # Re-open tar to read configs (tar was closed)
-                tar_buffer = io.BytesIO()
-                # We need the raw tar bytes — re-extract from docker
-                client2 = _get_docker_client()
-                docker_manifests2, tar2, _ = _extract_docker_save_tar(image_ref, client2)
-                for e2 in docker_manifests2:
-                    c = _read_tar_member(tar2, e2["Config"])
-                    cj = json.loads(c)
-                    available.append(f"{cj.get('os', '?')}/{cj.get('architecture', '?')}")
-                tar2.close()
-                break
             raise DockerError(
                 f"Platform {platform!r} not available for image {image_ref!r}",
-                f"Available: {', '.join(available)}",
+                f"Available: {', '.join(available_platforms)}",
             )
         raise DockerError(
             f"No images found to export for {image_ref!r}",
