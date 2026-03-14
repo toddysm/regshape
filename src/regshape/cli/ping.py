@@ -17,7 +17,7 @@ import sys
 import click
 import requests
 
-from regshape.cli.formatting import emit_json, progress_status
+from regshape.cli.formatting import emit_json
 from regshape.libs.decorators import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import AuthError, PingError
