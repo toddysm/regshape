@@ -377,6 +377,11 @@ def export_image(
 ) -> None:
     """Export a Docker image as an OCI Image Layout directory.
 
+        if not output.is_dir():
+            raise LayoutError(
+                f"Output path {output} exists and is not a directory",
+                "use a directory path for the OCI Image Layout or remove/rename the existing file",
+            )
     Layers are always gzip-compressed. Multi-platform images are fully
     supported: when *platform* is ``None`` all variants are exported,
     otherwise only the matching platform is included.
