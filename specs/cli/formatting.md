@@ -121,13 +121,13 @@ Format aligned key-value pairs for display (used by `manifest info`).
 - `pairs` — List of `(key, value)` tuples.
 - `separator` — Character between key and value (default: `":"`).
 
-**Returns:** Formatted multi-line string with right-aligned keys.
+**Returns:** Formatted multi-line string with left-aligned keys and a vertically aligned separator.
 
 **Example:**
 ```
-Digest:       sha256:abc123...
-Media Type:   application/vnd.oci.image.manifest.v1+json
-Size:         1234
+Digest      : sha256:abc123...
+Media Type  : application/vnd.oci.image.manifest.v1+json
+Size        : 1234
 ```
 
 ---
