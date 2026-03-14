@@ -22,6 +22,7 @@ import sys
 
 import click
 
+from regshape.cli.formatting import emit_error, emit_json, progress_status
 from regshape.libs.decorators import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import AuthError, BlobError, LayoutError, ManifestError
@@ -105,9 +106,6 @@ def _media_type_for_compression(compression: str) -> str:
     return OCI_IMAGE_LAYER_TAR_GZIP
 
 
-def _error(context: str, reason: str) -> None:
-    """Print an error message to stderr."""
-    click.echo(f"Error [{context}]: {reason}", err=True)
 
 
 # ===========================================================================
@@ -174,11 +172,10 @@ def init_cmd(ctx, layout_path, as_json):
     try:
         init_layout(layout_path)
     except (LayoutError, OSError) as exc:
-        _error(layout_path, str(exc))
-        sys.exit(1)
+        emit_error(layout_path, str(exc))
 
     if as_json:
-        click.echo(json.dumps({"layout_path": str(layout_path)}, indent=2))
+        emit_json({"layout_path": str(layout_path)})
     else:
         click.echo(f"Initialised OCI Image Layout at {layout_path}")
 
@@ -232,8 +229,7 @@ def add_layer(ctx, layout_path, layer_file, compress_format, media_type, raw_ann
         with open(layer_file, "rb") as fh:
             data = fh.read()
     except OSError as exc:
-        _error(layer_file, str(exc))
-        sys.exit(1)
+        emit_error(layer_file, str(exc))
 
     detected = _detect_compression(data)
 
@@ -259,8 +255,7 @@ def add_layer(ctx, layout_path, layer_file, compress_format, media_type, raw_ann
         annotations = _parse_annotations(raw_annotations) if raw_annotations else None
         descriptor = stage_layer(layout_path, data, media_type, annotations=annotations)
     except (LayoutError, OSError, click.BadParameter) as exc:
-        _error(layout_path, str(exc))
-        sys.exit(1)
+        emit_error(layout_path, str(exc))
 
     if as_json:
         out: dict = {
@@ -270,7 +265,7 @@ def add_layer(ctx, layout_path, layer_file, compress_format, media_type, raw_ann
         }
         if descriptor.annotations:
             out["annotations"] = descriptor.annotations
-        click.echo(json.dumps(out, indent=2))
+        emit_json(out)
     else:
         click.echo(f"Staged layer {descriptor.digest} ({descriptor.size} bytes)")
 
@@ -314,8 +309,7 @@ def annotate_layer(ctx, layout_path, layer_index, raw_annotations, replace, as_j
             layout_path, layer_index, annotations, replace=replace
         )
     except (LayoutError, OSError, click.BadParameter) as exc:
-        _error(layout_path, str(exc))
-        sys.exit(1)
+        emit_error(layout_path, str(exc))
 
     if as_json:
         out: dict = {
@@ -326,7 +320,7 @@ def annotate_layer(ctx, layout_path, layer_index, raw_annotations, replace, as_j
         }
         if descriptor.annotations:
             out["annotations"] = descriptor.annotations
-        click.echo(json.dumps(out, indent=2))
+        emit_json(out)
     else:
         click.echo(f"Updated layer {layer_index}: {descriptor.digest}")
 
@@ -361,14 +355,13 @@ def annotate_manifest_cmd(ctx, layout_path, raw_annotations, replace, as_json):
         annotations = _parse_annotations(raw_annotations)
         descriptor = update_manifest_annotations(layout_path, annotations, replace=replace)
     except (LayoutError, OSError, click.BadParameter) as exc:
-        _error(layout_path, str(exc))
-        sys.exit(1)
+        emit_error(layout_path, str(exc))
 
     if as_json:
         out: dict = {"digest": descriptor.digest, "size": descriptor.size}
         if descriptor.annotations:
             out["annotations"] = descriptor.annotations
-        click.echo(json.dumps(out, indent=2))
+        emit_json(out)
     else:
         click.echo(f"Updated manifest annotations: {descriptor.digest}")
 
@@ -434,8 +427,7 @@ def generate_config_cmd(
             annotations=annotations,
         )
     except (LayoutError, OSError, click.BadParameter) as exc:
-        _error(layout_path, str(exc))
-        sys.exit(1)
+        emit_error(layout_path, str(exc))
 
     if as_json:
         out: dict = {
@@ -445,7 +437,7 @@ def generate_config_cmd(
         }
         if descriptor.annotations:
             out["annotations"] = descriptor.annotations
-        click.echo(json.dumps(out, indent=2))
+        emit_json(out)
     else:
         click.echo(f"Generated config {descriptor.digest} ({descriptor.size} bytes)")
 
@@ -503,8 +495,7 @@ def generate_manifest_cmd(
             annotations=annotations,
         )
     except (LayoutError, OSError, click.BadParameter) as exc:
-        _error(layout_path, str(exc))
-        sys.exit(1)
+        emit_error(layout_path, str(exc))
 
     if as_json:
         out: dict = {
@@ -516,7 +507,7 @@ def generate_manifest_cmd(
             out["ref_name"] = ref_name
         if descriptor.annotations:
             out["annotations"] = descriptor.annotations
-        click.echo(json.dumps(out, indent=2))
+        emit_json(out)
     else:
         ref_str = f" [{ref_name}]" if ref_name else ""
         click.echo(
@@ -578,8 +569,7 @@ def update_config_cmd(
             replace_annotations=replace_annotations,
         )
     except (LayoutError, OSError, click.BadParameter) as exc:
-        _error(layout_path, str(exc))
-        sys.exit(1)
+        emit_error(layout_path, str(exc))
 
     # Warn when a manifest already exists (it will reference the old config digest)
     try:
@@ -595,7 +585,7 @@ def update_config_cmd(
                 "Manifest exists and references the old config digest; "
                 "regenerate or update it."
             )
-        click.echo(json.dumps(out, indent=2))
+        emit_json(out)
     else:
         click.echo(f"Updated config {descriptor.digest} ({descriptor.size} bytes)")
         if manifest_stale:
@@ -626,11 +616,10 @@ def status(ctx, layout_path, as_json):
     try:
         stage = read_stage(layout_path)
     except (LayoutError, OSError) as exc:
-        _error(layout_path, str(exc))
-        sys.exit(1)
+        emit_error(layout_path, str(exc))
 
     if as_json:
-        click.echo(json.dumps(stage, indent=2))
+        emit_json(stage)
     else:
         layers = stage.get("layers", [])
         config = stage.get("config")
@@ -674,10 +663,9 @@ def show(ctx, layout_path):
     try:
         index = read_index(layout_path)
     except (LayoutError, OSError) as exc:
-        _error(layout_path, str(exc))
-        sys.exit(1)
+        emit_error(layout_path, str(exc))
 
-    click.echo(json.dumps(json.loads(index.to_json()), indent=2))
+    emit_json(json.loads(index.to_json()))
 
 
 # ===========================================================================
@@ -707,8 +695,7 @@ def validate(ctx, layout_path):
     try:
         validate_layout(layout_path)
     except (LayoutError, OSError) as exc:
-        _error(layout_path, str(exc))
-        sys.exit(1)
+        emit_error(layout_path, str(exc))
 
     click.echo(f"Layout at {layout_path} is valid.")
 
@@ -794,8 +781,7 @@ def push_cmd(ctx, layout_path, dest, force, chunked, chunk_size, dry_run, as_jso
     try:
         registry, repo, reference = parse_image_ref(dest)
     except ValueError as exc:
-        _error(layout_path, str(exc))
-        sys.exit(1)
+        emit_error(layout_path, str(exc))
 
     tag_override = reference if reference != "latest" or _has_explicit_ref(dest) else None
 
@@ -827,8 +813,7 @@ def push_cmd(ctx, layout_path, dest, force, chunked, chunk_size, dry_run, as_jso
                 # Immediately complete — we don't have per-byte callback from
                 # the library upload, so show as complete once done.
             else:
-                click.echo(f"  Uploading {_short_digest(digest)} ({_format_size(size)})...",
-                           err=True)
+                progress_status(f"  Uploading {_short_digest(digest)} ({_format_size(size)})...")
         elif event == "blob_done":
             if use_progress and current_bar[0] is not None:
                 bar = current_bar[0]
@@ -836,14 +821,12 @@ def push_cmd(ctx, layout_path, dest, force, chunked, chunk_size, dry_run, as_jso
                 bar.__exit__(None, None, None)
                 current_bar[0] = None
             else:
-                click.echo(f"  Uploaded  {_short_digest(digest)}", err=True)
+                progress_status(f"  Uploaded  {_short_digest(digest)}")
         elif event == "blob_skip":
-            click.echo(f"  {_short_digest(digest)} ({_format_size(size)}) exists, skipping",
-                       err=True)
+            progress_status(f"  {_short_digest(digest)} ({_format_size(size)}) exists, skipping")
         elif event == "manifest_done":
             ref = kwargs.get("reference", "")
-            click.echo(f"  Manifest {_short_digest(digest)} -> {ref}  pushed",
-                       err=True)
+            progress_status(f"  Manifest {_short_digest(digest)} -> {ref}  pushed")
 
     # --- Execute push ---
     dest_display = f"{registry}/{repo}"
@@ -851,7 +834,7 @@ def push_cmd(ctx, layout_path, dest, force, chunked, chunk_size, dry_run, as_jso
         dest_display += f":{tag_override}"
 
     if not as_json:
-        click.echo(f"Pushing layout {layout_path} -> {dest_display}\n", err=True)
+        progress_status(f"Pushing layout {layout_path} -> {dest_display}\n")
 
     try:
         result = push_layout(
@@ -865,11 +848,9 @@ def push_cmd(ctx, layout_path, dest, force, chunked, chunk_size, dry_run, as_jso
             progress_callback=progress_callback,
         )
     except LayoutError as exc:
-        _error(layout_path, str(exc))
-        sys.exit(1)
+        emit_error(layout_path, str(exc))
     except (AuthError, BlobError, ManifestError) as exc:
-        _error(dest_display, str(exc))
-        sys.exit(1)
+        emit_error(dest_display, str(exc))
     finally:
         if current_bar[0] is not None:
             current_bar[0].__exit__(None, None, None)
@@ -905,13 +886,12 @@ def push_cmd(ctx, layout_path, dest, force, chunked, chunk_size, dry_run, as_jso
                 "bytes_uploaded": result.bytes_uploaded,
             },
         }
-        click.echo(json.dumps(output, indent=2))
+        emit_json(output)
     else:
-        click.echo(
+        progress_status(
             f"\nPush complete: {result.manifests_pushed} manifest(s), "
             f"{result.blobs_uploaded} blob(s) uploaded, "
-            f"{result.blobs_skipped} blob(s) skipped.",
-            err=True,
+            f"{result.blobs_skipped} blob(s) skipped."
         )
 
 
@@ -924,20 +904,17 @@ def _push_dry_run(layout_path, registry, repo, tag_override, as_json):
         validate_layout(layout_path)
         index = read_index(layout_path)
     except LayoutError as exc:
-        _error(layout_path, str(exc))
-        sys.exit(1)
+        emit_error(layout_path, str(exc))
 
     if not index.manifests:
-        _error(layout_path, "index.json contains no manifests")
-        sys.exit(1)
+        emit_error(layout_path, "index.json contains no manifests")
 
     if tag_override and len(index.manifests) > 1:
-        _error(
+        emit_error(
             layout_path,
             f"tag override supplied but index.json has {len(index.manifests)} manifests; "
             "omit the tag or push a single-manifest layout",
         )
-        sys.exit(1)
 
     from regshape.libs.layout import read_blob as _rb
 
@@ -978,7 +955,7 @@ def _push_dry_run(layout_path, registry, repo, tag_override, as_json):
                 for entry, ref, blobs in results
             ],
         }
-        click.echo(json.dumps(output, indent=2))
+        emit_json(output)
     else:
         click.echo(f"[dry-run] Layout {layout_path} -> {registry}/{repo}\n")
         for entry, ref, blobs in results:

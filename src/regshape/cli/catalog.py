@@ -12,13 +12,10 @@
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
-import json
-import sys
-from typing import Optional
-
 import click
 import requests
 
+from regshape.cli.formatting import emit_error, emit_json, emit_list
 from regshape.libs.catalog import list_catalog, list_catalog_all
 from regshape.libs.decorators import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
@@ -107,8 +104,7 @@ def catalog_list(ctx, registry, page_size, last, fetch_all, as_json, output):
     3=registry does not support the catalog API.
     """
     if fetch_all and last:
-        _error(registry, "--all and --last are mutually exclusive")
-        sys.exit(2)
+        emit_error(registry, "--all and --last are mutually exclusive", exit_code=2)
 
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
@@ -119,37 +115,18 @@ def catalog_list(ctx, registry, page_size, last, fetch_all, as_json, output):
         else:
             result = list_catalog(client, page_size=page_size, last=last)
     except CatalogNotSupportedError as exc:
-        _error(registry, str(exc))
-        sys.exit(3)
+        emit_error(registry, str(exc), exit_code=3)
     except (AuthError, CatalogError, requests.exceptions.RequestException) as exc:
-        _error(registry, str(exc))
-        sys.exit(1)
+        emit_error(registry, str(exc))
 
     if as_json:
-        _write(output, json.dumps(result.to_dict(), indent=2))
+        emit_json(result.to_dict(), output)
     else:
-        _write(output, "\n".join(result.repositories))
+        emit_list(result.repositories, output)
 
 
 # ===========================================================================
 # Internal helpers — output and error
 # ===========================================================================
 
-def _write(output_path: Optional[str], content: str) -> None:
-    """Write *content* to a file or stdout.
 
-    :param output_path: File path, or ``None`` to write to stdout.
-    :param content: Text to write.
-    """
-    if output_path:
-        with open(output_path, "w", encoding="utf-8") as fh:
-            fh.write(content)
-            if not content.endswith("\n"):
-                fh.write("\n")
-    else:
-        click.echo(content)
-
-
-def _error(reference: str, reason: str) -> None:
-    """Print an error message to stderr, prefixed with the reference."""
-    click.echo(f"Error [{reference}]: {reason}", err=True)

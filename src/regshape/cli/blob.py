@@ -12,13 +12,10 @@
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
-import json
-import sys
-from typing import Optional
-
 import click
 import requests
 
+from regshape.cli.formatting import emit_error, emit_json
 from regshape.libs.blobs import (
     delete_blob,
     get_blob,
@@ -80,26 +77,23 @@ def blob_head(ctx, repo, digest):
     try:
         registry, repo_name, _ = parse_image_ref(repo)
     except ValueError as exc:
-        _error(repo, str(exc))
-        sys.exit(1)
+        emit_error(repo, str(exc))
 
     if repo.rstrip("/") != f"{registry}/{repo_name}":
-        _error(
+        emit_error(
             repo,
             "--repo must be a plain 'registry/repository' without tag or digest "
             "(e.g. ':tag' or '@sha256:...')",
         )
-        sys.exit(1)
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
     try:
         info = head_blob(client=client, repo=repo_name, digest=digest)
     except (AuthError, BlobError, requests.exceptions.RequestException) as exc:
-        _error(f"{repo}@{digest}", str(exc))
-        sys.exit(1)
+        emit_error(f"{repo}@{digest}", str(exc))
 
-    click.echo(json.dumps(info.to_dict(), indent=2))
+    emit_json(info.to_dict())
 
 
 # ===========================================================================
@@ -161,15 +155,13 @@ def blob_get(ctx, repo, digest, output, chunk_size):
         # Compare the reconstructed plain form against the raw input: any qualifier
         # (including ":latest") will cause a mismatch.
         if repo.rstrip("/") != f"{registry}/{repo_name}":
-            _error(
+            emit_error(
                 repo,
                 "--repo must be a plain 'registry/repository' without tag or digest "
                 "(e.g. ':tag' or '@sha256:...')",
             )
-            sys.exit(1)
     except ValueError as exc:
-        _error(repo, str(exc))
-        sys.exit(1)
+        emit_error(repo, str(exc))
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
@@ -182,10 +174,9 @@ def blob_get(ctx, repo, digest, output, chunk_size):
             chunk_size=chunk_size,
         )
     except (AuthError, BlobError, requests.exceptions.RequestException) as exc:
-        _error(f"{repo}@{digest}", str(exc))
-        sys.exit(1)
+        emit_error(f"{repo}@{digest}", str(exc))
 
-    click.echo(json.dumps(info.to_dict(), indent=2))
+    emit_json(info.to_dict())
 
 
 # ===========================================================================
@@ -225,23 +216,20 @@ def blob_delete(ctx, repo, digest):
     try:
         registry, repo_name, _ = parse_image_ref(repo)
     except ValueError as exc:
-        _error(repo, str(exc))
-        sys.exit(1)
+        emit_error(repo, str(exc))
 
     if repo.rstrip("/") != f"{registry}/{repo_name}":
-        _error(repo, "--repo must be a plain 'registry/repository' without tag or digest "
+        emit_error(repo, "--repo must be a plain 'registry/repository' without tag or digest "
                "(e.g. ':tag' or '@sha256:...')")
-        sys.exit(1)
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
     try:
         delete_blob(client=client, repo=repo_name, digest=digest)
     except (AuthError, BlobError, requests.exceptions.RequestException) as exc:
-        _error(f"{repo}@{digest}", str(exc))
-        sys.exit(1)
+        emit_error(f"{repo}@{digest}", str(exc))
 
-    click.echo(json.dumps({"digest": digest, "status": "deleted"}, indent=2))
+    emit_json({"digest": digest, "status": "deleted"})
 
 
 # ===========================================================================
@@ -312,12 +300,10 @@ def blob_upload(ctx, repo, source_file, digest, media_type, chunked, chunk_size)
     try:
         registry, repo_name, _ = parse_image_ref(repo)
     except ValueError as exc:
-        _error(repo, str(exc))
-        sys.exit(1)
+        emit_error(repo, str(exc))
 
     if repo.rstrip("/") != f"{registry}/{repo_name}":
-        _error(repo, "Repository must be a plain 'registry/repository' without a tag or digest")
-        sys.exit(1)
+        emit_error(repo, "Repository must be a plain 'registry/repository' without a tag or digest")
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
     try:
@@ -342,11 +328,9 @@ def blob_upload(ctx, repo, source_file, digest, media_type, chunked, chunk_size)
                 content_type=media_type,
             )
     except OSError as exc:
-        _error(source_file, str(exc))
-        sys.exit(1)
+        emit_error(source_file, str(exc))
     except (AuthError, BlobError, requests.exceptions.RequestException) as exc:
-        _error(f"{repo}@{digest}", str(exc))
-        sys.exit(1)
+        emit_error(f"{repo}@{digest}", str(exc))
 
     # Derive a canonical blob location from the confirmed digest.
     location = f"/v2/{repo_name}/blobs/{confirmed}"
@@ -355,11 +339,8 @@ def blob_upload(ctx, repo, source_file, digest, media_type, chunked, chunk_size)
     except OSError:
         size = 0
 
-    click.echo(
-        json.dumps(
-            {"digest": confirmed, "size": size, "location": location},
-            indent=2,
-        )
+    emit_json(
+        {"digest": confirmed, "size": size, "location": location}
     )
 
 
@@ -405,12 +386,10 @@ def blob_mount(ctx, repo, digest, from_repo):
     try:
         registry, repo_name, _ = parse_image_ref(repo)
     except ValueError as exc:
-        _error(repo, str(exc))
-        sys.exit(1)
+        emit_error(repo, str(exc))
 
     if repo.rstrip("/") != f"{registry}/{repo_name}":
-        _error(repo, "repository must be a plain 'registry/repo' without tag or digest")
-        sys.exit(1)
+        emit_error(repo, "repository must be a plain 'registry/repo' without tag or digest")
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
     try:
@@ -421,15 +400,11 @@ def blob_mount(ctx, repo, digest, from_repo):
             from_repo=from_repo,
         )
     except (AuthError, BlobError, requests.exceptions.RequestException) as exc:
-        _error(f"{repo}@{digest}", str(exc))
-        sys.exit(1)
+        emit_error(f"{repo}@{digest}", str(exc))
 
     location = f"/v2/{repo_name}/blobs/{confirmed}"
-    click.echo(
-        json.dumps(
-            {"digest": confirmed, "status": "mounted", "location": location},
-            indent=2,
-        )
+    emit_json(
+        {"digest": confirmed, "status": "mounted", "location": location}
     )
 
 
@@ -437,10 +412,6 @@ def blob_mount(ctx, repo, digest, from_repo):
 # Internal helpers
 # ===========================================================================
 
-
-def _error(reference: str, reason: str) -> None:
-    """Print an error message to stderr, prefixed with the reference."""
-    click.echo(f"Error [{reference}]: {reason}", err=True)
 
 
 def _file_size(path: str) -> int:

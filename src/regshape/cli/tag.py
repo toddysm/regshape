@@ -12,13 +12,10 @@
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
-import json
-import sys
-from typing import Optional
-
 import click
 import requests
 
+from regshape.cli.formatting import emit_error, emit_json, emit_list, emit_text
 from regshape.libs.decorators import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import AuthError, TagError
@@ -104,8 +101,7 @@ def tag_list(ctx, image_ref, page_size, last, as_json, output):
     try:
         registry, repo, _ = parse_image_ref(image_ref)
     except ValueError as exc:
-        _error(image_ref, str(exc))
-        sys.exit(1)
+        emit_error(image_ref, str(exc))
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
@@ -117,13 +113,12 @@ def tag_list(ctx, image_ref, page_size, last, as_json, output):
             last=last,
         )
     except (AuthError, TagError, requests.exceptions.RequestException) as exc:
-        _error(image_ref, str(exc))
-        sys.exit(1)
+        emit_error(image_ref, str(exc))
 
     if as_json:
-        _write(output, json.dumps(tag_list.to_dict(), indent=2))
+        emit_json(tag_list.to_dict(), output)
     else:
-        _write(output, "\n".join(tag_list.tags))
+        emit_list(tag_list.tags, output)
 
 
 # ===========================================================================
@@ -159,16 +154,15 @@ def delete(ctx, image_ref):
     try:
         registry, repo, reference = parse_image_ref(image_ref)
     except ValueError as exc:
-        _error(image_ref, str(exc))
-        sys.exit(1)
+        emit_error(image_ref, str(exc))
 
     if reference.startswith("sha256:") or reference.startswith("sha512:"):
-        _error(
+        emit_error(
             image_ref,
             "tag delete requires a tag reference; "
             "use 'manifest delete' for digest references",
+            exit_code=2,
         )
-        sys.exit(2)
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
@@ -179,8 +173,7 @@ def delete(ctx, image_ref):
             tag=reference,
         )
     except (AuthError, TagError, requests.exceptions.RequestException) as exc:
-        _error(image_ref, str(exc))
-        sys.exit(1)
+        emit_error(image_ref, str(exc))
 
     click.echo(f"Deleted tag: {format_ref(registry, repo, reference)}")
 
@@ -189,21 +182,4 @@ def delete(ctx, image_ref):
 # Internal helpers — output and error
 # ===========================================================================
 
-def _write(output_path: Optional[str], content: str) -> None:
-    """Write *content* to a file or stdout.
 
-    :param output_path: File path, or ``None`` to write to stdout.
-    :param content: Text to write.
-    """
-    if output_path:
-        with open(output_path, "w", encoding="utf-8") as fh:
-            fh.write(content)
-            if not content.endswith("\n"):
-                fh.write("\n")
-    else:
-        click.echo(content)
-
-
-def _error(reference: str, reason: str) -> None:
-    """Print an error message to stderr, prefixed with the reference."""
-    click.echo(f"Error [{reference}]: {reason}", err=True)

@@ -12,13 +12,10 @@
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
-import json
-import sys
-from typing import Optional
-
 import click
 import requests
 
+from regshape.cli.formatting import emit_error, emit_json, emit_table, emit_text
 from regshape.libs.decorators import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import AuthError, ReferrerError
@@ -103,18 +100,17 @@ def referrer_list(ctx, image_ref, artifact_type, fetch_all, as_json, output):
     try:
         registry, repo, reference = parse_image_ref(image_ref)
     except ValueError as exc:
-        _error(image_ref, str(exc))
-        sys.exit(1)
+        emit_error(image_ref, str(exc))
 
     # The referrers API requires a digest reference.
     if not reference.startswith("sha256:") and not reference.startswith("sha512:"):
-        _error(
+        emit_error(
             image_ref,
             "referrer list requires a digest reference "
             "(registry/repo@sha256:...); "
             "use 'manifest get' to resolve a tag to a digest",
+            exit_code=2,
         )
-        sys.exit(2)
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
@@ -134,38 +130,30 @@ def referrer_list(ctx, image_ref, artifact_type, fetch_all, as_json, output):
                 artifact_type=artifact_type,
             )
     except (AuthError, ReferrerError, requests.exceptions.RequestException) as exc:
-        _error(image_ref, str(exc))
-        sys.exit(1)
+        emit_error(image_ref, str(exc))
 
     if as_json:
-        _write(output, json.dumps(result.to_dict(), indent=2))
+        emit_json(result.to_dict(), output)
     else:
-        lines = [
-            f"{d.digest} {d.artifact_type or ''} {d.size}"
+        if not result.manifests:
+            if output:
+                # Ensure the output file is created even when there are no referrers
+                emit_text("", output)
+            return
+        rows = [
+            [d.digest, d.artifact_type or "", str(d.size)]
             for d in result.manifests
         ]
-        _write(output, "\n".join(lines))
+        if output:
+            # For file output, use space-separated columns
+            lines = [f"{r[0]} {r[1]} {r[2]}" for r in rows]
+            emit_text("\n".join(lines), output)
+        else:
+            emit_table(rows, headers=["DIGEST", "ARTIFACT TYPE", "SIZE"])
 
 
 # ===========================================================================
 # Internal helpers — output and error
 # ===========================================================================
 
-def _write(output_path: Optional[str], content: str) -> None:
-    """Write *content* to a file or stdout.
 
-    :param output_path: File path, or ``None`` to write to stdout.
-    :param content: Text to write.
-    """
-    if output_path:
-        with open(output_path, "w", encoding="utf-8") as fh:
-            fh.write(content)
-            if not content.endswith("\n"):
-                fh.write("\n")
-    else:
-        click.echo(content)
-
-
-def _error(reference: str, reason: str) -> None:
-    """Print an error message to stderr, prefixed with the reference."""
-    click.echo(f"Error [{reference}]: {reason}", err=True)
