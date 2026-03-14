@@ -86,7 +86,18 @@ def ping(ctx, registry, as_json):
         _error(registry, str(exc), as_json)
         sys.exit(1)
 
-    if not result.reachable:
+        if as_json:
+            output = {
+                "registry": registry,
+                "reachable": False,
+                "status_code": result.status_code,
+                "api_version": result.api_version,
+                "latency_ms": result.latency_ms,
+                "error": f"HTTP {result.status_code}",
+            }
+            click.echo(json.dumps(output, indent=2), err=True)
+        else:
+            _error(registry, f"HTTP {result.status_code}", as_json)
         _error(registry, f"HTTP {result.status_code}", as_json)
         sys.exit(1)
 
