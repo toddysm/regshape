@@ -7,6 +7,13 @@
   <img src="./docs/media/regshape-logo.png" alt="RegShape" width="256">
 </p>
 
+<p align="center">
+  <sub>
+    Icon by <a href="https://www.instagram.com/graffitonic/">@graffitonic</a> on Instagram.
+    Previous icon available <a href="./docs/media/regshape-logo-old.png">here</a>.
+  </sub>
+</p>
+
 RegShape (from **REG**istry re**SHAPE**) is a CLI tool and a Python library for
 manipulating artifacts in an [OCI](https://opencontainers.org) registry. While
 there are many other tools that can do this (see
