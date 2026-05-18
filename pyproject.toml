@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "regshape"
-version = "0.1.0"
+version = "0.1.1"
 description = "CLI tool and Python library for manipulating artifacts in OCI registries"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -25,7 +25,13 @@ classifiers = [
 ]
 dependencies = [
     "click>=8.1.0",
+    "docker>=7.1.0",
     "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.3",
 ]
 
 [project.urls]
