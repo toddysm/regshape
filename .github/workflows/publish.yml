@@ -1,4 +1,4 @@
-name: Publish to PyPI
+name: Publish to PyPI and Homebrew
 
 on:
   release:
@@ -51,3 +51,51 @@ jobs:
           path: dist/
 
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  homebrew:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout regshape
+        uses: actions/checkout@v4
+
+      - name: Checkout Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: toddysm/homebrew-regshape
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Bump formula to released version
+        id: bump
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          python .github/scripts/bump_formula.py tap/Formula/regshape.rb "$VERSION"
+
+      - name: Open pull request in tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          cd tap
+          if git diff --quiet; then
+            echo "Formula already up to date; nothing to do."
+            exit 0
+          fi
+          BRANCH="bump-regshape-${VERSION}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git commit -am "regshape ${VERSION}"
+          git push -u origin "$BRANCH" --force
+          gh pr create \
+            --repo toddysm/homebrew-regshape \
+            --base main \
+            --head "$BRANCH" \
+            --title "regshape ${VERSION}" \
+            --body "Automated formula bump for regshape ${VERSION}, triggered by the release workflow in toddysm/regshape."
