@@ -1,4 +1,4 @@
-# Installing RegShape with Homebrew
+# Guide: Install RegShape with Homebrew
 
 RegShape is distributed through a [Homebrew](https://brew.sh) tap so you can
 install and update the CLI with a single command on macOS and Linux.
@@ -51,7 +51,7 @@ brew untap toddysm/regshape
 
 ## Troubleshooting
 
-- **`Error: No available formula`** — run `brew update` and ensure the tap is
-  present with `brew tap`.
+- **`Error: No available formula`** — run `brew update`, and ensure the tap is
+  installed with `brew tap toddysm/regshape`.
 - **Stale version after a release** — the formula bump PR in the tap may not be
   merged yet; check the [tap pull requests](https://github.com/toddysm/homebrew-regshape/pulls).
