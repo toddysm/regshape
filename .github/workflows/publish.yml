@@ -1,4 +1,4 @@
-name: Publish to PyPI and Homebrew
+name: Publish to PyPI and bump Homebrew formula
 
 on:
   release:
@@ -94,9 +94,14 @@ jobs:
           BRANCH="bump-regshape-${VERSION}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git switch -c "$BRANCH"
+          git switch -C "$BRANCH"
           git commit -am "regshape ${VERSION}"
-          git push -u origin "$BRANCH" --force
+          git push -u origin "$BRANCH" --force-with-lease
+          if gh pr view "$BRANCH" --repo toddysm/homebrew-regshape --json state \
+               --jq '.state' 2>/dev/null | grep -qx OPEN; then
+            echo "An open PR already exists for ${BRANCH}; the force-push updated it."
+            exit 0
+          fi
           gh pr create \
             --repo toddysm/homebrew-regshape \
             --base main \
