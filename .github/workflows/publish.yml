@@ -75,10 +75,11 @@ jobs:
 
       - name: Bump formula to released version
         id: bump
+        working-directory: tap
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          python .github/scripts/bump_formula.py tap/Formula/regshape.rb "$VERSION"
+          python "${GITHUB_WORKSPACE}/.github/scripts/bump_formula.py" "$VERSION"
 
       - name: Open pull request in tap
         env:

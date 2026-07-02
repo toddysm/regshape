@@ -6,36 +6,22 @@ rewrites the top-level ``url``/``sha256`` fields of the formula (the package
 source, not the dependency ``resource`` blocks).
 
 Usage:
-    python bump_formula.py <formula_path> <version>
+    python bump_formula.py <version>
+
+The formula is always read from and written to a fixed, constant path relative to
+the current working directory, so no caller-supplied data is ever used to build a
+filesystem path. Run this script from the tap checkout root.
 """
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 import time
 import urllib.request
 
-EXPECTED_FORMULA_NAME = "regshape.rb"
-
-
-def resolve_formula_path(raw: str) -> str:
-    """Validate a caller-supplied formula path.
-
-    Guards against path-traversal by requiring the resolved path to stay within
-    the current working directory and to carry the expected formula filename.
-    """
-    base = os.path.realpath(os.getcwd())
-    resolved = os.path.realpath(raw)
-    if resolved != base and not resolved.startswith(base + os.sep):
-        raise ValueError(f"Formula path escapes the working directory: {raw!r}")
-    if os.path.basename(resolved) != EXPECTED_FORMULA_NAME:
-        raise ValueError(
-            f"Unexpected formula filename {os.path.basename(resolved)!r}; "
-            f"expected {EXPECTED_FORMULA_NAME!r}"
-        )
-    return resolved
+# Constant path (relative to CWD); never derived from user input.
+FORMULA_PATH = "Formula/regshape.rb"
 
 
 def fetch_sdist(version: str) -> tuple[str, str]:
@@ -55,23 +41,24 @@ def fetch_sdist(version: str) -> tuple[str, str]:
     raise RuntimeError(f"regshape {version} not available on PyPI: {last_err}")
 
 
-def bump(formula_path: str, version: str) -> None:
-    path = resolve_formula_path(formula_path)
+def bump(version: str) -> None:
     sdist_url, sha256 = fetch_sdist(version)
-    text = open(path, encoding="utf-8").read()
+    with open(FORMULA_PATH, encoding="utf-8") as fh:
+        text = fh.read()
     # Only the top-level fields are indented with exactly two spaces; resource
     # blocks use four spaces, so anchored two-space matches target the package.
     text, n_url = re.subn(r'^  url ".*"$', f'  url "{sdist_url}"', text, count=1, flags=re.M)
     text, n_sha = re.subn(r'^  sha256 ".*"$', f'  sha256 "{sha256}"', text, count=1, flags=re.M)
     if n_url != 1 or n_sha != 1:
         raise RuntimeError("Failed to locate top-level url/sha256 in formula")
-    open(path, "w", encoding="utf-8").write(text)
-    print(f"Bumped {path} to regshape {version}")
+    with open(FORMULA_PATH, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    print(f"Bumped {FORMULA_PATH} to regshape {version}")
     print(f"  url    {sdist_url}")
     print(f"  sha256 {sha256}")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        sys.exit("usage: bump_formula.py <formula_path> <version>")
-    bump(sys.argv[1], sys.argv[2])
+    if len(sys.argv) != 2:
+        sys.exit("usage: bump_formula.py <version>")
+    bump(sys.argv[1])
