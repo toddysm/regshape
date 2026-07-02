@@ -1,7 +1,7 @@
 # RegShape
 
 ![GitHub issues](https://img.shields.io/github/issues-raw/toddysm/regshape?link=https%3A%2F%2Fgithub.com%2Ftoddysm%2Fregshape%2Fissues)
- ![GitHub pull requests](https://img.shields.io/github/issues-pr-raw/toddysm/regshape?link=https%3A%2F%2Fgithub.com%2Ftoddysm%2Fregshape%2Fpulls)
+![GitHub pull requests](https://img.shields.io/github/issues-pr-raw/toddysm/regshape?link=https%3A%2F%2Fgithub.com%2Ftoddysm%2Fregshape%2Fpulls)
 
 <p align="center">
   <img src="./docs/media/regshape-logo.png" alt="RegShape" width="256">
@@ -26,9 +26,9 @@ an intention to break the consistency of the artifacts.
 You can use RegShape in two modes:
 
 - **Standard mode** — interact with registries as you would with any other tool:
-  pull and push manifests, blobs, tags, and more.
+   pull and push manifests, blobs, tags, and more.
 - **Expert / break mode** — manually craft requests to test registry
-  implementations and probe their security boundaries.
+   implementations and probe their security boundaries.
 
 RegShape is written in Python and offers Python libraries that can be leveraged
 to build your own tools. The CLI is built on top of the libraries and uses the
@@ -39,6 +39,13 @@ to build your own tools. The CLI is built on top of the libraries and uses the
 ## Installation
 
 ```bash
+# Homebrew (macOS / Linux) — recommended
+brew install toddysm/regshape/regshape
+
+# pip (from PyPI)
+pip install regshape
+
+# From source
 git clone https://github.com/toddysm/regshape.git
 cd regshape
 pip install -e .
