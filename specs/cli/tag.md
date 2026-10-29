@@ -82,6 +82,10 @@ List one page of tags, or opt into automatic traversal of all remaining pages.
 6. If `--output` is given, write to that file instead of stdout. All-pages
    results are emitted only after the entire traversal succeeds; a later-page
    failure does not print a successful partial list or overwrite an output file.
+   Repeated tags, including partial overlap between pages, fail with exit code 1
+   rather than producing duplicates or silently deduplicating the response.
+   If concurrent repository changes cause overlap, retry once the listing is
+   stable.
 
 Pagination follows [OCI Distribution Specification v1.1.1, Listing
 Tags](https://github.com/opencontainers/distribution-spec/blob/v1.1.1/spec.md#listing-tags).

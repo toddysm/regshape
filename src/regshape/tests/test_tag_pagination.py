@@ -3,7 +3,9 @@
 """OCI tag-pagination regressions across library, CLI, and transport boundaries."""
 
 import json
+import logging
 import traceback
+from collections.abc import Iterable
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
@@ -12,6 +14,8 @@ import requests
 from click.testing import CliRunner
 
 from regshape.cli.main import regshape
+from regshape.libs.decorators import configure_telemetry, get_telemetry_config
+from regshape.libs.decorators.call_details import http_request
 from regshape.libs.errors import AuthError, TagError
 from regshape.libs.models.tags import TagList
 from regshape.libs.tags import list_tags, list_tags_all
@@ -45,7 +49,7 @@ def _page(
 
 
 def _client(
-    pages: list[requests.Response | Exception], *, insecure: bool = False
+    pages: Iterable[requests.Response | Exception], *, insecure: bool = False
 ) -> MagicMock:
     """Provide deterministic pages without credential lookup or network access."""
     client = MagicMock(spec=RegistryClient)
@@ -60,6 +64,18 @@ def _redirect(location: str | None, status: int = 302) -> requests.Response:
     response = _page([], status=status)
     if location is not None:
         response.headers["Location"] = location
+    return response
+
+
+def _malformed_redirect_adapter(
+    request: requests.PreparedRequest, **_kwargs: object
+) -> requests.Response:
+    """Return a wire-style redirect while exercising real Requests parsing."""
+    location = f"https://user:synthetic-secret@{REGISTRY}\uff0fignored/tags"
+    response = _redirect(location.encode("utf-8").decode("latin-1"))
+    assert request.url is not None
+    response.url = request.url
+    response.request = request
     return response
 
 
@@ -146,6 +162,131 @@ class TestTagRedirectSafety:
         exchange.assert_not_called()
         assert http.call_count == 2
         assert all(entry.kwargs.get("allow_redirects", True) is False for entry in http.call_args_list)
+
+    @pytest.mark.parametrize("middleware", [False, True])
+    @pytest.mark.parametrize("insecure", [False, True])
+    def test_auth_probe_follows_validated_same_origin_redirect(
+        self, middleware: bool, insecure: bool
+    ) -> None:
+        """Find a challenge behind a safe redirect without re-enabling auto-follow."""
+        challenge = _page([], status=401)
+        challenge.headers["WWW-Authenticate"] = 'Basic realm="registry"'
+        pages = [_page([], status=401), _redirect("challenge"), challenge, _page(["a"])]
+        with (
+            patch("regshape.libs.decorators.call_details.requests.request", side_effect=pages) as http,
+            patch("regshape.libs.auth.registryauth.authenticate", return_value="test-token") as exchange,
+        ):
+            client = RegistryClient(TransportConfig(
+                registry=REGISTRY, username="user", password="test-password",
+                enable_middleware=middleware, insecure=insecure,
+            ))
+            assert list_tags_all(client, REPO, page_size=2).tags == ["a"]
+        scheme = "http" if insecure else "https"
+        assert [entry.args[1] for entry in http.call_args_list] == [
+            f"{scheme}://{REGISTRY}{PATH}?n=2",
+            f"{scheme}://{REGISTRY}/v2/",
+            f"{scheme}://{REGISTRY}/v2/challenge",
+            f"{scheme}://{REGISTRY}{PATH}?n=2",
+        ]
+        assert all(entry.kwargs.get("allow_redirects", True) is False for entry in http.call_args_list)
+        exchange.assert_called_once()
+
+    @pytest.mark.parametrize("middleware", [False, True])
+    @pytest.mark.parametrize("target", [
+        "https://other.example/challenge",
+        f"http://{REGISTRY}/challenge",
+        f"https://user:synthetic-secret@{REGISTRY}\uff0fignored",
+    ])
+    def test_auth_probe_validates_every_redirect(self, middleware: bool, target: str) -> None:
+        """A safe first hop must not authorize an unsafe subsequent challenge."""
+        pages = [_page([], status=401), _redirect("challenge"), _redirect(target)]
+        with (
+            patch("regshape.libs.decorators.call_details.requests.request", side_effect=pages) as http,
+            patch("regshape.libs.auth.registryauth.authenticate") as exchange,
+        ):
+            client = RegistryClient(TransportConfig(
+                registry=REGISTRY, username="user", password="test-password",
+                enable_middleware=middleware,
+            ))
+            with pytest.raises(AuthError) as error:
+                list_tags_all(client, REPO)
+        assert "synthetic-secret" not in str(error.value)
+        assert http.call_count == 3
+        exchange.assert_not_called()
+
+    @pytest.mark.parametrize("middleware", [False, True])
+    @pytest.mark.parametrize("cycle", [False, True])
+    def test_auth_probe_redirects_are_bounded(self, middleware: bool, cycle: bool) -> None:
+        """Bound both repeated probe URLs and distinct redirect chains before exchange."""
+        redirects = (
+            [_redirect("challenge"), _redirect("/v2/")]
+            if cycle else [_redirect(f"?hop={index}") for index in range(1, 33)]
+        )
+        with (
+            patch("regshape.libs.decorators.call_details.requests.request",
+                  side_effect=[_page([], status=401), *redirects]) as http,
+            patch("regshape.libs.auth.registryauth.authenticate") as exchange,
+        ):
+            client = RegistryClient(TransportConfig(
+                registry=REGISTRY, username="user", password="test-password",
+                enable_middleware=middleware,
+            ))
+            with pytest.raises(AuthError, match="redirect"):
+                list_tags_all(client, REPO)
+        assert http.call_count == (3 if cycle else 32)
+        exchange.assert_not_called()
+
+    @pytest.mark.parametrize("middleware", [False, True])
+    def test_adapter_redirect_parse_errors_are_sanitized_before_logging(
+        self, middleware: bool, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Exercise Requests Response.next parsing rather than mocking requests.request."""
+        with (
+            patch("requests.adapters.HTTPAdapter.send", side_effect=_malformed_redirect_adapter) as send,
+            patch("regshape.libs.auth.registryauth.authenticate") as exchange,
+            caplog.at_level(logging.ERROR, logger="regshape.transport"),
+        ):
+            client = RegistryClient(TransportConfig(
+                registry=REGISTRY, username="user", password="test-password",
+                enable_middleware=middleware, enable_logging=True,
+            ))
+            with pytest.raises(requests.exceptions.RequestException) as error:
+                list_tags_all(client, REPO)
+        rendered = "".join(traceback.format_exception(
+            type(error.value), error.value, error.value.__traceback__,
+        ))
+        assert "synthetic-secret" not in str(error.value)
+        assert "synthetic-secret" not in rendered
+        assert "synthetic-secret" not in caplog.text
+        assert error.value.__suppress_context__
+        assert send.call_count == 1
+        exchange.assert_not_called()
+
+    def test_cli_handles_adapter_redirect_parse_errors(self, tmp_path: Path) -> None:
+        """Emit a safe CLI error and telemetry log for pre-return parser failures."""
+        log_file = tmp_path / "trace.log"
+        previous = get_telemetry_config()
+        try:
+            with (
+                patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
+                patch("requests.adapters.HTTPAdapter.send", side_effect=_malformed_redirect_adapter),
+            ):
+                result = CliRunner().invoke(regshape, [
+                    "--log-file", str(log_file), "tag", "list",
+                    "-i", f"{REGISTRY}/{REPO}", "--all", "--debug-calls",
+                ])
+        finally:
+            configure_telemetry(previous)
+        assert result.exit_code == 1
+        assert "Error [" in result.stderr
+        assert "synthetic-secret" not in result.stderr
+        assert "synthetic-secret" not in log_file.read_text()
+
+    def test_default_request_parser_errors_remain_unchanged(self) -> None:
+        """Keep default redirect-enabled callers outside the new sanitization policy."""
+        with patch("requests.request", side_effect=ValueError("unchanged")):
+            with pytest.raises(ValueError, match="unchanged"):
+                http_request(BASE)
 
     @pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
     def test_same_origin_redirects_are_validated_and_followed(self, status: int) -> None:
@@ -473,6 +614,19 @@ class TestListTagsAll:
             list_tags_all(client, REPO, page_size=2)
         assert client.get.call_count == 2
 
+    @pytest.mark.parametrize("pages", [
+        [_page(["a", "a"])],
+        [_page(["a", "b"], link='<?n=3&last=b>; rel="next"'), _page(["b", "c"])],
+    ])
+    def test_repeated_tags_are_not_returned_as_a_successful_list(
+        self, pages: list[requests.Response]
+    ) -> None:
+        """Reject within-page duplicates and partial page overlap without deduplicating."""
+        client = _client(pages)
+        with pytest.raises(TagError, match="repeated a tag"):
+            list_tags_all(client, REPO, page_size=3)
+        assert client.get.call_count == len(pages)
+
     def test_cursor_does_not_repeat_the_initial_cursor(self) -> None:
         """Reject a full page that would continue with an already used last value."""
         client = _client([_page(["new", "old"])])
@@ -707,6 +861,24 @@ class TestTagPaginationCLI:
         assert result.exit_code == 1
         assert result.stdout == ""
         assert "Registry error" in result.stderr
+        assert output.read_text() == "unchanged\n"
+
+    def test_overlapping_pages_preserve_existing_output(self, tmp_path: Path) -> None:
+        """Do not write a duplicated or partially deduplicated all-pages result."""
+        output = tmp_path / "tags.json"
+        output.write_text("unchanged\n")
+        client = _client([
+            _page(["a", "b"], link='<?n=3&last=b>; rel="next"'),
+            _page(["b", "c"]),
+        ])
+        with patch("regshape.cli.tag.RegistryClient", return_value=client):
+            result = CliRunner().invoke(regshape, [
+                "tag", "list", "-i", f"{REGISTRY}/{REPO}", "--all",
+                "--n", "3", "--json", "--output", str(output),
+            ])
+        assert result.exit_code == 1
+        assert "repeated a tag" in result.stderr
+        assert result.stdout == ""
         assert output.read_text() == "unchanged\n"
 
     def test_help_explains_all_pages_and_default(self) -> None:

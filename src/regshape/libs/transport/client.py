@@ -169,6 +169,7 @@ class RegistryClient:
                 username=self._username,
                 password=self._password,
                 registry=self.config.registry,
+                base_url=self.base_url,
             )
         )
         
@@ -245,15 +246,19 @@ class RegistryClient:
         if not www_auth:
             # Some registries (e.g. ACR) only return WWW-Authenticate on
             # the /v2/ endpoint.  Fall back to a /v2/ probe.
-            v2_url = f"{self.base_url}/v2/"
-            probe_options = (
-                {} if kwargs.get("allow_redirects", True) else {"allow_redirects": False}
-            )
-            v2_resp = http_request(
-                v2_url, "GET", headers={}, timeout=timeout, **probe_options,
-            )
-            if v2_resp.status_code == 401:
-                www_auth = v2_resp.headers.get("WWW-Authenticate", "")
+            if kwargs.get("allow_redirects", True):
+                v2_url = f"{self.base_url}/v2/"
+                v2_resp = http_request(v2_url, "GET", headers={}, timeout=timeout)
+                if v2_resp.status_code == 401:
+                    www_auth = v2_resp.headers.get("WWW-Authenticate", "")
+            else:
+                original_request = RegistryRequest(
+                    method=method, url=url, headers=req_headers,
+                    timeout=timeout, allow_redirects=False,
+                )
+                www_auth = AuthMiddleware._probe_v2_challenge(
+                    self._terminal_handler, original_request, self.base_url,
+                )
             if not www_auth:
                 raise AuthError(
                     "Authentication failed",

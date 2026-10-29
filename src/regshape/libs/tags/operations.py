@@ -36,10 +36,13 @@ from regshape.libs.models.error import OciErrorResponse
 from regshape.libs.models.tags import TagList
 from regshape.libs.refs import format_ref
 from regshape.libs.transport import RegistryClient
+from regshape.libs.transport.urls import (
+    MAX_REDIRECTS,
+    REDIRECT_STATUSES,
+    resolve_registry_url,
+)
 
 _DEFAULT_PAGE_SIZE = 100
-_MAX_PAGE_REDIRECTS = 30
-_REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 _LINK_TARGET_RE = re.compile(r"\s*<([^<>]*)>")
 _LINK_PARAMETER_RE = re.compile(
     r'''\s*;\s*([!#$%&'*+.^_`|~0-9A-Za-z-]+)(?:\s*=\s*("(?:[^"\\]|\\.)*"|[^;,\s"]+))?'''
@@ -150,8 +153,8 @@ def list_tags_all(
         response_key = _tag_page_key(response_url)
         if response_key != key and response_key in seen_pages:
             raise TagError(f"Tag pagination revisited a page for {client.config.registry}/{repo}")
-        if response.status_code in _REDIRECT_STATUSES:
-            if redirects >= _MAX_PAGE_REDIRECTS:
+        if response.status_code in REDIRECT_STATUSES:
+            if redirects >= MAX_REDIRECTS:
                 raise TagError("Tag pagination redirect limit exceeded")
             location = response.headers.get("Location")
             if not location:
@@ -169,10 +172,13 @@ def list_tags_all(
             raise TagError("Tag pagination returned a different repository namespace")
         if any(not isinstance(tag, str) or not tag for tag in page.tags):
             raise TagError("Tag pagination returned an invalid tag value")
-        if page.tags and all(tag in seen_tags for tag in page.tags):
+        page_tags = set(page.tags)
+        if page.tags and page_tags <= seen_tags:
             raise TagError(f"Tag pagination made no progress for {client.config.registry}/{repo}")
+        if len(page_tags) != len(page.tags) or page_tags & seen_tags:
+            raise TagError(f"Tag pagination repeated a tag for {client.config.registry}/{repo}")
         tags.extend(page.tags)
-        seen_tags.update(page.tags)
+        seen_tags.update(page_tags)
 
         next_link = _next_tag_link(response.headers.get("Link", ""))
         if next_link is not None:
@@ -242,19 +248,6 @@ def _parse_tag_page(
     return page
 
 
-def _tag_url_origin(url: str) -> tuple[str, str, int]:
-    """Return a normalized HTTP origin; reject userinfo, bad ports, and schemes."""
-    parts = urlsplit(url)
-    if parts.scheme not in ("http", "https") or not parts.hostname:
-        raise ValueError("Pagination requires an HTTP or HTTPS URL with a hostname")
-    if parts.username is not None or parts.password is not None:
-        raise ValueError("Pagination URLs must not contain credentials")
-    port = parts.port
-    if port is None:
-        port = 443 if parts.scheme == "https" else 80
-    return parts.scheme, parts.hostname.encode("idna").decode("ascii").lower(), port
-
-
 def _safe_tag_page_url(base_url: str, target: str, context_url: str) -> str:
     """Resolve a continuation against its response URL and enforce same origin.
 
@@ -265,83 +258,12 @@ def _safe_tag_page_url(base_url: str, target: str, context_url: str) -> str:
     diagnostics, or the original exception chain.
     """
     try:
-        if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in target):
-            raise ValueError("Pagination URLs must not contain whitespace or control characters")
-        if "\\" in target:
-            raise ValueError("Pagination URLs must not contain backslashes")
-        resolved = _resolve_tag_reference(context_url, target)
-        if _tag_url_origin(resolved) != _tag_url_origin(base_url):
-            raise ValueError("Pagination must remain on the configured registry origin")
-        parts = urlsplit(resolved)
-        return urlunsplit(parts._replace(path=parts.path or "/"))
+        return resolve_registry_url(base_url, target, context_url)
     except ValueError:
         raise TagError(
             "Unsafe or invalid tag pagination URL",
             "URLs must be valid, credential-free, and on the configured registry origin",
         ) from None
-
-
-def _resolve_tag_reference(context_url: str, target: str) -> str:
-    """Resolve an RFC 3986 reference without collapsing empty path segments.
-
-    Unlike ``urljoin()``, preserve empty segments in both base and reference
-    paths and distinguish an absent query from an explicitly empty query.
-    Remove fragments because they are not part of an HTTP request target.
-    """
-    base = urlsplit(context_url)
-    reference = urlsplit(target)
-    if reference.scheme:
-        resolved = reference._replace(path=_remove_tag_dot_segments(reference.path))
-    elif reference.netloc or target.startswith("//"):
-        resolved = reference._replace(
-            scheme=base.scheme,
-            path=_remove_tag_dot_segments(reference.path),
-        )
-    else:
-        if not reference.path:
-            path = base.path
-            query = reference.query if "?" in target.split("#", 1)[0] else base.query
-        else:
-            path = reference.path
-            if not path.startswith("/"):
-                path = base.path.rpartition("/")[0] + "/" + path
-            path = _remove_tag_dot_segments(path)
-            query = reference.query
-        resolved = reference._replace(
-            scheme=base.scheme, netloc=base.netloc, path=path, query=query,
-        )
-    return urlunsplit(resolved._replace(fragment=""))
-
-
-def _remove_tag_dot_segments(path: str) -> str:
-    """Apply RFC 3986 section 5.2.4 to a path, retaining ordinary empty segments."""
-    output = ""
-    while path:
-        if path.startswith("../"):
-            path = path[3:]
-        elif path.startswith("./"):
-            path = path[2:]
-        elif path.startswith("/./"):
-            path = path[2:]
-        elif path == "/.":
-            path = "/"
-        elif path.startswith("/../"):
-            path = path[3:]
-            output = output.rpartition("/")[0]
-        elif path == "/..":
-            path = "/"
-            output = output.rpartition("/")[0]
-        elif path in (".", ".."):
-            path = ""
-        else:
-            boundary = path.find("/", 1 if path.startswith("/") else 0)
-            if boundary == -1:
-                output += path
-                path = ""
-            else:
-                output += path[:boundary]
-                path = path[boundary:]
-    return output
 
 
 def _tag_page_parameters(

@@ -133,9 +133,15 @@ while all-pages mode rejects it as a client input policy.
   explicit opt-out. Track redirect hops separately from completed tag pages,
   allowing a same-origin redirect to canonicalize query ordering without being
   mistaken for a repeated page.
+- If challenge discovery at `/v2/` redirects, both transport modes validate
+  and follow same-origin probe redirects explicitly before accepting a
+  challenge. Probe chains have the same cycle checks and 30-hop bound; unsafe
+  targets fail before any credential exchange.
 - Sanitize URL-parser failures and suppress their raw exception context:
   malformed URI authorities may contain credentials even when parsing fails
-  before the userinfo check.
+  before the userinfo check. Requests may prepare `Response.next` even when
+  automatic redirects are disabled, so the shared request wrapper converts
+  pre-return parsing failures into sanitized transport errors before logging.
 - Remove fragments for request/cycle identity. Detect repeated URLs/cursors and
   nonempty pages containing no new tags; raise `TagError` rather than looping.
   Empty pages with distinct valid continuation links may still be followed.
@@ -144,9 +150,13 @@ while all-pages mode rejects it as a client input policy.
 - Reject malformed or ambiguous pagination headers/parameters, conflicting next
   links, and anchored next links whose alternate context is not supported.
 - Reject invalid tag values and pages belonging to another repository.
+- Reject repeated tags within a page or across partially overlapping pages.
+  This is an all-pages consistency policy, not silent deduplication.
 
 There is no snapshot guarantee if tags change while listing. Aggregation does
-not re-sort, lower-case, or silently deduplicate returned tags.
+not re-sort, lower-case, or silently deduplicate returned tags. Concurrent
+changes that cause overlapping pages fail explicitly; retry against a stable
+repository rather than treating a duplicated list as a complete result.
 
 **Returns:** `TagList`
 
@@ -192,9 +202,11 @@ is routed through the manifests endpoint.
 
 The single-page and all-pages operations share `_parse_tag_page()` for
 response parsing/error handling. `_next_tag_link()`, `_tag_page_parameters()`,
-`_tag_page_key()`, `_safe_tag_page_url()`, and `_tag_url_origin()` implement the
-tag-specific continuation and same-origin rules above. `_resolve_tag_reference()`
-and `_remove_tag_dot_segments()` preserve URI path semantics during resolution.
+`_tag_page_key()`, and `_safe_tag_page_url()` implement the tag-specific
+continuation rules above. The shared
+[`resolve_registry_url()`](../../src/regshape/libs/transport/urls.py) utility
+preserves URI semantics and enforces the same origin policy for pagination
+and authentication probes.
 Requests are dispatched as registry-relative paths so both middleware and legacy
 transport modes work.
 

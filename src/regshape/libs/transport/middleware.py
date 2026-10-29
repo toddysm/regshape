@@ -20,6 +20,7 @@ from typing import Protocol, Callable
 from regshape.libs.auth import registryauth
 from regshape.libs.errors import AuthError
 from regshape.libs.transport.models import RegistryRequest, RegistryResponse
+from regshape.libs.transport.urls import MAX_REDIRECTS, REDIRECT_STATUSES, resolve_registry_url
 
 
 class Middleware(Protocol):
@@ -349,6 +350,8 @@ class AuthMiddleware(BaseMiddleware):
     :param username: Username for authentication, or ``None``.
     :param password: Password for authentication, or ``None``.
     :param registry: Registry hostname, used only in error messages.
+    :param base_url: Configured registry origin for validating probe redirects.
+        When omitted, an absolute original request URL can supply the origin.
     """
 
     def __init__(
@@ -356,10 +359,13 @@ class AuthMiddleware(BaseMiddleware):
         username: Optional[str] = None,
         password: Optional[str] = None,
         registry: str = "<unknown>",
-    ):
+        base_url: Optional[str] = None,
+    ) -> None:
+        """Configure credentials and the origin used for challenge discovery."""
         self._username = username
         self._password = password
         self._registry = registry
+        self._base_url = base_url
 
     # -- Override __call__ to get access to next_handler for the retry ------
 
@@ -385,7 +391,9 @@ class AuthMiddleware(BaseMiddleware):
             # Some registries (e.g. ACR) only return WWW-Authenticate on
             # the /v2/ endpoint.  Fall back to a /v2/ probe to obtain the
             # challenge, then retry the original request.
-            www_auth = self._probe_v2_challenge(next_handler, processed_request)
+            www_auth = self._probe_v2_challenge(
+                next_handler, processed_request, self._base_url,
+            )
             if not www_auth:
                 raise AuthError(
                     "Authentication failed",
@@ -433,6 +441,7 @@ class AuthMiddleware(BaseMiddleware):
     def _probe_v2_challenge(
         next_handler: Callable[[RegistryRequest], RegistryResponse],
         original_request: RegistryRequest,
+        base_url: Optional[str] = None,
     ) -> str:
         """Issue ``GET /v2/`` to obtain a ``WWW-Authenticate`` challenge.
 
@@ -440,10 +449,13 @@ class AuthMiddleware(BaseMiddleware):
         base endpoint rather than on every 401 response.  This helper
         sends a lightweight probe so that the caller can still negotiate
         authentication. The probe inherits the original redirect policy so
-        an unvalidated redirect cannot introduce a foreign challenge.
+        an unvalidated redirect cannot introduce a foreign challenge. When
+        automatic redirects are disabled, follow only validated same-origin
+        targets, with cycle detection and a 30-hop limit.
 
         :returns: The ``WWW-Authenticate`` header value, or an empty
             string if the probe also lacks one.
+        :raises AuthError: For unsafe, malformed, or non-terminating probe redirects.
         """
         probe = RegistryRequest(
             method="GET",
@@ -452,10 +464,48 @@ class AuthMiddleware(BaseMiddleware):
             timeout=original_request.timeout,
             allow_redirects=original_request.allow_redirects,
         )
-        probe_response = next_handler(probe)
-        if probe_response.status_code == 401:
-            return _get_header_ci(probe_response.headers, "WWW-Authenticate")
-        return ""
+        if original_request.allow_redirects:
+            probe_response = next_handler(probe)
+            if probe_response.status_code == 401:
+                return _get_header_ci(probe_response.headers, "WWW-Authenticate")
+            return ""
+
+        origin = base_url or original_request.url
+        try:
+            current_url = resolve_registry_url(origin, "/v2/", origin)
+        except ValueError:
+            raise AuthError("Cannot safely resolve the authentication probe origin") from None
+        visited: set[str] = set()
+        redirects = 0
+        while True:
+            if current_url in visited:
+                raise AuthError("Authentication probe redirect cycle detected")
+            visited.add(current_url)
+            probe_response = next_handler(probe)
+            try:
+                response_url = resolve_registry_url(
+                    origin, probe_response.raw_response.url or current_url, current_url,
+                )
+            except ValueError:
+                raise AuthError("Unsafe authentication probe response origin") from None
+            if probe_response.status_code not in REDIRECT_STATUSES:
+                if probe_response.status_code == 401:
+                    return _get_header_ci(probe_response.headers, "WWW-Authenticate")
+                return ""
+            if redirects >= MAX_REDIRECTS:
+                raise AuthError("Authentication probe redirect limit exceeded")
+            location = _get_header_ci(probe_response.headers, "Location")
+            if not location:
+                raise AuthError("Authentication probe redirect is missing Location")
+            try:
+                current_url = resolve_registry_url(origin, location, response_url)
+            except ValueError:
+                raise AuthError("Unsafe authentication probe redirect") from None
+            probe = RegistryRequest(
+                method="GET", url=current_url, headers={},
+                timeout=original_request.timeout, allow_redirects=False,
+            )
+            redirects += 1
 
 
 class LoggingMiddleware(BaseMiddleware):
