@@ -145,6 +145,31 @@ class TestListTagsAll:
             call(f"{PATH}?n=2&cursor=next&last=c", params=None),
         ]
 
+    def test_cursor_fallback_preserves_raw_opaque_fields(self) -> None:
+        """Do not decode binary cursors, normalize escapes, or rewrite opaque flags."""
+        query = "n=%32&cursor=%FF&opaque=%2f%20%3d&flag&dup=one&dup=two"
+        client = _client([
+            _page(["a"], link=f'<?{query}&last=a>; rel="next"'),
+            _page(["b", "c"]),
+            _page(["d"]),
+        ])
+        assert list_tags_all(client, REPO, page_size=2).tags == ["a", "b", "c", "d"]
+        assert client.get.call_args == call(f"{PATH}?{query}&last=c", params=None)
+
+    def test_distinct_binary_cursors_are_not_the_same_page(self) -> None:
+        """Opaque byte sequences must not collapse into one replacement character."""
+        client = _client([
+            _page([], link='<?n=2&cursor=%FF>; rel="next"'),
+            _page([], link='<?n=2&cursor=%FE>; rel="next"'),
+            _page(["a"]),
+        ])
+        assert list_tags_all(client, REPO, page_size=2).tags == ["a"]
+        assert client.get.call_args_list == [
+            call(f"{PATH}?n=2", params=None),
+            call(f"{PATH}?n=2&cursor=%FF", params=None),
+            call(f"{PATH}?n=2&cursor=%FE", params=None),
+        ]
+
     def test_link_may_omit_n_when_using_last(self) -> None:
         """Without a requested limit or next link, the linked response is complete."""
         client = _client([
@@ -166,7 +191,7 @@ class TestListTagsAll:
 
     @pytest.mark.parametrize("query", [
         "n=0", "n=-1", "n=oops", "n=1_0", "n=+2", "n=2.0",
-        "n=1&n=2", "last=a&last=b", "last=",
+        "n=1&n=2", "last=a&last=b", "last=", "n=%FF", "last=%FF",
     ])
     def test_bad_linked_parameters_fail_before_following(self, query: str) -> None:
         """Never fetch a linked page whose pagination state is invalid or ambiguous."""

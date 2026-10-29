@@ -100,8 +100,9 @@ The helper and its default size are RegShape conveniences, not OCI requirements.
    values and path.
 4. If there is no next link and the current request has a positive `n`, continue
    a full-sized page using its last tag as the next exclusive cursor. Preserve
-   other query parameters. Stop on a short/empty unlinked page; exact multiples
-   may need a final empty request.
+   other query fields byte-for-byte, including opaque percent-encoded values
+   and bare flags; replace only `last`. Stop on a short/empty unlinked page;
+   exact multiples may need a final empty request.
 5. Use the effective `n` of each request, not the initial size. A linked request
    may change `n` or omit it: with no `n` and no next link, its response is the
    remaining unbounded list.
@@ -123,6 +124,8 @@ while all-pages mode rejects it as a client input policy.
 - Remove fragments for request/cycle identity. Detect repeated URLs/cursors and
   nonempty pages containing no new tags; raise `TagError` rather than looping.
   Empty pages with distinct valid continuation links may still be followed.
+  Normalize only known pagination parameters in page identity; opaque values
+  such as `%FF` and `%FE` must remain distinct.
 - Reject malformed or ambiguous pagination headers/parameters, conflicting next
   links, and anchored next links whose alternate context is not supported.
 - Reject invalid tag values and pages belonging to another repository.
@@ -174,7 +177,7 @@ is routed through the manifests endpoint.
 
 The single-page and all-pages operations share `_fetch_tag_page()` for
 request/parsing/error handling. `_next_tag_link()`, `_tag_page_parameters()`,
-`_safe_tag_page_url()`, and `_tag_url_origin()` implement the tag-specific
+`_tag_page_key()`, `_safe_tag_page_url()`, and `_tag_url_origin()` implement the tag-specific
 continuation and same-origin rules above. Requests are dispatched as
 registry-relative paths so both middleware and legacy transport modes work.
 

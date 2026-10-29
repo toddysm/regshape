@@ -19,7 +19,15 @@ concerns — error reporting is the caller's responsibility.
 
 import re
 from typing import Optional
-from urllib.parse import parse_qsl, urldefrag, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import (
+    unquote_plus,
+    unquote_to_bytes,
+    urldefrag,
+    urlencode,
+    urljoin,
+    urlsplit,
+    urlunsplit,
+)
 
 import requests
 
@@ -117,13 +125,12 @@ def list_tags_all(
     )
     tags: list[str] = []
     seen_tags: set[str] = set()
-    seen_pages: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
+    seen_pages: set[tuple[str, Optional[int], Optional[str], tuple[str, ...]]] = set()
     used_cursors: set[str] = set()
 
     while True:
-        query, _, _ = _tag_page_parameters(url)
         parts = urlsplit(url)
-        key = (parts.path, tuple(query))
+        key = _tag_page_key(url)
         if key in seen_pages:
             raise TagError(f"Tag pagination repeated a page for {client.config.registry}/{repo}")
         seen_pages.add(key)
@@ -134,7 +141,7 @@ def list_tags_all(
         response_url = _safe_tag_page_url(client.base_url, response.url or url, url)
         query, effective_size, cursor = _tag_page_parameters(response_url)
         response_parts = urlsplit(response_url)
-        response_key = (response_parts.path, tuple(query))
+        response_key = _tag_page_key(response_url)
         if response_key != key and response_key in seen_pages:
             raise TagError(f"Tag pagination revisited a page for {client.config.registry}/{repo}")
         seen_pages.add(response_key)
@@ -160,9 +167,9 @@ def list_tags_all(
         next_cursor = page.tags[-1]
         if next_cursor in used_cursors:
             raise TagError(f"Tag pagination repeated a cursor for {client.config.registry}/{repo}")
-        query = [(name, value) for name, value in query if name != "last"]
-        query.append(("last", next_cursor))
-        url = urlunsplit(response_parts._replace(query=urlencode(query)))
+        fields = [field for name, field in query if name != b"last"]
+        fields.append(urlencode({"last": next_cursor}))
+        url = urlunsplit(response_parts._replace(query="&".join(fields)))
 
 
 @track_time
@@ -257,16 +264,31 @@ def _safe_tag_page_url(base_url: str, target: str, context_url: str) -> str:
 
 def _tag_page_parameters(
     url: str,
-) -> tuple[list[tuple[str, str]], Optional[int], Optional[str]]:
-    """Read the effective page size/cursor while retaining other query values.
+) -> tuple[list[tuple[bytes, str]], Optional[int], Optional[str]]:
+    """Return raw query fields, the effective page size, and the tag cursor.
 
-    A link may omit ``n`` or change it. Reject ambiguous duplicate pagination
-    parameters and non-positive linked sizes rather than guessing or silently
-    truncating an all-pages result.
+    Decode field names as bytes only to identify ``n`` and ``last``; leave
+    opaque values and their encoding untouched. Decode pagination values
+    strictly, rejecting invalid encodings, duplicate parameters, and
+    non-positive sizes rather than corrupting or truncating a traversal.
     """
-    query = parse_qsl(urlsplit(url).query, keep_blank_values=True)
-    sizes = [value for name, value in query if name == "n"]
-    cursors = [value for name, value in query if name == "last"]
+    raw_query = urlsplit(url).query
+    fields = raw_query.split("&") if raw_query else []
+    query = [
+        (unquote_to_bytes(field.partition("=")[0].replace("+", " ")), field)
+        for field in fields
+    ]
+    try:
+        sizes = [
+            unquote_plus(field.partition("=")[2], errors="strict")
+            for name, field in query if name == b"n"
+        ]
+        cursors = [
+            unquote_plus(field.partition("=")[2], errors="strict")
+            for name, field in query if name == b"last"
+        ]
+    except UnicodeError as exc:
+        raise TagError("Invalid tag pagination parameter encoding") from exc
     if len(sizes) > 1 or len(cursors) > 1:
         raise TagError("Ambiguous tag pagination parameters")
     size = None
@@ -282,6 +304,20 @@ def _tag_page_parameters(
     if cursors and not cursors[0]:
         raise TagError("Tag pagination cursor must be a non-empty tag")
     return query, size, cursors[0] if cursors else None
+
+
+def _tag_page_key(
+    url: str,
+) -> tuple[str, Optional[int], Optional[str], tuple[str, ...]]:
+    """Identify a page without conflating distinct opaque continuation bytes.
+
+    Normalize only the understood pagination parameters. Opaque fields retain
+    their original order and encoding, including repeated keys and bare flags.
+    Invalid pagination parameters propagate as :class:`TagError`.
+    """
+    query, size, cursor = _tag_page_parameters(url)
+    opaque_fields = tuple(field for name, field in query if name not in (b"n", b"last"))
+    return urlsplit(url).path, size, cursor, opaque_fields
 
 
 def _next_tag_link(header: str) -> Optional[str]:
