@@ -3,13 +3,13 @@
 """
 Tests for :mod:`regshape.libs.catalog.operations`.
 
-Exercises the domain functions directly (without the CLI layer). The
-:class:`~regshape.libs.transport.RegistryClient` and HTTP responses are
-replaced with lightweight mocks so no network I/O is performed.
+Exercises the domain functions with lightweight client mocks. Contract tests
+also use the real :class:`~regshape.libs.transport.RegistryClient` with mocked
+HTTP responses. No network I/O is performed.
 """
 
 import json
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -21,7 +21,7 @@ from regshape.libs.catalog.operations import (
 )
 from regshape.libs.errors import AuthError, CatalogError, CatalogNotSupportedError
 from regshape.libs.models.catalog import RepositoryCatalog
-
+from regshape.libs.transport import RegistryClient, TransportConfig
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -30,10 +30,30 @@ from regshape.libs.models.catalog import RepositoryCatalog
 REGISTRY = "acr.example.io"
 
 
-def _make_client(registry: str = REGISTRY) -> MagicMock:
-    """Return a minimal mock RegistryClient."""
+def _make_client(
+    registry: str = REGISTRY,
+    *,
+    responses: list[MagicMock] | None = None,
+) -> MagicMock:
+    """Build a mock whose configured response sequence mirrors client metadata.
+
+    A real RegistryClient updates ``last_response`` before returning from
+    ``get``. Pagination fixtures must do the same so the operation can read
+    the continuation headers from the page it just fetched.
+    """
     client = MagicMock()
     client.config.registry = registry
+    client.last_response = None
+    if responses is not None:
+        pages = iter(responses)
+
+        def get(*_args: object, **_kwargs: object) -> MagicMock:
+            """Return the next queued response and publish its pagination metadata."""
+            response = next(pages)
+            client.last_response = response
+            return response
+
+        client.get.side_effect = get
     return client
 
 
@@ -43,7 +63,7 @@ def _make_response(
     link: str | None = None,
     body: str | None = None,
 ) -> MagicMock:
-    """Return a mock HTTP response for a catalog endpoint."""
+    """Return catalog response text, bytes, and headers for mock or real clients."""
     response = MagicMock()
     response.status_code = status_code
     if body is not None:
@@ -52,6 +72,7 @@ def _make_response(
         response.text = json.dumps({"repositories": repositories})
     else:
         response.text = json.dumps({"repositories": []})
+    response.content = response.text.encode("utf-8")
     headers = {}
     if link is not None:
         headers["Link"] = link
@@ -188,51 +209,52 @@ class TestListCatalogErrors:
 # ===========================================================================
 
 class TestListCatalogAll:
+    """Verify traversal with faithful mocks and the real client metadata contract."""
 
-    def test_single_page_no_link_header(self):
+    def test_single_page_no_link_header(self) -> None:
+        """Stop after a page whose actual response has no continuation link."""
         repos = ["library/ubuntu", "myrepo/myimage"]
-        client = _make_client()
-        client.get.return_value = _make_response(repos)
+        client = _make_client(responses=[_make_response(repos)])
 
         result = list_catalog_all(client)
 
         assert result.repositories == repos
         assert client.get.call_count == 1
 
-    def test_two_pages_merged(self):
+    def test_two_pages_merged(self) -> None:
+        """Merge both pages after the client publishes the first continuation."""
         page1_repos = ["a/one", "a/two"]
         page2_repos = ["b/three", "b/four"]
-        client = _make_client()
-        client.get.side_effect = [
+        client = _make_client(responses=[
             _make_response(page1_repos, link=_next_link("a/two")),
             _make_response(page2_repos),
-        ]
+        ])
 
         result = list_catalog_all(client)
 
         assert result.repositories == page1_repos + page2_repos
         assert client.get.call_count == 2
 
-    def test_three_pages_merged(self):
+    def test_three_pages_merged(self) -> None:
+        """Follow successive continuation headers until the final page."""
         pages = [["a/one"], ["b/two"], ["c/three"]]
-        client = _make_client()
-        client.get.side_effect = [
+        client = _make_client(responses=[
             _make_response(pages[0], link=_next_link("a/one")),
             _make_response(pages[1], link=_next_link("b/two")),
             _make_response(pages[2]),
-        ]
+        ])
 
         result = list_catalog_all(client)
 
         assert result.repositories == ["a/one", "b/two", "c/three"]
         assert client.get.call_count == 3
 
-    def test_second_request_uses_cursor_from_link(self):
-        client = _make_client()
-        client.get.side_effect = [
+    def test_second_request_uses_cursor_from_link(self) -> None:
+        """Keep the configured page size and send the cursor from the prior response."""
+        client = _make_client(responses=[
             _make_response(["a/one"], link=_next_link("a/one", n=1)),
             _make_response(["b/two"]),
-        ]
+        ])
 
         list_catalog_all(client, page_size=1)
 
@@ -240,46 +262,81 @@ class TestListCatalogAll:
         assert calls[0] == call("/v2/_catalog", params={"n": 1})
         assert calls[1] == call("/v2/_catalog", params={"n": 1, "last": "a/one"})
 
-    def test_no_page_size_omits_n_param(self):
-        client = _make_client()
-        client.get.return_value = _make_response(["a/one"])
+    def test_no_page_size_omits_n_param(self) -> None:
+        """Omit n when the caller leaves the page size unspecified."""
+        client = _make_client(responses=[_make_response(["a/one"])])
 
         list_catalog_all(client)
 
         client.get.assert_called_once_with("/v2/_catalog", params=None)
 
-    def test_returns_repository_catalog_instance(self):
-        client = _make_client()
-        client.get.return_value = _make_response(["a/b"])
+    def test_returns_repository_catalog_instance(self) -> None:
+        """Return the public catalog model after traversal."""
+        client = _make_client(responses=[_make_response(["a/b"])])
 
         result = list_catalog_all(client)
 
         assert isinstance(result, RepositoryCatalog)
 
-    def test_empty_registry_returns_empty_catalog(self):
-        client = _make_client()
-        client.get.return_value = _make_response([])
+    def test_empty_registry_returns_empty_catalog(self) -> None:
+        """Treat an empty final page as a successful empty catalog."""
+        client = _make_client(responses=[_make_response([])])
 
         result = list_catalog_all(client)
 
         assert result.repositories == []
 
-    def test_404_propagates_as_catalog_not_supported(self):
-        client = _make_client()
-        client.get.return_value = _make_response(status_code=404)
+    def test_404_propagates_as_catalog_not_supported(self) -> None:
+        """Preserve the unsupported-catalog error rather than returning an empty list."""
+        client = _make_client(responses=[_make_response(status_code=404)])
 
         with pytest.raises(CatalogNotSupportedError):
             list_catalog_all(client)
 
-    def test_error_on_second_page_propagates(self):
-        client = _make_client()
-        client.get.side_effect = [
+    def test_error_on_second_page_propagates(self) -> None:
+        """Reach the second page and propagate its registry error."""
+        client = _make_client(responses=[
             _make_response(["a/one"], link=_next_link("a/one")),
             _make_response(status_code=500),
-        ]
+        ])
 
         with pytest.raises(CatalogError, match="Registry error"):
             list_catalog_all(client)
+        assert client.get.call_count == 2
+
+    @pytest.mark.parametrize("enable_middleware", [False, True])
+    @pytest.mark.parametrize("second_status", [200, 500])
+    def test_real_client_response_metadata_drives_pagination(
+        self, enable_middleware: bool, second_status: int
+    ) -> None:
+        """Verify the mock contract against both real transports, without network I/O."""
+        responses = [
+            _make_response(["a/one"], link=_next_link("a/one", n=1)),
+            _make_response(["b/two"], status_code=second_status),
+        ]
+        with (
+            patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
+            patch("regshape.libs.transport.client.http_request", side_effect=responses) as http,
+        ):
+            client = RegistryClient(TransportConfig(
+                registry=REGISTRY, enable_middleware=enable_middleware,
+            ))
+            if second_status == 500:
+                with pytest.raises(CatalogError, match="Registry error"):
+                    list_catalog_all(client, page_size=1)
+            else:
+                result = list_catalog_all(client, page_size=1)
+                assert result.repositories == ["a/one", "b/two"]
+
+        assert client.last_response is responses[1]
+        assert http.call_count == 2
+        urls = [
+            entry.kwargs["url"] if "url" in entry.kwargs else entry.args[0]
+            for entry in http.call_args_list
+        ]
+        assert urls == [f"https://{REGISTRY}/v2/_catalog"] * 2
+        assert http.call_args_list[0].kwargs["params"] == {"n": 1}
+        assert http.call_args_list[1].kwargs["params"] == {"n": 1, "last": "a/one"}
 
 
 # ===========================================================================
