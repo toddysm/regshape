@@ -14,6 +14,7 @@ It never calls `requests` directly — all HTTP traffic goes through a
 | Operation | Method | Endpoint |
 |---|---|---|
 | List tags | `GET` | `/v2/{repo}/tags/list[?n=<n>&last=<last>]` |
+| List all remaining tags | `GET` | Same endpoint, following links or tag cursors |
 | Delete tag | `DELETE` | `/v2/{repo}/manifests/{tag}` |
 
 ---
@@ -60,9 +61,80 @@ Fetches the tag list for a repository (single page).
 3. Call `client.get(path, params=params)`.
 4. Pass response to `_raise_for_list_error`.
 5. Deserialize and return `TagList.from_json(response.text)`.
-   Re-raises `TagError` directly; wraps all other exceptions in `TagError`.
+   Re-raises `TagError` directly; wraps field validation errors in `TagError`.
 
 **Decorator:** `@track_time`
+
+---
+
+### `list_tags_all`
+
+```python
+@track_scenario("tag list all")
+def list_tags_all(
+    client: RegistryClient,
+    repo: str,
+    page_size: Optional[int] = None,
+    last: Optional[str] = None,
+) -> TagList:
+```
+
+Returns one `TagList` containing all remaining pages, in server order and with
+tag spelling unchanged. `page_size=None` uses 100 per request. An explicit size
+must be a positive integer; invalid sizes fail before network access. `last`
+is an optional exclusive starting tag value, not an offset.
+
+The protocol is defined by [OCI Distribution Specification v1.1.1, Listing
+Tags](https://github.com/opencontainers/distribution-spec/blob/v1.1.1/spec.md#listing-tags).
+The helper and its default size are RegShape conveniences, not OCI requirements.
+
+**Traversal:**
+
+1. Request the first page with `n` and, when provided, `last`.
+2. Read pagination metadata from that page's returned response, not a separate
+   mutable client response slot.
+3. Prefer its `Link` with relation `next`, including on a short or empty page.
+   Parse [RFC 5988](https://www.rfc-editor.org/rfc/rfc5988.html) link parameters
+   without splitting commas inside URI references or quoted values. Resolve
+   relative targets against the actual response URL and preserve linked query
+   values and path.
+4. If there is no next link and the current request has a positive `n`, continue
+   a full-sized page using its last tag as the next exclusive cursor. Preserve
+   other query parameters. Stop on a short/empty unlinked page; exact multiples
+   may need a final empty request.
+5. Use the effective `n` of each request, not the initial size. A linked request
+   may change `n` or omit it: with no `n` and no next link, its response is the
+   remaining unbounded list.
+6. Aggregate pages only on success. Propagate later-page failures without
+   returning a successful partial result.
+
+`Link` is optional in the OCI specification. Consequently, absence of a link
+alone does not terminate a full-sized cursor-paginated page. Conversely, page
+length alone cannot terminate a page with a next link. OCI permits `n=0` for
+single-page listing (empty result, no link); `list_tags()` retains that behavior,
+while all-pages mode rejects it as a client input policy.
+
+**Client safety policies:**
+
+- Continuations must remain on the configured scheme, hostname, and effective
+  port. Reject cross-origin links, scheme changes, embedded user credentials,
+  malformed ports, raw whitespace/control characters, and backslashes before
+  dispatch. Explicitly configured HTTP registries remain supported.
+- Remove fragments for request/cycle identity. Detect repeated URLs/cursors and
+  nonempty pages containing no new tags; raise `TagError` rather than looping.
+  Empty pages with distinct valid continuation links may still be followed.
+- Reject malformed or ambiguous pagination headers/parameters, conflicting next
+  links, and anchored next links whose alternate context is not supported.
+- Reject invalid tag values and pages belonging to another repository.
+
+There is no snapshot guarantee if tags change while listing. Aggregation does
+not re-sort, lower-case, or silently deduplicate returned tags.
+
+**Returns:** `TagList`
+
+**Errors:** `TagError` for invalid input, unsafe/non-progressing pagination,
+malformed responses, or registry errors; `AuthError` for authentication failures;
+transport exceptions propagate unchanged.
 
 ---
 
@@ -100,6 +172,12 @@ is routed through the manifests endpoint.
 
 ## Private Helpers
 
+The single-page and all-pages operations share `_fetch_tag_page()` for
+request/parsing/error handling. `_next_tag_link()`, `_tag_page_parameters()`,
+`_safe_tag_page_url()`, and `_tag_url_origin()` implement the tag-specific
+continuation and same-origin rules above. Requests are dispatched as
+registry-relative paths so both middleware and legacy transport modes work.
+
 ### `_raise_for_list_error`
 
 | HTTP status | Exception | Message |
@@ -128,9 +206,9 @@ the first 200 characters of `response.text`.
 | Decorator | Applied to |
 |---|---|
 | `@track_time` | `list_tags`, `delete_tag` |
+| `@track_scenario` | `list_tags_all` |
 
-No `@track_scenario` is needed — neither operation is multi-step at the HTTP
-level.
+All page requests still use the shared transport's request tracing and metrics.
 
 ---
 
@@ -144,6 +222,7 @@ level.
 | `400` / `405` on delete | `TagError` "not supported" | `_raise_for_delete_error` |
 | Malformed JSON body | `TagError` | `TagList.from_json` (re-raised) |
 | Transport / connection failure | `requests.exceptions.RequestException` | propagated as-is |
+| Non-positive all-pages size, unsafe link, cycle, or invalid page | `TagError` | `list_tags_all` / pagination helpers |
 
 ---
 
@@ -156,6 +235,7 @@ level.
 - `regshape.libs.refs` — `format_ref`
 - `regshape.libs.transport` — `RegistryClient`
 - `regshape.libs.decorators.timing` — `track_time`
+- `regshape.libs.decorators.scenario` — `track_scenario`
 
 **External:**
 - `requests` — `requests.Response` type annotation only

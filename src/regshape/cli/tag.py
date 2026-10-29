@@ -15,14 +15,13 @@
 import click
 import requests
 
-from regshape.cli.formatting import emit_error, emit_json, emit_list, emit_text
+from regshape.cli.formatting import emit_error, emit_json, emit_list
 from regshape.libs.decorators import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import AuthError, TagError
 from regshape.libs.refs import format_ref, parse_image_ref
-from regshape.libs.tags import delete_tag, list_tags
+from regshape.libs.tags import delete_tag, list_tags, list_tags_all
 from regshape.libs.transport import RegistryClient, TransportConfig
-
 
 # ===========================================================================
 # Public Click group
@@ -57,7 +56,7 @@ def tag():
     type=int,
     default=None,
     metavar="COUNT",
-    help="Maximum number of tags to return (pagination page size).",
+    help="Tags requested per page; with --all, must be positive (default: 100).",
 )
 @click.option(
     "--last",
@@ -67,6 +66,13 @@ def tag():
         "Return tags lexicographically after this value. "
         "Used together with --n to page through results."
     ),
+)
+@click.option(
+    "--all",
+    "fetch_all",
+    is_flag=True,
+    default=False,
+    help="Retrieve all remaining pages (default: one page only).",
 )
 @click.option(
     "--json",
@@ -84,7 +90,15 @@ def tag():
 )
 @click.pass_context
 @track_scenario("tag list")
-def tag_list(ctx, image_ref, page_size, last, as_json, output):
+def tag_list(
+    ctx: click.Context,
+    image_ref: str,
+    page_size: int | None,
+    last: str | None,
+    fetch_all: bool,
+    as_json: bool,
+    output: str | None,
+) -> None:
     """List tags for the repository identified by IMAGE_REF.
 
     IMAGE_REF must embed the registry (``registry/repo`` or
@@ -92,11 +106,16 @@ def tag_list(ctx, image_ref, page_size, last, as_json, output):
     registry and repository namespace are used.  Credentials are resolved
     automatically from the credential store populated by ``auth login``.
 
-    Use ``--n`` and ``--last`` to page through large tag lists.  Use
-    ``--json`` to receive the full response object instead of one tag per
-    line.
+    Use ``--n`` and ``--last`` for one-page requests, or ``--all`` to retrieve
+    every remaining page after the optional cursor. All-pages mode uses 100
+    tags per request by default and rejects non-positive page sizes. Use
+    ``--json`` for the full response object instead of one tag per line.
+    No results are emitted until the entire requested traversal succeeds.
     """
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
+
+    if fetch_all and page_size is not None and page_size <= 0:
+        raise click.BadParameter("must be positive with --all", param_hint="--n")
 
     try:
         registry, repo, _ = parse_image_ref(image_ref)
@@ -106,7 +125,8 @@ def tag_list(ctx, image_ref, page_size, last, as_json, output):
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
     try:
-        tag_list = list_tags(
+        operation = list_tags_all if fetch_all else list_tags
+        result = operation(
             client=client,
             repo=repo,
             page_size=page_size,
@@ -116,9 +136,9 @@ def tag_list(ctx, image_ref, page_size, last, as_json, output):
         emit_error(image_ref, str(exc))
 
     if as_json:
-        emit_json(tag_list.to_dict(), output)
+        emit_json(result.to_dict(), output)
     else:
-        emit_list(tag_list.tags, output)
+        emit_list(result.tags, output)
 
 
 # ===========================================================================
@@ -181,5 +201,3 @@ def delete(ctx, image_ref):
 # ===========================================================================
 # Internal helpers — output and error
 # ===========================================================================
-
-

@@ -8,6 +8,19 @@ Create an `.env` file in the root directory of the project and add the following
 PYTHONPATH=<your_workspace_folder_path>/src
 ```
 
+## Testing
+
+Install the package and its test dependencies, then run the test suite:
+
+```bash
+python -m pip install -e ".[dev]"
+python -m pytest -q
+```
+
+The [test workflow](.github/workflows/tests.yml) runs the suite on Python 3.10,
+3.11, and 3.12 for pull requests and pushes to `main`. Tests include mocked
+registry interactions; they do not require a live registry or Docker daemon.
+
 ## Releasing
 
 ### Version Tagging Convention
