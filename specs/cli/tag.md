@@ -95,6 +95,8 @@ tag-value cursor. The effective page size can change in a server-provided link.
 See the [library operation](../operations/tags.md#list_tags_all) for safety
 checks and stopping rules. The 100-tag default is a client policy, not an OCI
 requirement, and `--n` does not limit the total size of an all-pages result.
+Registry and continuation URL authorities must use ASCII spelling; use the
+punycode hostname for an international domain.
 
 #### Exit Codes
 

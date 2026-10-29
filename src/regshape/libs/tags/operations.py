@@ -262,7 +262,8 @@ def _safe_tag_page_url(base_url: str, target: str, context_url: str) -> str:
     except ValueError:
         raise TagError(
             "Unsafe or invalid tag pagination URL",
-            "URLs must be valid, credential-free, and on the configured registry origin",
+            "URLs must use a valid ASCII authority, contain no credentials, "
+            "and stay on the configured registry origin",
         ) from None
 
 

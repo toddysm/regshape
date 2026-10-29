@@ -215,6 +215,29 @@ class TestTagRedirectSafety:
         exchange.assert_not_called()
 
     @pytest.mark.parametrize("middleware", [False, True])
+    def test_auth_probe_rejects_unicode_host_before_dispatch(self, middleware: bool) -> None:
+        """Do not let incompatible IDNA mappings authorize a request to another host."""
+        foreign = _page([], status=401, url="https://xn--fa-hia.example/challenge")
+        foreign.headers["WWW-Authenticate"] = 'Basic realm="other"'
+        pages = [
+            _page([], status=401),
+            _redirect("https://fa\u00df.example/challenge"),
+            foreign,
+        ]
+        with (
+            patch("regshape.libs.decorators.call_details.requests.request", side_effect=pages) as http,
+            patch("regshape.libs.auth.registryauth.authenticate") as exchange,
+        ):
+            client = RegistryClient(TransportConfig(
+                registry="fass.example", username="user", password="test-password",
+                enable_middleware=middleware,
+            ))
+            with pytest.raises(AuthError):
+                list_tags_all(client, REPO)
+        assert http.call_count == 2
+        exchange.assert_not_called()
+
+    @pytest.mark.parametrize("middleware", [False, True])
     @pytest.mark.parametrize("cycle", [False, True])
     def test_auth_probe_redirects_are_bounded(self, middleware: bool, cycle: bool) -> None:
         """Bound both repeated probe URLs and distinct redirect chains before exchange."""
@@ -719,6 +742,20 @@ class TestTagURLResolution:
     def test_reference_resolution(self, target: str, expected: str) -> None:
         """Resolve dot segments and query inheritance while retaining empty segments."""
         assert _safe_tag_page_url(BASE, target, f"{BASE}/b/c/d;p?q") == BASE + expected
+
+    def test_unicode_authorities_cannot_alias_an_ascii_registry(self) -> None:
+        """Reject a Unicode spelling that Requests sends to a different DNS name."""
+        origin = "https://fass.example"
+        target = "https://fa\u00df.example/challenge"
+        assert requests.Request("GET", target).prepare().url == "https://xn--fa-hia.example/challenge"
+        with pytest.raises(TagError):
+            _safe_tag_page_url(origin, target, origin)
+
+    def test_ascii_punycode_authorities_remain_supported(self) -> None:
+        """Internationalized domains remain usable through their unambiguous ASCII form."""
+        origin = "https://xn--fa-hia.example"
+        target = origin + "/challenge"
+        assert _safe_tag_page_url(origin, target, origin) == target
 
 
 class TestNextTagLink:

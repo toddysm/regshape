@@ -123,6 +123,9 @@ while all-pages mode rejects it as a client input policy.
   port. Reject cross-origin links, scheme changes, embedded user credentials,
   malformed ports, raw whitespace/control characters, and backslashes before
   dispatch. Explicitly configured HTTP registries remain supported.
+  Authorities must be ASCII: use punycode for international domain names.
+  Reject Unicode authorities rather than allowing differences between
+  validator and HTTP-client domain-name mappings to bypass origin checks.
 - Disable automatic redirects on pagination requests, including authentication
   probes and retries in both transport modes. Validate each `Location` before
   following a 301/302/303/307/308 redirect so a foreign authentication challenge

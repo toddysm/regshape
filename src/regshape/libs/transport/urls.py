@@ -16,8 +16,10 @@ def resolve_registry_url(base_url: str, target: str, context_url: str) -> str:
     """Resolve a credential-free HTTP reference on the configured registry origin.
 
     Preserve URI path/query semantics, remove fragments, and reject scheme or
-    origin changes before dispatch. Invalid references raise a sanitized error
-    without retaining a printable credential-bearing parser exception chain.
+    origin changes before dispatch. Authorities must be ASCII; international
+    domain names must use their punycode form to avoid differing IDNA mappings
+    between URL validation and the HTTP client. Invalid references raise a
+    sanitized error without retaining a credential-bearing exception chain.
 
     :param base_url: Configured registry origin.
     :param target: Absolute or relative URI reference from a response.
@@ -37,21 +39,24 @@ def resolve_registry_url(base_url: str, target: str, context_url: str) -> str:
         return urlunsplit(parts._replace(path=parts.path or "/"))
     except ValueError:
         raise ValueError(
-            "URLs must be valid, credential-free, and on the configured registry origin"
+            "URLs must use a valid ASCII authority, contain no credentials, "
+            "and stay on the configured registry origin"
         ) from None
 
 
 def _url_origin(url: str) -> tuple[str, str, int]:
-    """Return a normalized HTTP origin; reject userinfo, bad ports, and schemes."""
+    """Return an ASCII HTTP origin; reject Unicode authorities, userinfo, and bad ports."""
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise ValueError("HTTP origin required")
+    if not parts.netloc.isascii():
+        raise ValueError("ASCII URI authority required")
     if parts.username is not None or parts.password is not None:
         raise ValueError("URI credentials are not allowed")
     port = parts.port
     if port is None:
         port = 443 if parts.scheme == "https" else 80
-    return parts.scheme, parts.hostname.encode("idna").decode("ascii").lower(), port
+    return parts.scheme, parts.hostname, port
 
 
 def _resolve_reference(context_url: str, target: str) -> str:
