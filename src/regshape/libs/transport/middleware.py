@@ -14,6 +14,7 @@
 """
 
 from abc import ABC
+from collections.abc import Mapping
 from typing import Protocol, Callable
 
 from regshape.libs.auth import registryauth
@@ -255,10 +256,10 @@ import requests.exceptions
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _get_header_ci(headers: dict, name: str, default: str = "") -> str:
+def _get_header_ci(headers: Mapping[str, str], name: str, default: str = "") -> str:
     """Case-insensitive header lookup.
 
-    ``RegistryResponse.headers`` is a plain ``dict`` whose keys preserve
+    ``RegistryResponse.headers`` is a mapping whose keys preserve
     the original casing from the server (e.g. ``Www-Authenticate`` from
     Azure Container Registry).  This helper performs a case-insensitive
     search so that header checks work regardless of server casing.
@@ -367,7 +368,7 @@ class AuthMiddleware(BaseMiddleware):
         request: RegistryRequest,
         next_handler: Callable[[RegistryRequest], RegistryResponse],
     ) -> RegistryResponse:
-        """Execute the request and handle 401 challenges."""
+        """Handle 401 challenges while retaining the request's redirect policy."""
         processed_request = request
         try:
             processed_request = self.process_request(request)
@@ -421,6 +422,7 @@ class AuthMiddleware(BaseMiddleware):
             stream=processed_request.stream,
             params=processed_request.params,
             timeout=processed_request.timeout,
+            allow_redirects=processed_request.allow_redirects,
         )
 
         return next_handler(retry_request)
@@ -437,7 +439,8 @@ class AuthMiddleware(BaseMiddleware):
         Some registries only return the challenge header on the ``/v2/``
         base endpoint rather than on every 401 response.  This helper
         sends a lightweight probe so that the caller can still negotiate
-        authentication.
+        authentication. The probe inherits the original redirect policy so
+        an unvalidated redirect cannot introduce a foreign challenge.
 
         :returns: The ``WWW-Authenticate`` header value, or an empty
             string if the probe also lacks one.
@@ -447,6 +450,7 @@ class AuthMiddleware(BaseMiddleware):
             url="/v2/",
             headers={},
             timeout=original_request.timeout,
+            allow_redirects=original_request.allow_redirects,
         )
         probe_response = next_handler(probe)
         if probe_response.status_code == 401:
@@ -580,7 +584,8 @@ class RetryMiddleware(BaseMiddleware):
 class CachingMiddleware(BaseMiddleware):
     """Middleware that caches GET responses for immutable content.
     
-    Caches responses based on URL, Accept header, and query parameters.
+    Caches responses based on URL, Accept header, query parameters, and
+    redirect policy.
     Suitable for registry manifests and blobs that are content-addressed
     and therefore immutable.
 
@@ -636,8 +641,8 @@ class CachingMiddleware(BaseMiddleware):
         """Generate cache key from request.
         
         Includes HTTP method, URL, relevant headers (e.g. Accept),
-        and query parameters (if available) to avoid collisions
-        between requests that can yield different representations.
+        query parameters, and redirect policy to avoid collisions between
+        requests that can yield different representations.
         """
         # Base components
         method = getattr(request, "method", "")
@@ -658,7 +663,8 @@ class CachingMiddleware(BaseMiddleware):
             sorted_items = sorted(params.items())
             params_component = "&".join(f"{k}={v}" for k, v in sorted_items)
 
-        return f"{method}:{url}:accept={accept}:params={params_component}"
+        redirects = getattr(request, "allow_redirects", True)
+        return f"{method}:{url}:accept={accept}:params={params_component}:redirects={redirects}"
     
     def _should_cache(self, response: RegistryResponse) -> bool:
         """Determine if response should be cached."""

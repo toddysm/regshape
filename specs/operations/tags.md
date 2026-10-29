@@ -123,6 +123,17 @@ while all-pages mode rejects it as a client input policy.
   port. Reject cross-origin links, scheme changes, embedded user credentials,
   malformed ports, raw whitespace/control characters, and backslashes before
   dispatch. Explicitly configured HTTP registries remain supported.
+- Disable automatic redirects on pagination requests, including authentication
+  probes and retries in both transport modes. Validate each `Location` before
+  following a 301/302/303/307/308 redirect so a foreign authentication challenge
+  cannot receive stored credentials. Follow at most 30 redirects per page;
+  reject missing locations and redirect cycles. Ordinary transport requests
+  retain their existing automatic-redirect default; cached responses are
+  separated by redirect policy so an auto-follow result cannot bypass an
+  explicit opt-out.
+- Sanitize URL-parser failures and suppress their raw exception context:
+  malformed URI authorities may contain credentials even when parsing fails
+  before the userinfo check.
 - Remove fragments for request/cycle identity. Detect repeated URLs/cursors and
   nonempty pages containing no new tags; raise `TagError` rather than looping.
   Empty pages with distinct valid continuation links may still be followed.
@@ -177,8 +188,8 @@ is routed through the manifests endpoint.
 
 ## Private Helpers
 
-The single-page and all-pages operations share `_fetch_tag_page()` for
-request/parsing/error handling. `_next_tag_link()`, `_tag_page_parameters()`,
+The single-page and all-pages operations share `_parse_tag_page()` for
+response parsing/error handling. `_next_tag_link()`, `_tag_page_parameters()`,
 `_tag_page_key()`, `_safe_tag_page_url()`, and `_tag_url_origin()` implement the
 tag-specific continuation and same-origin rules above. `_resolve_tag_reference()`
 and `_remove_tag_dot_segments()` preserve URI path semantics during resolution.

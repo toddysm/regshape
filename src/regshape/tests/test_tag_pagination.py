@@ -3,6 +3,7 @@
 """OCI tag-pagination regressions across library, CLI, and transport boundaries."""
 
 import json
+import traceback
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
@@ -54,6 +55,180 @@ def _client(
     return client
 
 
+def _redirect(location: str | None, status: int = 302) -> requests.Response:
+    """Build a redirect without contacting or authenticating to its target."""
+    response = _page([], status=status)
+    if location is not None:
+        response.headers["Location"] = location
+    return response
+
+
+class TestTagRedirectSafety:
+    """Ensure redirected challenges and malformed URLs cannot expose credentials."""
+
+    @pytest.mark.parametrize("middleware", [False, True])
+    def test_off_origin_redirect_cannot_trigger_credential_exchange(self, middleware: bool) -> None:
+        """Model Requests following a redirect unless automatic redirects are disabled."""
+        redirected_challenge = _page([], status=401, url="https://other.example/tags")
+        redirected_challenge.headers["WWW-Authenticate"] = (
+            'Bearer realm="https://other.example/token",service="other"'
+        )
+
+        def respond(method: str, url: str, **kwargs: object) -> requests.Response:
+            """Expose the unsafe challenge only when the transport follows redirects."""
+            if kwargs.get("allow_redirects", True):
+                return redirected_challenge
+            return _redirect("https://other.example/tags")
+
+        with (
+            patch("regshape.libs.decorators.call_details.requests.request", side_effect=respond) as http,
+            patch("regshape.libs.auth.registryauth.authenticate", return_value="test-token") as exchange,
+        ):
+            client = RegistryClient(TransportConfig(
+                registry=REGISTRY, username="user", password="test-password",
+                enable_middleware=middleware,
+            ))
+            with pytest.raises(TagError, match="pagination URL"):
+                list_tags_all(client, REPO)
+        exchange.assert_not_called()
+        assert http.call_count == 1
+        assert http.call_args.kwargs["allow_redirects"] is False
+
+    @pytest.mark.parametrize("middleware", [False, True])
+    @pytest.mark.parametrize("probe", [False, True])
+    def test_authentication_probe_and_retry_keep_redirects_disabled(
+        self, middleware: bool, probe: bool
+    ) -> None:
+        """Preserve the request policy through implicit probes and authenticated retries."""
+        challenge = _page([], status=401)
+        challenge.headers["WWW-Authenticate"] = 'Basic realm="registry"'
+        pages = [_page([], status=401)] if probe else []
+        pages.extend([challenge, _redirect("https://other.example/tags")])
+        with (
+            patch("regshape.libs.decorators.call_details.requests.request", side_effect=pages) as http,
+            patch("regshape.libs.auth.registryauth.authenticate", return_value="test-token") as exchange,
+        ):
+            client = RegistryClient(TransportConfig(
+                registry=REGISTRY, username="user", password="test-password",
+                enable_middleware=middleware,
+            ))
+            with pytest.raises(TagError):
+                list_tags_all(client, REPO)
+        exchange.assert_called_once()
+        assert all(entry.kwargs.get("allow_redirects", True) is False for entry in http.call_args_list)
+
+    @pytest.mark.parametrize("middleware", [False, True])
+    def test_redirected_auth_probe_cannot_trigger_exchange(self, middleware: bool) -> None:
+        """Do not allow the fallback /v2/ probe to bypass the redirect policy."""
+        foreign_challenge = _page([], status=401, url="https://other.example/v2/")
+        foreign_challenge.headers["WWW-Authenticate"] = (
+            'Bearer realm="https://other.example/token",service="other"'
+        )
+
+        def respond(method: str, url: str, **kwargs: object) -> requests.Response:
+            """Return the probe redirect, or its challenge when auto-follow is enabled."""
+            if url.endswith("/v2/"):
+                if kwargs.get("allow_redirects", True):
+                    return foreign_challenge
+                return _redirect("https://other.example/v2/")
+            return _page([], status=401)
+
+        with (
+            patch("regshape.libs.decorators.call_details.requests.request", side_effect=respond) as http,
+            patch("regshape.libs.auth.registryauth.authenticate", return_value="test-token") as exchange,
+        ):
+            client = RegistryClient(TransportConfig(
+                registry=REGISTRY, username="user", password="test-password",
+                enable_middleware=middleware,
+            ))
+            with pytest.raises(AuthError):
+                list_tags_all(client, REPO)
+        exchange.assert_not_called()
+        assert http.call_count == 2
+        assert all(entry.kwargs.get("allow_redirects", True) is False for entry in http.call_args_list)
+
+    @pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+    def test_same_origin_redirects_are_validated_and_followed(self, status: int) -> None:
+        """Continue safe redirects and resolve next links against the final page URL."""
+        client = _client([
+            _redirect(f"{BASE}/pages//1?n=2", status),
+            _page(["a"], link='<2?n=2>; rel="next"'),
+            _page(["b"]),
+        ])
+        assert list_tags_all(client, REPO, page_size=2).tags == ["a", "b"]
+        assert client.get.call_args_list == [
+            call(f"{PATH}?n=2", params=None, allow_redirects=False),
+            call("/pages//1?n=2", params=None, allow_redirects=False),
+            call("/pages//2?n=2", params=None, allow_redirects=False),
+        ]
+
+    def test_missing_redirect_location_is_an_error(self) -> None:
+        """A redirect without a target cannot be treated as an empty tag page."""
+        client = _client([_redirect(None)])
+        with pytest.raises(TagError, match="Location"):
+            list_tags_all(client, REPO)
+        assert client.get.call_count == 1
+
+    def test_redirect_chains_are_bounded(self) -> None:
+        """Distinct redirect URLs still have a finite per-page redirect budget."""
+        client = _client([_redirect(f"?n=2&hop={index}") for index in range(1, 33)])
+        with pytest.raises(TagError, match="redirect limit"):
+            list_tags_all(client, REPO, page_size=2)
+        assert client.get.call_count == 31
+
+    @pytest.mark.parametrize("middleware", [False, True])
+    def test_other_transport_requests_retain_redirect_defaults(self, middleware: bool) -> None:
+        """The new request option must not change unrelated callers by default."""
+        with patch("regshape.libs.decorators.call_details.requests.request", return_value=_page([])) as http:
+            client = RegistryClient(TransportConfig(
+                registry=REGISTRY, username="user", password="test-password",
+                enable_middleware=middleware,
+            ))
+            client.get(PATH)
+        assert http.call_args.kwargs.get("allow_redirects", True) is True
+
+    @pytest.mark.parametrize("first_policy", [False, True])
+    def test_redirect_policies_do_not_share_cached_responses(self, first_policy: bool) -> None:
+        """A cached auto-follow result must not bypass an explicit redirect opt-out."""
+        first, second = _page(["first"]), _page(["second"])
+        with patch(
+            "regshape.libs.decorators.call_details.requests.request",
+            side_effect=[first, second],
+        ) as http:
+            client = RegistryClient(TransportConfig(
+                registry=REGISTRY, username="user", password="test-password",
+                enable_caching=True,
+            ))
+            assert client.get(PATH, allow_redirects=first_policy) is first
+            assert client.get(PATH, allow_redirects=not first_policy) is second
+            assert client.get(PATH, allow_redirects=first_policy) is first
+        assert http.call_count == 2
+
+    def test_parser_errors_hide_credentials_and_raw_exception_context(self) -> None:
+        """Unicode normalization failures must not echo credential-bearing netlocs."""
+        target = f"https://user:secret@{REGISTRY}\uff0fignored/tags"
+        with pytest.raises(TagError) as error:
+            _safe_tag_page_url(BASE, target, BASE + PATH)
+        rendered = "".join(traceback.format_exception(
+            type(error.value), error.value, error.value.__traceback__,
+        ))
+        assert "secret" not in str(error.value)
+        assert "secret" not in rendered
+        assert error.value.__suppress_context__
+
+    def test_cli_does_not_print_credentials_from_malformed_links(self) -> None:
+        """Only the safe input reference and sanitized failure are sent to stderr."""
+        target = f"https://user:secret@{REGISTRY}\uff0fignored/tags"
+        client = _client([_page(["a"], link=f'<{target}>; rel="next"')])
+        with patch("regshape.cli.tag.RegistryClient", return_value=client):
+            result = CliRunner().invoke(regshape, [
+                "tag", "list", "-i", f"{REGISTRY}/{REPO}", "--all",
+            ])
+        assert result.exit_code == 1
+        assert "secret" not in result.stderr
+        assert "pagination URL" in result.stderr
+
+
 class TestListTagsAll:
     """Cover OCI link preference, legacy cursors, and explicit failure boundaries."""
 
@@ -63,7 +238,7 @@ class TestListTagsAll:
         client = _client([_page(tags)])
         result = list_tags_all(client, REPO)
         assert result.to_dict() == {"name": REPO, "tags": tags or []}
-        client.get.assert_called_once_with(f"{PATH}?n=100", params=None)
+        client.get.assert_called_once_with(f"{PATH}?n=100", params=None, allow_redirects=False)
 
     @pytest.mark.parametrize("size", [0, -1, True, 1.5, "2"])
     def test_invalid_page_size_fails_before_network(self, size: object) -> None:
@@ -89,9 +264,9 @@ class TestListTagsAll:
         result = list_tags_all(client, REPO, page_size=2, last="0")
         assert result.tags == ["10", "20", "A", "b"]
         assert client.get.call_args_list == [
-            call(f"{PATH}?n=2&last=0", params=None),
-            call(f"{PATH}?n=2&last=20", params=None),
-            call(f"{PATH}?n=2&last=b", params=None),
+            call(f"{PATH}?n=2&last=0", params=None, allow_redirects=False),
+            call(f"{PATH}?n=2&last=20", params=None, allow_redirects=False),
+            call(f"{PATH}?n=2&last=b", params=None, allow_redirects=False),
         ]
 
     @pytest.mark.parametrize("target", [
@@ -114,8 +289,8 @@ class TestListTagsAll:
         result = list_tags_all(client, REPO, page_size=2)
         assert result.tags == first_tags + ["b"]
         assert client.get.call_args_list == [
-            call(f"{PATH}?n=2", params=None),
-            call(f"{PATH}?n=2&last=a", params=None),
+            call(f"{PATH}?n=2", params=None, allow_redirects=False),
+            call(f"{PATH}?n=2&last=a", params=None, allow_redirects=False),
         ]
 
     def test_response_url_and_linked_query_are_authoritative(self) -> None:
@@ -128,7 +303,7 @@ class TestListTagsAll:
         ])
         assert list_tags_all(client, REPO, page_size=5).tags == ["a", "b"]
         assert client.get.call_args_list[1] == call(
-            "/pages/2?n=2&cursor=a,b;c==d&token=x%2Fy", params=None,
+            "/pages/2?n=2&cursor=a,b;c==d&token=x%2Fy", params=None, allow_redirects=False,
         )
 
     @pytest.mark.parametrize(("target", "expected_path"), [
@@ -145,7 +320,7 @@ class TestListTagsAll:
             _page(["b"]),
         ])
         assert list_tags_all(client, REPO, page_size=2).tags == ["a", "b"]
-        assert client.get.call_args == call(expected_path, params=None)
+        assert client.get.call_args == call(expected_path, params=None, allow_redirects=False)
 
     def test_empty_path_segments_in_response_base_are_preserved(self) -> None:
         """Retain empty segments inherited from the actual response URL."""
@@ -154,7 +329,7 @@ class TestListTagsAll:
             _page(["b"]),
         ])
         assert list_tags_all(client, REPO, page_size=2).tags == ["a", "b"]
-        assert client.get.call_args == call("/pages//2?n=2", params=None)
+        assert client.get.call_args == call("/pages//2?n=2", params=None, allow_redirects=False)
 
     def test_linkless_fallback_uses_changed_page_size_and_keeps_query(self) -> None:
         """A linked n=2 page must not be mistaken for a short initial n=5 page."""
@@ -165,9 +340,9 @@ class TestListTagsAll:
         ])
         assert list_tags_all(client, REPO, page_size=5).tags == ["a", "b", "c", "d"]
         assert client.get.call_args_list == [
-            call(f"{PATH}?n=5", params=None),
-            call(f"{PATH}?n=2&cursor=next", params=None),
-            call(f"{PATH}?n=2&cursor=next&last=c", params=None),
+            call(f"{PATH}?n=5", params=None, allow_redirects=False),
+            call(f"{PATH}?n=2&cursor=next", params=None, allow_redirects=False),
+            call(f"{PATH}?n=2&cursor=next&last=c", params=None, allow_redirects=False),
         ]
 
     def test_cursor_fallback_preserves_raw_opaque_fields(self) -> None:
@@ -179,7 +354,7 @@ class TestListTagsAll:
             _page(["d"]),
         ])
         assert list_tags_all(client, REPO, page_size=2).tags == ["a", "b", "c", "d"]
-        assert client.get.call_args == call(f"{PATH}?{query}&last=c", params=None)
+        assert client.get.call_args == call(f"{PATH}?{query}&last=c", params=None, allow_redirects=False)
 
     def test_distinct_binary_cursors_are_not_the_same_page(self) -> None:
         """Opaque byte sequences must not collapse into one replacement character."""
@@ -190,9 +365,9 @@ class TestListTagsAll:
         ])
         assert list_tags_all(client, REPO, page_size=2).tags == ["a"]
         assert client.get.call_args_list == [
-            call(f"{PATH}?n=2", params=None),
-            call(f"{PATH}?n=2&cursor=%FF", params=None),
-            call(f"{PATH}?n=2&cursor=%FE", params=None),
+            call(f"{PATH}?n=2", params=None, allow_redirects=False),
+            call(f"{PATH}?n=2&cursor=%FF", params=None, allow_redirects=False),
+            call(f"{PATH}?n=2&cursor=%FE", params=None, allow_redirects=False),
         ]
 
     def test_link_may_omit_n_when_using_last(self) -> None:
@@ -203,7 +378,7 @@ class TestListTagsAll:
         ])
         assert list_tags_all(client, REPO, page_size=1).tags == ["a", "b", "c", "d"]
         assert client.get.call_count == 2
-        assert client.get.call_args == call(f"{PATH}?last=a", params=None)
+        assert client.get.call_args == call(f"{PATH}?last=a", params=None, allow_redirects=False)
 
     def test_absolute_link_with_empty_path_uses_registry_root(self) -> None:
         """Normalize an absolute origin-only target to an HTTP path, not a bare query."""
@@ -212,7 +387,7 @@ class TestListTagsAll:
             _page(["b"]),
         ])
         assert list_tags_all(client, REPO, page_size=2).tags == ["a", "b"]
-        assert client.get.call_args == call("/?n=2&last=a", params=None)
+        assert client.get.call_args == call("/?n=2&last=a", params=None, allow_redirects=False)
 
     @pytest.mark.parametrize("query", [
         "n=0", "n=-1", "n=oops", "n=1_0", "n=+2", "n=2.0",

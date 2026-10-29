@@ -38,6 +38,8 @@ from regshape.libs.refs import format_ref
 from regshape.libs.transport import RegistryClient
 
 _DEFAULT_PAGE_SIZE = 100
+_MAX_PAGE_REDIRECTS = 30
+_REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 _LINK_TARGET_RE = re.compile(r"\s*<([^<>]*)>")
 _LINK_PARAMETER_RE = re.compile(
     r'''\s*;\s*([!#$%&'*+.^_`|~0-9A-Za-z-]+)(?:\s*=\s*("(?:[^"\\]|\\.)*"|[^;,\s"]+))?'''
@@ -79,8 +81,8 @@ def list_tags(
     if last is not None:
         params["last"] = last
 
-    page, _ = _fetch_tag_page(client, repo, path, params if params else None)
-    return page
+    response = client.get(path, params=params if params else None)
+    return _parse_tag_page(response, client.config.registry, repo)
 
 
 @track_scenario("tag list all")
@@ -95,6 +97,8 @@ def list_tags_all(
     Prefer ``Link: rel="next"`` even on short or empty pages. Without a next
     link, continue a full page using its last tag and the effective ``n`` of
     that request. Preserve server ordering, spelling, and linked query values.
+    Follow at most 30 validated same-origin redirects per page, with automatic
+    redirects disabled before the transport processes authentication.
     No consistent snapshot is guaranteed if tags change during traversal.
 
     :param client: Transport client for the target registry.
@@ -125,6 +129,7 @@ def list_tags_all(
     seen_tags: set[str] = set()
     seen_pages: set[tuple[str, Optional[int], Optional[str], tuple[str, ...]]] = set()
     used_cursors: set[str] = set()
+    redirects = 0
 
     while True:
         parts = urlsplit(url)
@@ -135,7 +140,7 @@ def list_tags_all(
 
         # Relative requests also work with the client's legacy transport mode.
         path = urlunsplit(("", "", parts.path, parts.query, ""))
-        page, response = _fetch_tag_page(client, repo, path)
+        response = client.get(path, params=None, allow_redirects=False)
         response_url = _safe_tag_page_url(client.base_url, response.url or url, url)
         query, effective_size, cursor = _tag_page_parameters(response_url)
         response_parts = urlsplit(response_url)
@@ -146,6 +151,17 @@ def list_tags_all(
         if cursor is not None:
             used_cursors.add(cursor)
 
+        if response.status_code in _REDIRECT_STATUSES:
+            if redirects >= _MAX_PAGE_REDIRECTS:
+                raise TagError("Tag pagination redirect limit exceeded")
+            location = response.headers.get("Location")
+            if not location:
+                raise TagError("Tag pagination redirect is missing Location")
+            url = _safe_tag_page_url(client.base_url, location, response_url)
+            redirects += 1
+            continue
+        redirects = 0
+        page = _parse_tag_page(response, client.config.registry, repo)
         if page.namespace != repo:
             raise TagError("Tag pagination returned a different repository namespace")
         if any(not isinstance(tag, str) or not tag for tag in page.tags):
@@ -199,30 +215,28 @@ def delete_tag(
 # ===========================================================================
 
 
-def _fetch_tag_page(
-    client: RegistryClient,
+def _parse_tag_page(
+    response: requests.Response,
+    registry: str,
     repo: str,
-    path: str,
-    params: Optional[dict[str, object]] = None,
-) -> tuple[TagList, requests.Response]:
-    """Fetch and parse one page, retaining its own response for pagination.
+) -> TagList:
+    """Parse one page using the shared tag error mapping.
 
-    Reuse the single-page error mapping without consulting mutable
-    ``client.last_response`` metadata. Parsing failures use :class:`TagError`;
-    authentication and transport exceptions propagate to the caller.
+    The caller retains the response for pagination and validates any redirects
+    before parsing. Parsing failures use :class:`TagError`; authentication
+    failures retain their :class:`AuthError` mapping.
     """
-    response = client.get(path, params=params)
-    _raise_for_list_error(response, client.config.registry, repo)
+    _raise_for_list_error(response, registry, repo)
     try:
         page = TagList.from_json(response.text)
     except TagError:
         raise
     except (TypeError, ValueError) as exc:
         raise TagError(
-            f"Failed to parse tag-list response from {client.config.registry}/{repo}",
+            f"Failed to parse tag-list response from {registry}/{repo}",
             str(exc),
         ) from exc
-    return page, response
+    return page
 
 
 def _tag_url_origin(url: str) -> tuple[str, str, int]:
@@ -244,7 +258,8 @@ def _safe_tag_page_url(base_url: str, target: str, context_url: str) -> str:
     Reject userinfo, cross-origin links, scheme changes, and ambiguous control
     characters before dispatch. Fragments are not sent in HTTP requests and
     are removed so they cannot conceal pagination cycles. Invalid URLs raise
-    :class:`TagError` without exposing credential-bearing link values.
+    :class:`TagError` without exposing credential-bearing link values, parser
+    diagnostics, or the original exception chain.
     """
     try:
         if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in target):
@@ -256,8 +271,11 @@ def _safe_tag_page_url(base_url: str, target: str, context_url: str) -> str:
             raise ValueError("Pagination must remain on the configured registry origin")
         parts = urlsplit(resolved)
         return urlunsplit(parts._replace(path=parts.path or "/"))
-    except ValueError as exc:
-        raise TagError("Unsafe or invalid tag pagination URL", str(exc)) from exc
+    except ValueError:
+        raise TagError(
+            "Unsafe or invalid tag pagination URL",
+            "URLs must be valid, credential-free, and on the configured registry origin",
+        ) from None
 
 
 def _resolve_tag_reference(context_url: str, target: str) -> str:
