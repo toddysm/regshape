@@ -2,14 +2,14 @@
 
 """Tests for :mod:`regshape.libs.transport.client`."""
 
+from unittest.mock import MagicMock, call, patch
+
 import pytest
 import requests
-from unittest.mock import MagicMock, patch
 
 from regshape.libs.errors import AuthError
 from regshape.libs.transport.client import RegistryClient, TransportConfig
 from regshape.libs.transport.middleware import _normalize_www_authenticate
-
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -302,6 +302,7 @@ class TestRegistryClientRequestBasic:
 # ===========================================================================
 
 class TestRegistryClientRequest401NoChallenge:
+    """Verify challenge discovery and terminal failure without credential exchange."""
 
     def test_401_without_www_authenticate_raises_auth_error(self):
         challenge = _make_response(401)
@@ -309,12 +310,20 @@ class TestRegistryClientRequest401NoChallenge:
             with pytest.raises(AuthError, match="without a WWW-Authenticate header"):
                 _client().get(PATH)
 
-    def test_401_without_www_authenticate_only_one_call_made(self):
+    def test_401_without_www_authenticate_probes_v2_then_fails(self) -> None:
+        """Probe once for a missing challenge, then fail without exchanging credentials."""
         challenge = _make_response(401)
-        with patch("regshape.libs.transport.client.http_request", return_value=challenge) as mock:
-            with pytest.raises(AuthError):
+        with (
+            patch("regshape.libs.transport.client.http_request", return_value=challenge) as mock,
+            patch("regshape.libs.transport.client.registryauth.authenticate") as authenticate,
+        ):
+            with pytest.raises(AuthError, match="without a WWW-Authenticate header"):
                 _client().get(PATH)
-        assert mock.call_count == 1
+        assert mock.call_args_list == [
+            call(f"https://{REGISTRY}{PATH}", "GET", headers={}, timeout=30),
+            call(f"https://{REGISTRY}/v2/", "GET", headers={}, timeout=30),
+        ]
+        authenticate.assert_not_called()
 
 
 # ===========================================================================
