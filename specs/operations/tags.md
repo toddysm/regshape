@@ -97,7 +97,9 @@ The helper and its default size are RegShape conveniences, not OCI requirements.
    Parse [RFC 5988](https://www.rfc-editor.org/rfc/rfc5988.html) link parameters
    without splitting commas inside URI references or quoted values. Resolve
    relative targets against the actual response URL and preserve linked query
-   values and path.
+   values and path. Follow [RFC 3986 reference resolution](https://www.rfc-editor.org/rfc/rfc3986.html#section-5.2)
+   for dot segments and query inheritance without collapsing empty path
+   segments: `pages/token//part` and `pages/token/part` are distinct paths.
 4. If there is no next link and the current request has a positive `n`, continue
    a full-sized page using its last tag as the next exclusive cursor. Preserve
    other query fields byte-for-byte, including opaque percent-encoded values
@@ -177,9 +179,11 @@ is routed through the manifests endpoint.
 
 The single-page and all-pages operations share `_fetch_tag_page()` for
 request/parsing/error handling. `_next_tag_link()`, `_tag_page_parameters()`,
-`_tag_page_key()`, `_safe_tag_page_url()`, and `_tag_url_origin()` implement the tag-specific
-continuation and same-origin rules above. Requests are dispatched as
-registry-relative paths so both middleware and legacy transport modes work.
+`_tag_page_key()`, `_safe_tag_page_url()`, and `_tag_url_origin()` implement the
+tag-specific continuation and same-origin rules above. `_resolve_tag_reference()`
+and `_remove_tag_dot_segments()` preserve URI path semantics during resolution.
+Requests are dispatched as registry-relative paths so both middleware and legacy
+transport modes work.
 
 ### `_raise_for_list_error`
 

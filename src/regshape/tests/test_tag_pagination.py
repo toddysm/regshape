@@ -14,7 +14,7 @@ from regshape.cli.main import regshape
 from regshape.libs.errors import AuthError, TagError
 from regshape.libs.models.tags import TagList
 from regshape.libs.tags import list_tags, list_tags_all
-from regshape.libs.tags.operations import _next_tag_link
+from regshape.libs.tags.operations import _next_tag_link, _safe_tag_page_url
 from regshape.libs.transport import RegistryClient, TransportConfig
 
 REGISTRY = "registry.example.com"
@@ -130,6 +130,31 @@ class TestListTagsAll:
         assert client.get.call_args_list[1] == call(
             "/pages/2?n=2&cursor=a,b;c==d&token=x%2Fy", params=None,
         )
+
+    @pytest.mark.parametrize(("target", "expected_path"), [
+        ("pages/token//part?n=2", f"/v2/{REPO}/tags/pages/token//part?n=2"),
+        ("pages/token//../part?n=2", f"/v2/{REPO}/tags/pages/token/part?n=2"),
+        ("./pages//part/../next?n=2", f"/v2/{REPO}/tags/pages//next?n=2"),
+    ])
+    def test_relative_links_preserve_empty_path_segments(
+        self, target: str, expected_path: str
+    ) -> None:
+        """Resolve relative paths without discarding opaque empty URI segments."""
+        client = _client([
+            _page(["a"], link=f'<{target}>; rel="next"'),
+            _page(["b"]),
+        ])
+        assert list_tags_all(client, REPO, page_size=2).tags == ["a", "b"]
+        assert client.get.call_args == call(expected_path, params=None)
+
+    def test_empty_path_segments_in_response_base_are_preserved(self) -> None:
+        """Retain empty segments inherited from the actual response URL."""
+        client = _client([
+            _page(["a"], link='<2?n=2>; rel="next"', url=f"{BASE}/pages//1?n=2"),
+            _page(["b"]),
+        ])
+        assert list_tags_all(client, REPO, page_size=2).tags == ["a", "b"]
+        assert client.get.call_args == call("/pages//2?n=2", params=None)
 
     def test_linkless_fallback_uses_changed_page_size_and_keeps_query(self) -> None:
         """A linked n=2 page must not be mistaken for a short initial n=5 page."""
@@ -309,6 +334,40 @@ class TestListTagsAll:
             ("GET", f"{BASE}{PATH}?n=2"),
             ("GET", f"{BASE}{PATH}?n=2&last=a"),
         ]
+
+
+class TestTagURLResolution:
+    """Cover RFC 3986 reference resolution without opaque-path normalization."""
+
+    @pytest.mark.parametrize(("target", "expected"), [
+        ("g", "/b/c/g"),
+        ("./g", "/b/c/g"),
+        ("g/", "/b/c/g/"),
+        ("/g", "/g"),
+        ("?y", "/b/c/d;p?y"),
+        ("g?y", "/b/c/g?y"),
+        ("#s", "/b/c/d;p?q"),
+        ("g?y#s", "/b/c/g?y"),
+        (";x", "/b/c/;x"),
+        ("", "/b/c/d;p?q"),
+        (".", "/b/c/"),
+        ("..", "/b/"),
+        ("../g", "/b/g"),
+        ("../..", "/"),
+        ("../../g", "/g"),
+        ("../../../g", "/g"),
+        ("/./g", "/g"),
+        ("/../g", "/g"),
+        ("g/./h", "/b/c/g/h"),
+        ("g/../h", "/b/c/h"),
+        ("g?y/./x", "/b/c/g?y/./x"),
+        ("g//h", "/b/c/g//h"),
+        ("g//../h", "/b/c/g/h"),
+        ("?", "/b/c/d;p"),
+    ])
+    def test_reference_resolution(self, target: str, expected: str) -> None:
+        """Resolve dot segments and query inheritance while retaining empty segments."""
+        assert _safe_tag_page_url(BASE, target, f"{BASE}/b/c/d;p?q") == BASE + expected
 
 
 class TestNextTagLink:

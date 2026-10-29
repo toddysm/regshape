@@ -22,9 +22,7 @@ from typing import Optional
 from urllib.parse import (
     unquote_plus,
     unquote_to_bytes,
-    urldefrag,
     urlencode,
-    urljoin,
     urlsplit,
     urlunsplit,
 )
@@ -253,13 +251,76 @@ def _safe_tag_page_url(base_url: str, target: str, context_url: str) -> str:
             raise ValueError("Pagination URLs must not contain whitespace or control characters")
         if "\\" in target:
             raise ValueError("Pagination URLs must not contain backslashes")
-        resolved = urldefrag(urljoin(context_url, target))[0]
+        resolved = _resolve_tag_reference(context_url, target)
         if _tag_url_origin(resolved) != _tag_url_origin(base_url):
             raise ValueError("Pagination must remain on the configured registry origin")
         parts = urlsplit(resolved)
         return urlunsplit(parts._replace(path=parts.path or "/"))
     except ValueError as exc:
         raise TagError("Unsafe or invalid tag pagination URL", str(exc)) from exc
+
+
+def _resolve_tag_reference(context_url: str, target: str) -> str:
+    """Resolve an RFC 3986 reference without collapsing empty path segments.
+
+    Unlike ``urljoin()``, preserve empty segments in both base and reference
+    paths and distinguish an absent query from an explicitly empty query.
+    Remove fragments because they are not part of an HTTP request target.
+    """
+    base = urlsplit(context_url)
+    reference = urlsplit(target)
+    if reference.scheme:
+        resolved = reference._replace(path=_remove_tag_dot_segments(reference.path))
+    elif reference.netloc or target.startswith("//"):
+        resolved = reference._replace(
+            scheme=base.scheme,
+            path=_remove_tag_dot_segments(reference.path),
+        )
+    else:
+        if not reference.path:
+            path = base.path
+            query = reference.query if "?" in target.split("#", 1)[0] else base.query
+        else:
+            path = reference.path
+            if not path.startswith("/"):
+                path = base.path.rpartition("/")[0] + "/" + path
+            path = _remove_tag_dot_segments(path)
+            query = reference.query
+        resolved = reference._replace(
+            scheme=base.scheme, netloc=base.netloc, path=path, query=query,
+        )
+    return urlunsplit(resolved._replace(fragment=""))
+
+
+def _remove_tag_dot_segments(path: str) -> str:
+    """Apply RFC 3986 section 5.2.4 to a path, retaining ordinary empty segments."""
+    output = ""
+    while path:
+        if path.startswith("../"):
+            path = path[3:]
+        elif path.startswith("./"):
+            path = path[2:]
+        elif path.startswith("/./"):
+            path = path[2:]
+        elif path == "/.":
+            path = "/"
+        elif path.startswith("/../"):
+            path = path[3:]
+            output = output.rpartition("/")[0]
+        elif path == "/..":
+            path = "/"
+            output = output.rpartition("/")[0]
+        elif path in (".", ".."):
+            path = ""
+        else:
+            boundary = path.find("/", 1 if path.startswith("/") else 0)
+            if boundary == -1:
+                output += path
+                path = ""
+            else:
+                output += path[:boundary]
+                path = path[boundary:]
+    return output
 
 
 def _tag_page_parameters(
