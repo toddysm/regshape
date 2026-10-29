@@ -169,6 +169,28 @@ class TestTagRedirectSafety:
             list_tags_all(client, REPO)
         assert client.get.call_count == 1
 
+    def test_query_canonicalizing_redirect_is_not_a_completed_page(self) -> None:
+        """Fetch a valid redirect target even when its logical pagination key matches."""
+        client = _client([
+            _redirect("?last=0&n=2"),
+            _page(["1"]),
+        ])
+        assert list_tags_all(client, REPO, page_size=2, last="0").tags == ["1"]
+        assert client.get.call_args_list == [
+            call(f"{PATH}?n=2&last=0", params=None, allow_redirects=False),
+            call(f"{PATH}?last=0&n=2", params=None, allow_redirects=False),
+        ]
+
+    def test_canonicalizing_redirect_cycle_is_still_bounded(self) -> None:
+        """Separate raw redirect-hop identity from normalized completed-page identity."""
+        client = _client([
+            _redirect("?last=0&n=2"),
+            _redirect("?n=2&last=0"),
+        ])
+        with pytest.raises(TagError, match="redirect"):
+            list_tags_all(client, REPO, page_size=2, last="0")
+        assert client.get.call_count == 2
+
     def test_redirect_chains_are_bounded(self) -> None:
         """Distinct redirect URLs still have a finite per-page redirect budget."""
         client = _client([_redirect(f"?n=2&hop={index}") for index in range(1, 33)])

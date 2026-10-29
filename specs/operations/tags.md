@@ -130,7 +130,9 @@ while all-pages mode rejects it as a client input policy.
   reject missing locations and redirect cycles. Ordinary transport requests
   retain their existing automatic-redirect default; cached responses are
   separated by redirect policy so an auto-follow result cannot bypass an
-  explicit opt-out.
+  explicit opt-out. Track redirect hops separately from completed tag pages,
+  allowing a same-origin redirect to canonicalize query ordering without being
+  mistaken for a repeated page.
 - Sanitize URL-parser failures and suppress their raw exception context:
   malformed URI authorities may contain credentials even when parsing fails
   before the userinfo check.

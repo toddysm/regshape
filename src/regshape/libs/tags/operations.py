@@ -129,6 +129,7 @@ def list_tags_all(
     seen_tags: set[str] = set()
     seen_pages: set[tuple[str, Optional[int], Optional[str], tuple[str, ...]]] = set()
     used_cursors: set[str] = set()
+    redirect_hops: set[str] = set()
     redirects = 0
 
     while True:
@@ -136,7 +137,9 @@ def list_tags_all(
         key = _tag_page_key(url)
         if key in seen_pages:
             raise TagError(f"Tag pagination repeated a page for {client.config.registry}/{repo}")
-        seen_pages.add(key)
+        if url in redirect_hops:
+            raise TagError("Tag pagination redirect cycle detected")
+        redirect_hops.add(url)
 
         # Relative requests also work with the client's legacy transport mode.
         path = urlunsplit(("", "", parts.path, parts.query, ""))
@@ -147,10 +150,6 @@ def list_tags_all(
         response_key = _tag_page_key(response_url)
         if response_key != key and response_key in seen_pages:
             raise TagError(f"Tag pagination revisited a page for {client.config.registry}/{repo}")
-        seen_pages.add(response_key)
-        if cursor is not None:
-            used_cursors.add(cursor)
-
         if response.status_code in _REDIRECT_STATUSES:
             if redirects >= _MAX_PAGE_REDIRECTS:
                 raise TagError("Tag pagination redirect limit exceeded")
@@ -161,7 +160,11 @@ def list_tags_all(
             redirects += 1
             continue
         redirects = 0
+        redirect_hops.clear()
         page = _parse_tag_page(response, client.config.registry, repo)
+        seen_pages.update((key, response_key))
+        if cursor is not None:
+            used_cursors.add(cursor)
         if page.namespace != repo:
             raise TagError("Tag pagination returned a different repository namespace")
         if any(not isinstance(tag, str) or not tag for tag in page.tags):
