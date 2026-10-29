@@ -43,6 +43,7 @@ from regshape.libs.transport.urls import (
 )
 
 _DEFAULT_PAGE_SIZE = 100
+_MAX_EMPTY_LINKED_PAGES = 10
 _LINK_TARGET_RE = re.compile(r"\s*<([^<>]*)>")
 _LINK_PARAMETER_RE = re.compile(
     r'''\s*;\s*([!#$%&'*+.^_`|~0-9A-Za-z-]+)(?:\s*=\s*("(?:[^"\\]|\\.)*"|[^;,\s"]+))?'''
@@ -102,6 +103,8 @@ def list_tags_all(
     that request. Preserve server ordering, spelling, and linked query values.
     Follow at most 30 validated same-origin redirects per page, with automatic
     redirects disabled before the transport processes authentication.
+    Fail on the tenth consecutive empty page with a next link; receiving tags
+    resets that counter. An empty page without a next link completes normally.
     No consistent snapshot is guaranteed if tags change during traversal.
 
     :param client: Transport client for the target registry.
@@ -110,7 +113,8 @@ def list_tags_all(
     :param last: Optional exclusive initial tag cursor.
     :returns: One aggregated :class:`TagList`, only after traversal succeeds.
     :raises TagError: For invalid input, malformed pages or links, unsafe
-        continuation origins, repeated pages/cursors, or registry errors.
+        continuation origins, repeated pages/cursors, ten consecutive empty
+        linked pages, or registry errors.
     :raises AuthError: On authentication failure on any page.
     :raises requests.exceptions.RequestException: On transport failures.
     """
@@ -134,6 +138,7 @@ def list_tags_all(
     used_cursors: set[str] = set()
     redirect_hops: set[str] = set()
     redirects = 0
+    empty_linked_pages = 0
 
     while True:
         parts = urlsplit(url)
@@ -184,9 +189,18 @@ def list_tags_all(
             raise TagError(f"Tag pagination repeated a cursor for {client.config.registry}/{repo}")
         tags.extend(page.tags)
         seen_tags.update(page_tags)
+        if page.tags:
+            empty_linked_pages = 0
 
         next_link = _next_tag_link(response.headers.get("Link", ""))
         if next_link is not None:
+            if not page.tags:
+                empty_linked_pages += 1
+                if empty_linked_pages >= _MAX_EMPTY_LINKED_PAGES:
+                    raise TagError(
+                        f"Tag pagination returned {_MAX_EMPTY_LINKED_PAGES} "
+                        "consecutive empty linked pages"
+                    )
             url = _safe_tag_page_url(client.base_url, next_link, response_url)
             continue
         if effective_size is None or len(page.tags) < effective_size:

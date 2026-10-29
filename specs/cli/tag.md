@@ -100,6 +100,12 @@ requirement, and `--n` does not limit the total size of an all-pages result.
 Registry and continuation URL authorities must use ASCII spelling; use the
 punycode hostname for an international domain.
 
+As a client safety policy, `--all` fails on the **tenth consecutive empty page
+with a next link**, even when continuation links change. Receiving tags resets
+the counter; an empty page without a next link completes normally. This limit
+is not an OCI requirement or a cap on total pages. Failure exits with code 1,
+prints no partial list, and leaves output files untouched.
+
 #### Exit Codes
 
 | Code | Meaning |
@@ -169,6 +175,7 @@ v2.0
 | Invalid all-pages size | Usage error: `--n` must be positive with `--all` |
 | Unsafe next link | `Error [<ref>]: Unsafe or invalid tag pagination URL: <detail>` |
 | Repeated page/cursor | `Error [<ref>]: Tag pagination repeated a page/cursor for <registry>/<repo>` |
+| Empty-page limit | `Error [<ref>]: Tag pagination returned 10 consecutive empty linked pages` |
 
 ---
 

@@ -150,6 +150,12 @@ while all-pages mode rejects it as a client input policy.
   Empty pages with distinct valid continuation links may still be followed.
   Normalize only known pagination parameters in page identity; opaque values
   such as `%FF` and `%FE` must remain distinct.
+- Fail with `TagError` on the **tenth consecutive empty page with a next link**,
+  before requesting its continuation, even if opaque links keep changing.
+  Receiving tags resets the counter; an empty page without a next link completes
+  normally, including after nine empty linked pages. Redirect responses neither
+  increment nor reset this counter. The limit is a RegShape safety policy, not
+  an OCI requirement or a cap on total pages; failure returns no partial result.
 - Reject malformed or ambiguous pagination headers/parameters, conflicting next
   links, and anchored next links whose alternate context is not supported.
 - Reject invalid tag values and pages belonging to another repository.

@@ -59,6 +59,14 @@ def _client(
     return client
 
 
+def _empty_linked_pages(count: int, *, start: int = 0) -> list[requests.Response]:
+    """Build empty pages with alternating cursors and distinct opaque next links."""
+    return [
+        _page([], link=f'<?n=2&last={"a" if index % 2 == 0 else "b"}&nonce={index}>; rel="next"')
+        for index in range(start, start + count)
+    ]
+
+
 def _redirect(location: str | None, status: int = 302) -> requests.Response:
     """Build a redirect without contacting or authenticating to its target."""
     response = _page([], status=status)
@@ -637,6 +645,62 @@ class TestListTagsAll:
             list_tags_all(client, REPO, page_size=2)
         assert client.get.call_count == 2
 
+    def test_empty_linked_pages_stop_at_ten_despite_changing_links(self) -> None:
+        """Bound empty traversal even when opaque URLs hide repeated tag cursors."""
+        client = _client(_empty_linked_pages(11))
+        with pytest.raises(TagError, match="10 consecutive empty linked pages"):
+            list_tags_all(client, REPO, page_size=2)
+        assert client.get.call_count == 10
+
+    def test_nine_empty_linked_pages_can_reach_tags(self) -> None:
+        """Do not reject valid continuation before the empty-page threshold."""
+        client = _client([*_empty_linked_pages(9), _page(["c"])])
+        assert list_tags_all(client, REPO, page_size=2).tags == ["c"]
+        assert client.get.call_count == 10
+
+    def test_tenth_empty_page_without_next_link_finishes(self) -> None:
+        """An unlinked empty page completes normally instead of exhausting the budget."""
+        client = _client([*_empty_linked_pages(9), _page([])])
+        assert list_tags_all(client, REPO, page_size=2).tags == []
+        assert client.get.call_count == 10
+
+    @pytest.mark.parametrize("linked_progress", [False, True])
+    def test_tags_reset_the_empty_linked_page_counter(self, linked_progress: bool) -> None:
+        """Reset on received tags for both linked and cursor-only continuation."""
+        client = _client([
+            *_empty_linked_pages(9),
+            _page(
+                ["c", "d"],
+                link='<?n=2&last=d&nonce=progress>; rel="next"' if linked_progress else None,
+            ),
+            *_empty_linked_pages(9, start=10),
+            _page(["e"]),
+        ])
+        assert list_tags_all(client, REPO, page_size=2).tags == ["c", "d", "e"]
+        assert client.get.call_count == 20
+
+    def test_redirect_is_not_an_empty_linked_page(self) -> None:
+        """Count tag pages, not redirect responses, toward the empty-page limit."""
+        client = _client([
+            *_empty_linked_pages(9),
+            _redirect("?n=2&nonce=redirect"),
+            _page(["c"]),
+        ])
+        assert list_tags_all(client, REPO, page_size=2).tags == ["c"]
+        assert client.get.call_count == 11
+
+    def test_redirect_does_not_reset_empty_linked_page_counter(self) -> None:
+        """Keep consecutive empty-page accounting across validated redirects."""
+        client = _client([
+            *_empty_linked_pages(9),
+            _redirect("?n=2&nonce=redirect"),
+            *_empty_linked_pages(1, start=9),
+            _page(["c"]),
+        ])
+        with pytest.raises(TagError, match="10 consecutive empty linked pages"):
+            list_tags_all(client, REPO, page_size=2)
+        assert client.get.call_count == 11
+
     @pytest.mark.parametrize("pages", [
         [_page(["a", "a"])],
         [_page(["a", "b"], link='<?n=3&last=b>; rel="next"'), _page(["b", "c"])],
@@ -936,6 +1000,37 @@ class TestTagPaginationCLI:
         assert "repeated a tag" in result.stderr
         assert result.stdout == ""
         assert output.read_text() == "unchanged\n"
+
+    @pytest.mark.parametrize("as_json", [False, True])
+    @pytest.mark.parametrize("destination", ["stdout", "existing-file", "new-file"])
+    def test_empty_linked_page_limit_never_emits_partial_results(
+        self, tmp_path: Path, as_json: bool, destination: str
+    ) -> None:
+        """Surface the real traversal limit without printing or writing partial tags."""
+        output = tmp_path / "tags.txt"
+        if destination == "existing-file":
+            output.write_text("unchanged\n")
+        args = ["tag", "list", "-i", f"{REGISTRY}/{REPO}", "--all", "--n", "1"]
+        if as_json:
+            args.append("--json")
+        if destination != "stdout":
+            args.extend(["--output", str(output)])
+        with (
+            patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
+            patch(
+                "regshape.libs.decorators.call_details.requests.request",
+                side_effect=[_page(["c"]), *_empty_linked_pages(11)],
+            ) as http,
+        ):
+            result = CliRunner().invoke(regshape, args)
+        assert result.exit_code == 1
+        assert "10 consecutive empty linked pages" in result.stderr
+        assert result.stdout == ""
+        assert http.call_count == 11
+        if destination == "existing-file":
+            assert output.read_text() == "unchanged\n"
+        else:
+            assert not output.exists()
 
     def test_help_explains_all_pages_and_default(self) -> None:
         """Make the opt-in behavior and positive all-pages default discoverable."""
