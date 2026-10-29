@@ -44,6 +44,7 @@ from regshape.libs.transport.urls import (
 
 _DEFAULT_PAGE_SIZE = 100
 _MAX_EMPTY_LINKED_PAGES = 10
+_OCI_TAG_RE = re.compile(r"[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}")
 _LINK_TARGET_RE = re.compile(r"\s*<([^<>]*)>")
 _LINK_PARAMETER_RE = re.compile(
     r'''\s*;\s*([!#$%&'*+.^_`|~0-9A-Za-z-]+)(?:\s*=\s*("(?:[^"\\]|\\.)*"|[^;,\s"]+))?'''
@@ -105,6 +106,7 @@ def list_tags_all(
     redirects disabled before the transport processes authentication.
     Fail on the tenth consecutive empty page with a next link; receiving tags
     resets that counter. An empty page without a next link completes normally.
+    Validate returned tags and tag cursors against the OCI tag-name grammar.
     No consistent snapshot is guaranteed if tags change during traversal.
 
     :param client: Transport client for the target registry.
@@ -121,8 +123,8 @@ def list_tags_all(
     size = _DEFAULT_PAGE_SIZE if page_size is None else page_size
     if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
         raise TagError("All-pages tag listing requires a positive page size")
-    if last is not None and (not isinstance(last, str) or not last):
-        raise TagError("The initial tag cursor must be a non-empty tag")
+    if last is not None and (not isinstance(last, str) or not _OCI_TAG_RE.fullmatch(last)):
+        raise TagError("The initial tag cursor must be a valid OCI tag")
 
     params = [("n", str(size))]
     if last is not None:
@@ -178,7 +180,7 @@ def list_tags_all(
             used_cursors.add(cursor)
         if page.namespace != repo:
             raise TagError("Tag pagination returned a different repository namespace")
-        if any(not isinstance(tag, str) or not tag for tag in page.tags):
+        if any(not isinstance(tag, str) or not _OCI_TAG_RE.fullmatch(tag) for tag in page.tags):
             raise TagError("Tag pagination returned an invalid tag value")
         page_tags = set(page.tags)
         if page.tags and page_tags <= seen_tags:
@@ -293,6 +295,7 @@ def _tag_page_parameters(
     opaque values and their encoding untouched. Decode pagination values
     strictly, rejecting invalid encodings, duplicate parameters, and
     non-positive sizes rather than corrupting or truncating a traversal.
+    Cursors must match the OCI tag-name grammar; opaque fields are not tags.
     """
     raw_query = urlsplit(url).query
     fields = raw_query.split("&") if raw_query else []
@@ -323,8 +326,8 @@ def _tag_page_parameters(
             raise TagError("Tag pagination page size must be a positive integer") from exc
         if size <= 0:
             raise TagError("Tag pagination page size must be a positive integer")
-    if cursors and not cursors[0]:
-        raise TagError("Tag pagination cursor must be a non-empty tag")
+    if cursors and not _OCI_TAG_RE.fullmatch(cursors[0]):
+        raise TagError("Tag pagination cursor must be a valid OCI tag")
     return query, size, cursors[0] if cursors else None
 
 

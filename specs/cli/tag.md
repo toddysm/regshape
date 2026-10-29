@@ -105,6 +105,9 @@ with a next link**, even when continuation links change. Receiving tags resets
 the counter; an empty page without a next link completes normally. This limit
 is not an OCI requirement or a cap on total pages. Failure exits with code 1,
 prints no partial list, and leaves output files untouched.
+All-pages results and `--last`/linked tag cursors must also satisfy the OCI
+tag-name grammar (at most 128 ASCII characters); malformed tags fail before
+output or cursor encoding. See the library reference above for the exact grammar.
 
 #### Exit Codes
 

@@ -159,6 +159,13 @@ while all-pages mode rejects it as a client input policy.
 - Reject malformed or ambiguous pagination headers/parameters, conflicting next
   links, and anchored next links whose alternate context is not supported.
 - Reject invalid tag values and pages belonging to another repository.
+  Returned tags and initial/linked `last` cursors must match the
+  [OCI tag grammar](https://github.com/opencontainers/distribution-spec/blob/v1.1.1/spec.md#pulling-manifests):
+  `[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}` (at most 128 ASCII characters).
+  Validate before rendering or cursor encoding, so malformed strings produce
+  `TagError`, not extra output lines or an unhandled encoding failure.
+  This does not reinterpret opaque continuation fields or change single-page
+  `list_tags()` behavior.
 - Reject repeated tags within a page or across partially overlapping pages.
   This is an all-pages consistency policy, not silent deduplication.
 - Reject any returned tag equal to an initial or linked exclusive cursor,

@@ -442,6 +442,24 @@ class TestListTagsAll:
             list_tags_all(client, REPO, page_size=size)  # type: ignore[arg-type]
         client.get.assert_not_called()
 
+    @pytest.mark.parametrize("cursor", [
+        "", "a\nb", "a\n", "a b", "a/b", ".tag", "-tag", "\u00e9", "\ud800", "a" * 129,
+    ])
+    def test_invalid_initial_tag_cursor_fails_before_network(self, cursor: str) -> None:
+        """Reject malformed tag cursors before URL encoding can fail or any request runs."""
+        client = _client([])
+        with pytest.raises(TagError, match="valid OCI tag"):
+            list_tags_all(client, REPO, last=cursor)
+        client.get.assert_not_called()
+
+    @pytest.mark.parametrize("tag", ["0", "_", "A.Z-rc_1", "a" * 128])
+    def test_valid_tag_grammar_preserves_spelling_and_cursors(self, tag: str) -> None:
+        """Accept valid spelling and the 128-character boundary on every tag surface."""
+        assert list_tags_all(_client([_page([tag])]), REPO).tags == [tag]
+        assert list_tags_all(_client([_page(["z"])]), REPO, last=tag).tags == ["z"]
+        client = _client([_page([], link=f'<?last={tag}>; rel="next"'), _page(["z"])])
+        assert list_tags_all(client, REPO).tags == ["z"]
+
     def test_single_page_zero_and_last_only_remain_supported(self) -> None:
         """Do not impose all-pages validation on the existing one-page operation."""
         client = _client([_page([]), _page(["b"])])
@@ -586,6 +604,8 @@ class TestListTagsAll:
     @pytest.mark.parametrize("query", [
         "n=0", "n=-1", "n=oops", "n=1_0", "n=+2", "n=2.0",
         "n=1&n=2", "last=a&last=b", "last=", "n=%FF", "last=%FF",
+        "last=a%0Ab", "last=a%0A", "last=a+b", "last=a%2Fb", "last=.tag",
+        "last=-tag", "last=%C3%A9", "last=%ED%A0%80", f"last={'a' * 129}",
     ])
     def test_bad_linked_parameters_fail_before_following(self, query: str) -> None:
         """Never fetch a linked page whose pagination state is invalid or ambiguous."""
@@ -743,6 +763,10 @@ class TestListTagsAll:
     @pytest.mark.parametrize("bad_page", [
         _page([123]),
         _page([""]),
+        *[_page([tag]) for tag in [
+            "a\nb", "a\n", "a\rb", "a\tb", "a\x00b", "a b", "a/b",
+            ".tag", "-tag", "\u00e9", "\ud800", "a" * 129,
+        ]],
         _page("not a list"),
         _page([], namespace="other/repository"),
     ])
@@ -1031,6 +1055,29 @@ class TestTagPaginationCLI:
             assert output.read_text() == "unchanged\n"
         else:
             assert not output.exists()
+
+    @pytest.mark.parametrize("tag", ["a\nb", "\ud800"])
+    @pytest.mark.parametrize("as_json", [False, True])
+    @pytest.mark.parametrize("write_file", [False, True])
+    def test_malformed_tags_fail_without_emitting_partial_output(
+        self, tmp_path: Path, tag: str, as_json: bool, write_file: bool
+    ) -> None:
+        """Reject malformed later-page tags before rendering or cursor encoding."""
+        output = tmp_path / "tags.txt"
+        output.write_text("unchanged\n")
+        args = ["tag", "list", "-i", f"{REGISTRY}/{REPO}", "--all", "--n", "1"]
+        if as_json:
+            args.append("--json")
+        if write_file:
+            args.extend(["--output", str(output)])
+        client = _client([_page(["A"]), _page([tag])])
+        with patch("regshape.cli.tag.RegistryClient", return_value=client):
+            result = CliRunner().invoke(regshape, args)
+        assert result.exit_code == 1
+        assert "invalid tag value" in result.stderr
+        assert result.stdout == ""
+        assert output.read_text() == "unchanged\n"
+        assert client.get.call_count == 2
 
     def test_help_explains_all_pages_and_default(self) -> None:
         """Make the opt-in behavior and positive all-pages default discoverable."""
