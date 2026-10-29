@@ -155,6 +155,8 @@ while all-pages mode rejects it as a client input policy.
 - Reject invalid tag values and pages belonging to another repository.
 - Reject repeated tags within a page or across partially overlapping pages.
   This is an all-pages consistency policy, not silent deduplication.
+- Reject any returned tag equal to an initial or linked exclusive cursor,
+  even on a short page. Retain requested cursor boundaries across redirects.
 
 There is no snapshot guarantee if tags change while listing. Aggregation does
 not re-sort, lower-case, or silently deduplicate returned tags. Concurrent

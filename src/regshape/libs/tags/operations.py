@@ -138,6 +138,9 @@ def list_tags_all(
     while True:
         parts = urlsplit(url)
         key = _tag_page_key(url)
+        requested_cursor = key[2]
+        if requested_cursor is not None:
+            used_cursors.add(requested_cursor)
         if key in seen_pages:
             raise TagError(f"Tag pagination repeated a page for {client.config.registry}/{repo}")
         if url in redirect_hops:
@@ -177,6 +180,8 @@ def list_tags_all(
             raise TagError(f"Tag pagination made no progress for {client.config.registry}/{repo}")
         if len(page_tags) != len(page.tags) or page_tags & seen_tags:
             raise TagError(f"Tag pagination repeated a tag for {client.config.registry}/{repo}")
+        if page_tags & used_cursors:
+            raise TagError(f"Tag pagination repeated a cursor for {client.config.registry}/{repo}")
         tags.extend(page.tags)
         seen_tags.update(page_tags)
 
@@ -188,8 +193,6 @@ def list_tags_all(
             return TagList(namespace=repo, tags=tags)
 
         next_cursor = page.tags[-1]
-        if next_cursor in used_cursors:
-            raise TagError(f"Tag pagination repeated a cursor for {client.config.registry}/{repo}")
         fields = [field for name, field in query if name != b"last"]
         fields.append(urlencode({"last": next_cursor}))
         url = urlunsplit(response_parts._replace(query="&".join(fields)))

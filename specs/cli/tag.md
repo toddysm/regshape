@@ -84,6 +84,8 @@ List one page of tags, or opt into automatic traversal of all remaining pages.
    failure does not print a successful partial list or overwrite an output file.
    Repeated tags, including partial overlap between pages, fail with exit code 1
    rather than producing duplicates or silently deduplicating the response.
+   A page that includes an excluded `--last` or server-provided cursor tag also
+   fails instead of returning that tag.
    If concurrent repository changes cause overlap, retry once the listing is
    stable.
 

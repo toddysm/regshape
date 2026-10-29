@@ -657,6 +657,25 @@ class TestListTagsAll:
             list_tags_all(client, REPO, page_size=2, last="old")
         assert client.get.call_count == 1
 
+    @pytest.mark.parametrize(("last", "pages"), [
+        ("a", [_page(["a", "b"])]),
+        (None, [_page([], link='<?n=3&last=a>; rel="next"'), _page(["a", "b"])]),
+        ("a", [_redirect("?n=3"), _page(["a", "b"])]),
+        (None, [
+            _page([], link='<?n=3&last=a>; rel="next"'),
+            _redirect("?n=3&cursor=next"),
+            _page(["a", "b"]),
+        ]),
+    ])
+    def test_short_pages_cannot_include_an_exclusive_cursor(
+        self, last: str | None, pages: list[requests.Response]
+    ) -> None:
+        """Retain initial and linked exclusive boundaries, including across redirects."""
+        client = _client(pages)
+        with pytest.raises(TagError, match="repeated a cursor"):
+            list_tags_all(client, REPO, page_size=3, last=last)
+        assert client.get.call_count == len(pages)
+
     @pytest.mark.parametrize("bad_page", [
         _page([123]),
         _page([""]),
