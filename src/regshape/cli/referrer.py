@@ -7,7 +7,7 @@
 .. module:: regshape.cli.referrer
    :platform: Unix, Windows
    :synopsis: Click command group providing the ``list`` subcommand for
-              OCI referrer operations.
+              OCI referrer operations with automatic tag-to-digest resolution.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
@@ -18,11 +18,12 @@ import requests
 from regshape.cli.formatting import emit_error, emit_json, emit_table, emit_text
 from regshape.libs.decorators import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
-from regshape.libs.errors import AuthError, ReferrerError
-from regshape.libs.refs import parse_image_ref
+from regshape.libs.errors import AuthError, ManifestError, ReferrerError
+from regshape.libs.manifests import head_manifest
+from regshape.libs.models.mediatype import ALL_MANIFEST_MEDIA_TYPES
 from regshape.libs.referrers import list_referrers, list_referrers_all
+from regshape.libs.refs import parse_image_ref
 from regshape.libs.transport import RegistryClient, TransportConfig
-
 
 # ===========================================================================
 # Public Click group
@@ -46,9 +47,9 @@ def referrer():
     required=True,
     metavar="IMAGE_REF",
     help=(
-        "Image reference with embedded registry and digest "
-        "(e.g. registry/repo@sha256:abc...). "
-        "Tag-only references are rejected — a digest is required."
+        "Image reference with embedded registry and tag or digest "
+        "(e.g. registry/repo:tag or registry/repo@sha256:abc...). "
+        "Tags are resolved to a digest automatically."
     ),
 )
 @click.option(
@@ -84,12 +85,21 @@ def referrer():
 )
 @click.pass_context
 @track_scenario("referrer list")
-def referrer_list(ctx, image_ref, artifact_type, fetch_all, as_json, output):
-    """List referrers for the manifest identified by digest in IMAGE_REF.
+def referrer_list(
+    ctx: click.Context,
+    image_ref: str,
+    artifact_type: str | None,
+    fetch_all: bool,
+    as_json: bool,
+    output: str | None,
+) -> None:
+    """List referrers for the manifest identified by IMAGE_REF.
 
-    IMAGE_REF must embed the registry and use a digest reference
-    (``registry/repo@sha256:...``). Tag-only references are rejected —
-    use ``manifest get`` to resolve a tag to a digest first.
+    IMAGE_REF must embed the registry and may use a tag or digest reference.
+    Tags are resolved with a manifest HEAD request before querying referrers;
+    digest references are used directly without a manifest lookup. References
+    without a tag or digest resolve the ``latest`` tag. Resolution failures,
+    including a missing digest response header, exit with code 1.
 
     Use ``--artifact-type`` to filter by artifact type.  Use ``--all``
     to follow pagination and retrieve every referrer.  Use ``--json``
@@ -102,19 +112,31 @@ def referrer_list(ctx, image_ref, artifact_type, fetch_all, as_json, output):
     except ValueError as exc:
         emit_error(image_ref, str(exc))
 
-    # The referrers API requires a digest reference.
-    if not reference.startswith("sha256:") and not reference.startswith("sha512:"):
+    is_digest = "@" in image_ref
+    if is_digest and not reference.startswith(("sha256:", "sha512:")):
         emit_error(
             image_ref,
-            "referrer list requires a digest reference "
-            "(registry/repo@sha256:...); "
-            "use 'manifest get' to resolve a tag to a digest",
+            "digest references must use sha256 or sha512",
             exit_code=2,
         )
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
     try:
+        if not is_digest:
+            digest, _, _ = head_manifest(
+                client=client,
+                repo=repo,
+                reference=reference,
+                accept=",".join(sorted(ALL_MANIFEST_MEDIA_TYPES)),
+            )
+            if not digest.strip():
+                raise ManifestError(
+                    f"Cannot resolve tag {reference!r}",
+                    "HEAD response is missing Docker-Content-Digest",
+                )
+            reference = digest
+
         if fetch_all:
             result = list_referrers_all(
                 client=client,
@@ -129,7 +151,7 @@ def referrer_list(ctx, image_ref, artifact_type, fetch_all, as_json, output):
                 digest=reference,
                 artifact_type=artifact_type,
             )
-    except (AuthError, ReferrerError, requests.exceptions.RequestException) as exc:
+    except (AuthError, ManifestError, ReferrerError, requests.exceptions.RequestException) as exc:
         emit_error(image_ref, str(exc))
 
     if as_json:
@@ -155,5 +177,4 @@ def referrer_list(ctx, image_ref, artifact_type, fetch_all, as_json, output):
 # ===========================================================================
 # Internal helpers — output and error
 # ===========================================================================
-
 

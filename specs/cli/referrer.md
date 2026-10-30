@@ -8,6 +8,7 @@ OCI Referrers API.
 
 | Subcommand | Method | Endpoint |
 |---|---|---|
+| `list` (tag resolution only) | `HEAD` | `/v2/<name>/manifests/<tag>` |
 | `list` | `GET` | `/v2/<name>/referrers/<digest>[?artifactType=<type>]` |
 
 > **Note:** The referrers endpoint is read-only — referrers are created
@@ -27,13 +28,15 @@ regshape referrer list [OPTIONS]
 ## Image Reference Format
 
 The `referrer list` subcommand accepts `--image-ref` / `-i` using the standard
-container image reference syntax with the registry always embedded. The
-reference **must** include a digest — tag-only references are rejected because
-the referrers API requires a digest.
+container image reference syntax with the registry always embedded. Tags are
+resolved to a digest with a manifest `HEAD` request before querying the referrers
+API. Digest references are used directly, with no manifest lookup.
 
 | Subcommand | Accepted formats | Notes |
 |---|---|---|
-| `list` | `registry/repo@sha256:...` | Digest is required |
+| `list` | `registry/repo:tag` | Resolve the tag using `Docker-Content-Digest` |
+| `list` | `registry/repo@sha256:...`, `registry/repo@sha512:...` | Use the digest directly |
+| `list` | `registry/repo` | Resolve the default tag, `latest` |
 
 > **Authentication:** Run `regshape auth login` before using referrer commands
 > against authenticated registries. Credentials are resolved automatically
@@ -46,13 +49,13 @@ the referrers API requires a digest.
 
 ### `referrer list`
 
-List all referrers for the manifest identified by digest in IMAGE_REF.
+List referrers for the manifest identified by tag or digest in IMAGE_REF.
 
 #### Options
 
 | Option | Short | Type | Default | Description |
 |---|---|---|---|---|
-| `--image-ref` | `-i` | string | required | Image reference with embedded registry and digest (e.g., `registry/repo@sha256:abc...`) |
+| `--image-ref` | `-i` | string | required | Image reference with embedded registry and tag or digest (e.g., `registry/repo:v1.0` or `registry/repo@sha256:abc...`) |
 | `--artifact-type` | `-t` | string | none | Filter referrers to this artifact type (e.g., `application/vnd.example.sbom.v1`) |
 | `--all` | | flag | false | Follow pagination and return all referrers (default: single page only) |
 | `--json` | | flag | false | Output the full `ReferrerList` JSON object instead of one referrer per line |
@@ -63,11 +66,15 @@ List all referrers for the manifest identified by digest in IMAGE_REF.
 
 #### Behavior
 
-1. Parse `--image-ref` to extract registry, repository, and digest. Reject
-   tag-only references with exit code 2 and an error message directing the
-   user to use a digest reference.
+1. Parse `--image-ref` to extract registry, repository, and reference. Explicit
+   digest references must use `sha256` or `sha512`; unsupported digest algorithms
+   are rejected with exit code 2.
 2. Resolve credentials from the Docker credential store for the extracted
-   registry.
+   registry. For a tag reference, call `head_manifest()` using the same registry
+   client and accepting all supported manifest and index media types. Use the
+   returned `Docker-Content-Digest` as the subject digest. A missing or blank
+   digest header, authentication failure, missing tag, or transport failure
+   produces exit code 1 without querying referrers or writing the output file.
 3. If `--all` is set, call `list_referrers_all()` which follows `Link`
    pagination headers to retrieve every page and returns a merged
    `ReferrerList`. Otherwise, call `list_referrers()` which returns a
@@ -89,14 +96,21 @@ List all referrers for the manifest identified by digest in IMAGE_REF.
 | Code | Meaning |
 |---|---|
 | 0 | Success (including when there are zero referrers) |
-| 1 | HTTP error (manifest not found, auth failure, connection error) |
-| 2 | Invalid reference (tag-only reference instead of digest) |
+| 1 | Reference parsing error, tag resolution failure (including a missing digest header), or registry/transport error |
+| 2 | Command usage error or unsupported explicit digest algorithm |
 
 #### Examples
 
 ```bash
 # Log in first
 regshape auth login -r acr.io -u alice
+
+# List referrers by tag (automatically resolved to a digest)
+regshape referrer list -i acr.io/myrepo/myimage:v1.0
+
+# Resolve a tag, fetch all pages, filter, and save JSON
+regshape referrer list -i acr.io/myrepo/myimage:v1.0 --all \
+    --artifact-type application/vnd.example.sbom.v1 --json -o referrers.json
 
 # List all referrers for a manifest by digest (single page)
 regshape referrer list -i acr.io/myrepo/myimage@sha256:abc123...
@@ -162,8 +176,10 @@ Full OCI Image Index response:
 
 | Scenario | Message | Exit Code |
 |----------|---------|-----------|
-| Tag-only reference | `Error [<ref>]: referrer list requires a digest reference (registry/repo@sha256:...); use 'manifest get' to resolve a tag to a digest` | 2 |
+| Unsupported digest algorithm | `Error [<ref>]: digest references must use sha256 or sha512` | 2 |
+| Tag HEAD response lacks a digest | `Error [<ref>]: Cannot resolve tag '<tag>'` with detail `HEAD response is missing Docker-Content-Digest` | 1 |
 | Auth failure | `Error [<ref>]: Authentication failed for <registry>: <detail>` | 1 |
+| Tag not found | `Error [<ref>]: Manifest not found: <registry>/<repo>:<tag>` | 1 |
 | Manifest not found | `Error [<ref>]: Manifest not found: <registry>/<repo>@<digest>` | 1 |
 | Connection error | `Error [<ref>]: <exception message>` | 1 |
 
