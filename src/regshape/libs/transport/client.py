@@ -169,6 +169,7 @@ class RegistryClient:
                 username=self._username,
                 password=self._password,
                 registry=self.config.registry,
+                base_url=self.base_url,
             )
         )
         
@@ -197,12 +198,14 @@ class RegistryClient:
         """Terminal handler that performs the actual HTTP request.
         
         This is the final handler in the middleware pipeline that converts
-        RegistryRequest to a requests call and wraps the response.
+        RegistryRequest to a requests call and wraps the response. Preserve
+        an explicit redirect opt-out before authentication sees the response.
         """
         # Convert RegistryRequest to requests parameters
         url = f"{self.base_url}{request.url}" if request.url.startswith('/') else request.url
         
         # Use http_request for telemetry (--debug-calls)
+        redirect_options = {} if request.allow_redirects else {"allow_redirects": False}
         response = http_request(
             url=url,
             method=request.method,
@@ -210,7 +213,8 @@ class RegistryClient:
             data=request.body,
             stream=request.stream,
             params=request.params,
-            timeout=request.timeout or self.config.timeout
+            timeout=request.timeout or self.config.timeout,
+            **redirect_options,
         )
         
         # Store for backward compatibility
@@ -230,7 +234,7 @@ class RegistryClient:
         timeout: int, 
         **kwargs
     ) -> requests.Response:
-        """Legacy authentication handling for when middleware is disabled."""
+        """Handle legacy authentication, retaining redirect policy on probes/retries."""
         response = http_request(url, method, headers=req_headers, timeout=timeout, **kwargs)
         self.last_response = response
 
@@ -242,10 +246,19 @@ class RegistryClient:
         if not www_auth:
             # Some registries (e.g. ACR) only return WWW-Authenticate on
             # the /v2/ endpoint.  Fall back to a /v2/ probe.
-            v2_url = f"{self.base_url}/v2/"
-            v2_resp = http_request(v2_url, "GET", headers={}, timeout=timeout)
-            if v2_resp.status_code == 401:
-                www_auth = v2_resp.headers.get("WWW-Authenticate", "")
+            if kwargs.get("allow_redirects", True):
+                v2_url = f"{self.base_url}/v2/"
+                v2_resp = http_request(v2_url, "GET", headers={}, timeout=timeout)
+                if v2_resp.status_code == 401:
+                    www_auth = v2_resp.headers.get("WWW-Authenticate", "")
+            else:
+                original_request = RegistryRequest(
+                    method=method, url=url, headers=req_headers,
+                    timeout=timeout, allow_redirects=False,
+                )
+                www_auth = AuthMiddleware._probe_v2_challenge(
+                    self._terminal_handler, original_request, self.base_url,
+                )
             if not www_auth:
                 raise AuthError(
                     "Authentication failed",
@@ -303,7 +316,9 @@ class RegistryClient:
         :param headers: Optional request headers. A shallow copy is taken so
             that the caller dict is never mutated.
         :param kwargs: Additional keyword arguments forwarded to the HTTP
-            request (e.g. data, params, stream).
+            request (e.g. data, params, stream). ``allow_redirects=False``
+            disables automatic redirects, including authentication probes
+            and retries, in both transport modes.
         :returns: The HTTP response from the registry.
         :raises AuthError: If authentication fails.
         :raises requests.exceptions.RequestException: On transport errors.
@@ -320,7 +335,8 @@ class RegistryClient:
                 body=kwargs.get('data'),
                 stream=kwargs.get('stream', False),
                 params=kwargs.get('params'),
-                timeout=timeout
+                timeout=timeout,
+                allow_redirects=kwargs.get("allow_redirects", True),
             )
             
             try:

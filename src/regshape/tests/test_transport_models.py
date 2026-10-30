@@ -11,6 +11,7 @@ from regshape.libs.transport.models import RegistryRequest, RegistryResponse
 class TestRegistryRequest:
 
     def test_valid_request_creation(self):
+        """Default requests retain automatic redirects for compatibility."""
         req = RegistryRequest(
             method="GET",
             url="https://registry.example.com/v2/repo/manifests/tag",
@@ -21,6 +22,7 @@ class TestRegistryRequest:
         assert req.headers["Accept"] == "application/vnd.oci.image.manifest.v1+json"
         assert req.body is None
         assert req.stream is False
+        assert req.allow_redirects is True
 
     def test_request_with_body_and_params(self):
         body = b'{"some": "json"}'

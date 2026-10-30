@@ -71,6 +71,15 @@ List tags for a repository:
 regshape tag list -i docker.io/library/alpine
 ```
 
+Retrieve every page of tags:
+
+```bash
+regshape tag list -i docker.io/library/alpine --all
+```
+
+Use `--n` to set the all-pages request size and `--last` to start after a tag.
+See the [tag command reference](specs/cli/tag.md) for pagination and output options.
+
 ## Documentation
 
 ### Guides

@@ -17,16 +17,38 @@ and transport settings.  The functions are intentionally free of Click/CLI
 concerns — error reporting is the caller's responsibility.
 """
 
+import re
 from typing import Optional
+from urllib.parse import (
+    unquote_plus,
+    unquote_to_bytes,
+    urlencode,
+    urlsplit,
+    urlunsplit,
+)
 
 import requests
 
+from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.decorators.timing import track_time
 from regshape.libs.errors import AuthError, TagError
 from regshape.libs.models.error import OciErrorResponse
 from regshape.libs.models.tags import TagList
 from regshape.libs.refs import format_ref
 from regshape.libs.transport import RegistryClient
+from regshape.libs.transport.urls import (
+    MAX_REDIRECTS,
+    REDIRECT_STATUSES,
+    resolve_registry_url,
+)
+
+_DEFAULT_PAGE_SIZE = 100
+_MAX_EMPTY_LINKED_PAGES = 10
+_OCI_TAG_RE = re.compile(r"[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}")
+_LINK_TARGET_RE = re.compile(r"\s*<([^<>]*)>")
+_LINK_PARAMETER_RE = re.compile(
+    r'''\s*;\s*([!#$%&'*+.^_`|~0-9A-Za-z-]+)(?:\s*=\s*("(?:[^"\\]|\\.)*"|[^;,\s"]+))?'''
+)
 
 
 # ===========================================================================
@@ -65,18 +87,131 @@ def list_tags(
         params["last"] = last
 
     response = client.get(path, params=params if params else None)
-    _raise_for_list_error(response, client.config.registry, repo)
+    return _parse_tag_page(response, client.config.registry, repo)
 
-    try:
-        return TagList.from_json(response.text)
-    except TagError:
-        raise
-    except Exception as exc:
-        raise TagError(
-            f"Failed to parse tag-list response from "
-            f"{client.config.registry}/{repo}",
-            str(exc),
-        ) from exc
+
+@track_scenario("tag list all")
+def list_tags_all(
+    client: RegistryClient,
+    repo: str,
+    page_size: Optional[int] = None,
+    last: Optional[str] = None,
+) -> TagList:
+    """Fetch all remaining tags using OCI links or exclusive tag cursors.
+
+    Prefer ``Link: rel="next"`` even on short or empty pages. Without a next
+    link, continue a full page using its last tag and the effective ``n`` of
+    that request. Preserve server ordering, spelling, and linked query values.
+    Follow at most 30 validated same-origin redirects per page, with automatic
+    redirects disabled before the transport processes authentication.
+    Fail on the tenth consecutive empty page with a next link; receiving tags
+    resets that counter. An empty page without a next link completes normally.
+    Validate returned tags and tag cursors against the OCI tag-name grammar.
+    No consistent snapshot is guaranteed if tags change during traversal.
+
+    :param client: Transport client for the target registry.
+    :param repo: Repository namespace.
+    :param page_size: Positive initial page size; ``None`` uses 100.
+    :param last: Optional exclusive initial tag cursor.
+    :returns: One aggregated :class:`TagList`, only after traversal succeeds.
+    :raises TagError: For invalid input, malformed pages or links, unsafe
+        continuation origins, repeated pages/cursors, ten consecutive empty
+        linked pages, or registry errors.
+    :raises AuthError: On authentication failure on any page.
+    :raises requests.exceptions.RequestException: On transport failures.
+    """
+    size = _DEFAULT_PAGE_SIZE if page_size is None else page_size
+    if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+        raise TagError("All-pages tag listing requires a positive page size")
+    if last is not None and (not isinstance(last, str) or not _OCI_TAG_RE.fullmatch(last)):
+        raise TagError("The initial tag cursor must be a valid OCI tag")
+
+    params = [("n", str(size))]
+    if last is not None:
+        params.append(("last", last))
+    url = _safe_tag_page_url(
+        client.base_url,
+        f"/v2/{repo}/tags/list?{urlencode(params)}",
+        client.base_url,
+    )
+    tags: list[str] = []
+    seen_tags: set[str] = set()
+    seen_pages: set[tuple[str, Optional[int], Optional[str], tuple[str, ...]]] = set()
+    used_cursors: set[str] = set()
+    redirect_hops: set[str] = set()
+    redirects = 0
+    empty_linked_pages = 0
+
+    while True:
+        parts = urlsplit(url)
+        key = _tag_page_key(url)
+        requested_cursor = key[2]
+        if requested_cursor is not None:
+            used_cursors.add(requested_cursor)
+        if key in seen_pages:
+            raise TagError(f"Tag pagination repeated a page for {client.config.registry}/{repo}")
+        if url in redirect_hops:
+            raise TagError("Tag pagination redirect cycle detected")
+        redirect_hops.add(url)
+
+        # Relative requests also work with the client's legacy transport mode.
+        path = urlunsplit(("", "", parts.path, parts.query, ""))
+        response = client.get(path, params=None, allow_redirects=False)
+        response_url = _safe_tag_page_url(client.base_url, response.url or url, url)
+        query, effective_size, cursor = _tag_page_parameters(response_url)
+        response_parts = urlsplit(response_url)
+        response_key = _tag_page_key(response_url)
+        if response_key != key and response_key in seen_pages:
+            raise TagError(f"Tag pagination revisited a page for {client.config.registry}/{repo}")
+        if response.status_code in REDIRECT_STATUSES:
+            if redirects >= MAX_REDIRECTS:
+                raise TagError("Tag pagination redirect limit exceeded")
+            location = response.headers.get("Location")
+            if not location:
+                raise TagError("Tag pagination redirect is missing Location")
+            url = _safe_tag_page_url(client.base_url, location, response_url)
+            redirects += 1
+            continue
+        redirects = 0
+        redirect_hops.clear()
+        page = _parse_tag_page(response, client.config.registry, repo)
+        seen_pages.update((key, response_key))
+        if cursor is not None:
+            used_cursors.add(cursor)
+        if page.namespace != repo:
+            raise TagError("Tag pagination returned a different repository namespace")
+        if any(not isinstance(tag, str) or not _OCI_TAG_RE.fullmatch(tag) for tag in page.tags):
+            raise TagError("Tag pagination returned an invalid tag value")
+        page_tags = set(page.tags)
+        if page.tags and page_tags <= seen_tags:
+            raise TagError(f"Tag pagination made no progress for {client.config.registry}/{repo}")
+        if len(page_tags) != len(page.tags) or page_tags & seen_tags:
+            raise TagError(f"Tag pagination repeated a tag for {client.config.registry}/{repo}")
+        if page_tags & used_cursors:
+            raise TagError(f"Tag pagination repeated a cursor for {client.config.registry}/{repo}")
+        tags.extend(page.tags)
+        seen_tags.update(page_tags)
+        if page.tags:
+            empty_linked_pages = 0
+
+        next_link = _next_tag_link(response.headers.get("Link", ""))
+        if next_link is not None:
+            if not page.tags:
+                empty_linked_pages += 1
+                if empty_linked_pages >= _MAX_EMPTY_LINKED_PAGES:
+                    raise TagError(
+                        f"Tag pagination returned {_MAX_EMPTY_LINKED_PAGES} "
+                        "consecutive empty linked pages"
+                    )
+            url = _safe_tag_page_url(client.base_url, next_link, response_url)
+            continue
+        if effective_size is None or len(page.tags) < effective_size:
+            return TagList(namespace=repo, tags=tags)
+
+        next_cursor = page.tags[-1]
+        fields = [field for name, field in query if name != b"last"]
+        fields.append(urlencode({"last": next_cursor}))
+        url = urlunsplit(response_parts._replace(query="&".join(fields)))
 
 
 @track_time
@@ -106,6 +241,157 @@ def delete_tag(
 # ===========================================================================
 # Private error helpers
 # ===========================================================================
+
+
+def _parse_tag_page(
+    response: requests.Response,
+    registry: str,
+    repo: str,
+) -> TagList:
+    """Parse one page using the shared tag error mapping.
+
+    The caller retains the response for pagination and validates any redirects
+    before parsing. Parsing failures use :class:`TagError`; authentication
+    failures retain their :class:`AuthError` mapping.
+    """
+    _raise_for_list_error(response, registry, repo)
+    try:
+        page = TagList.from_json(response.text)
+    except TagError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise TagError(
+            f"Failed to parse tag-list response from {registry}/{repo}",
+            str(exc),
+        ) from exc
+    return page
+
+
+def _safe_tag_page_url(base_url: str, target: str, context_url: str) -> str:
+    """Resolve a continuation against its response URL and enforce same origin.
+
+    Reject userinfo, cross-origin links, scheme changes, and ambiguous control
+    characters before dispatch. Fragments are not sent in HTTP requests and
+    are removed so they cannot conceal pagination cycles. Invalid URLs raise
+    :class:`TagError` without exposing credential-bearing link values, parser
+    diagnostics, or the original exception chain.
+    """
+    try:
+        return resolve_registry_url(base_url, target, context_url)
+    except ValueError:
+        raise TagError(
+            "Unsafe or invalid tag pagination URL",
+            "URLs must use a valid ASCII authority, contain no credentials, "
+            "and stay on the configured registry origin",
+        ) from None
+
+
+def _tag_page_parameters(
+    url: str,
+) -> tuple[list[tuple[bytes, str]], Optional[int], Optional[str]]:
+    """Return raw query fields, the effective page size, and the tag cursor.
+
+    Decode field names as bytes only to identify ``n`` and ``last``; leave
+    opaque values and their encoding untouched. Decode pagination values
+    strictly, rejecting invalid encodings, duplicate parameters, and
+    non-positive sizes rather than corrupting or truncating a traversal.
+    Cursors must match the OCI tag-name grammar; opaque fields are not tags.
+    """
+    raw_query = urlsplit(url).query
+    fields = raw_query.split("&") if raw_query else []
+    query = [
+        (unquote_to_bytes(field.partition("=")[0].replace("+", " ")), field)
+        for field in fields
+    ]
+    try:
+        sizes = [
+            unquote_plus(field.partition("=")[2], errors="strict")
+            for name, field in query if name == b"n"
+        ]
+        cursors = [
+            unquote_plus(field.partition("=")[2], errors="strict")
+            for name, field in query if name == b"last"
+        ]
+    except UnicodeError as exc:
+        raise TagError("Invalid tag pagination parameter encoding") from exc
+    if len(sizes) > 1 or len(cursors) > 1:
+        raise TagError("Ambiguous tag pagination parameters")
+    size = None
+    if sizes:
+        if not sizes[0].isascii() or not sizes[0].isdecimal():
+            raise TagError("Tag pagination page size must be a positive integer")
+        try:
+            size = int(sizes[0])
+        except ValueError as exc:
+            raise TagError("Tag pagination page size must be a positive integer") from exc
+        if size <= 0:
+            raise TagError("Tag pagination page size must be a positive integer")
+    if cursors and not _OCI_TAG_RE.fullmatch(cursors[0]):
+        raise TagError("Tag pagination cursor must be a valid OCI tag")
+    return query, size, cursors[0] if cursors else None
+
+
+def _tag_page_key(
+    url: str,
+) -> tuple[str, Optional[int], Optional[str], tuple[str, ...]]:
+    """Identify a page without conflating distinct opaque continuation bytes.
+
+    Normalize only the understood pagination parameters. Opaque fields retain
+    their original order and encoding, including repeated keys and bare flags.
+    Invalid pagination parameters propagate as :class:`TagError`.
+    """
+    query, size, cursor = _tag_page_parameters(url)
+    opaque_fields = tuple(field for name, field in query if name not in (b"n", b"last"))
+    return urlsplit(url).path, size, cursor, opaque_fields
+
+
+def _next_tag_link(header: str) -> Optional[str]:
+    """Select an RFC 5988 next link without splitting quoted values or URI commas.
+
+    Unknown extension parameters are ignored. Honor only the first ``rel``
+    parameter of each link, as required by the RFC. Malformed headers,
+    conflicting next links, and unsupported anchored next links raise
+    :class:`TagError` rather than risking incomplete or misdirected traversal.
+    """
+    position = 0
+    next_url = None
+    while position < len(header):
+        while position < len(header) and header[position] in " \t,":
+            position += 1
+        if position == len(header):
+            break
+        target = _LINK_TARGET_RE.match(header, position)
+        if target is None:
+            raise TagError("Malformed tag pagination Link header")
+        position = target.end()
+        relations = None
+        anchored = False
+        while True:
+            parameter = _LINK_PARAMETER_RE.match(header, position)
+            if parameter is None:
+                break
+            name, value = parameter.groups()
+            name = name.lower()
+            if value is not None and value.startswith('"'):
+                value = re.sub(r"\\(.)", r"\1", value[1:-1])
+            if name == "rel" and relations is None:
+                if value is None or not value.strip():
+                    raise TagError("Tag pagination Link relation is missing its value")
+                relations = value
+            anchored = anchored or name == "anchor"
+            position = parameter.end()
+        while position < len(header) and header[position].isspace():
+            position += 1
+        if position < len(header) and header[position] != ",":
+            raise TagError("Malformed tag pagination Link parameters")
+        if relations is not None and "next" in relations.lower().split():
+            if anchored:
+                raise TagError("Anchored tag pagination links are not supported")
+            if next_url is not None and next_url != target.group(1):
+                raise TagError("Ambiguous next links in tag pagination response")
+            next_url = target.group(1)
+        position += 1
+    return next_url
 
 
 def _raise_for_list_error(

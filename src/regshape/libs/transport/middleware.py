@@ -14,11 +14,13 @@
 """
 
 from abc import ABC
+from collections.abc import Mapping
 from typing import Protocol, Callable
 
 from regshape.libs.auth import registryauth
 from regshape.libs.errors import AuthError
 from regshape.libs.transport.models import RegistryRequest, RegistryResponse
+from regshape.libs.transport.urls import MAX_REDIRECTS, REDIRECT_STATUSES, resolve_registry_url
 
 
 class Middleware(Protocol):
@@ -255,10 +257,10 @@ import requests.exceptions
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _get_header_ci(headers: dict, name: str, default: str = "") -> str:
+def _get_header_ci(headers: Mapping[str, str], name: str, default: str = "") -> str:
     """Case-insensitive header lookup.
 
-    ``RegistryResponse.headers`` is a plain ``dict`` whose keys preserve
+    ``RegistryResponse.headers`` is a mapping whose keys preserve
     the original casing from the server (e.g. ``Www-Authenticate`` from
     Azure Container Registry).  This helper performs a case-insensitive
     search so that header checks work regardless of server casing.
@@ -348,6 +350,8 @@ class AuthMiddleware(BaseMiddleware):
     :param username: Username for authentication, or ``None``.
     :param password: Password for authentication, or ``None``.
     :param registry: Registry hostname, used only in error messages.
+    :param base_url: Configured registry origin for validating probe redirects.
+        When omitted, an absolute original request URL can supply the origin.
     """
 
     def __init__(
@@ -355,10 +359,13 @@ class AuthMiddleware(BaseMiddleware):
         username: Optional[str] = None,
         password: Optional[str] = None,
         registry: str = "<unknown>",
-    ):
+        base_url: Optional[str] = None,
+    ) -> None:
+        """Configure credentials and the origin used for challenge discovery."""
         self._username = username
         self._password = password
         self._registry = registry
+        self._base_url = base_url
 
     # -- Override __call__ to get access to next_handler for the retry ------
 
@@ -367,7 +374,7 @@ class AuthMiddleware(BaseMiddleware):
         request: RegistryRequest,
         next_handler: Callable[[RegistryRequest], RegistryResponse],
     ) -> RegistryResponse:
-        """Execute the request and handle 401 challenges."""
+        """Handle 401 challenges while retaining the request's redirect policy."""
         processed_request = request
         try:
             processed_request = self.process_request(request)
@@ -384,7 +391,9 @@ class AuthMiddleware(BaseMiddleware):
             # Some registries (e.g. ACR) only return WWW-Authenticate on
             # the /v2/ endpoint.  Fall back to a /v2/ probe to obtain the
             # challenge, then retry the original request.
-            www_auth = self._probe_v2_challenge(next_handler, processed_request)
+            www_auth = self._probe_v2_challenge(
+                next_handler, processed_request, self._base_url,
+            )
             if not www_auth:
                 raise AuthError(
                     "Authentication failed",
@@ -421,6 +430,7 @@ class AuthMiddleware(BaseMiddleware):
             stream=processed_request.stream,
             params=processed_request.params,
             timeout=processed_request.timeout,
+            allow_redirects=processed_request.allow_redirects,
         )
 
         return next_handler(retry_request)
@@ -431,27 +441,71 @@ class AuthMiddleware(BaseMiddleware):
     def _probe_v2_challenge(
         next_handler: Callable[[RegistryRequest], RegistryResponse],
         original_request: RegistryRequest,
+        base_url: Optional[str] = None,
     ) -> str:
         """Issue ``GET /v2/`` to obtain a ``WWW-Authenticate`` challenge.
 
         Some registries only return the challenge header on the ``/v2/``
         base endpoint rather than on every 401 response.  This helper
         sends a lightweight probe so that the caller can still negotiate
-        authentication.
+        authentication. The probe inherits the original redirect policy so
+        an unvalidated redirect cannot introduce a foreign challenge. When
+        automatic redirects are disabled, follow only validated same-origin
+        targets, with cycle detection and a 30-hop limit.
 
         :returns: The ``WWW-Authenticate`` header value, or an empty
             string if the probe also lacks one.
+        :raises AuthError: For unsafe, malformed, or non-terminating probe redirects.
         """
         probe = RegistryRequest(
             method="GET",
             url="/v2/",
             headers={},
             timeout=original_request.timeout,
+            allow_redirects=original_request.allow_redirects,
         )
-        probe_response = next_handler(probe)
-        if probe_response.status_code == 401:
-            return _get_header_ci(probe_response.headers, "WWW-Authenticate")
-        return ""
+        if original_request.allow_redirects:
+            probe_response = next_handler(probe)
+            if probe_response.status_code == 401:
+                return _get_header_ci(probe_response.headers, "WWW-Authenticate")
+            return ""
+
+        origin = base_url or original_request.url
+        try:
+            current_url = resolve_registry_url(origin, "/v2/", origin)
+        except ValueError:
+            raise AuthError("Cannot safely resolve the authentication probe origin") from None
+        visited: set[str] = set()
+        redirects = 0
+        while True:
+            if current_url in visited:
+                raise AuthError("Authentication probe redirect cycle detected")
+            visited.add(current_url)
+            probe_response = next_handler(probe)
+            try:
+                response_url = resolve_registry_url(
+                    origin, probe_response.raw_response.url or current_url, current_url,
+                )
+            except ValueError:
+                raise AuthError("Unsafe authentication probe response origin") from None
+            if probe_response.status_code not in REDIRECT_STATUSES:
+                if probe_response.status_code == 401:
+                    return _get_header_ci(probe_response.headers, "WWW-Authenticate")
+                return ""
+            if redirects >= MAX_REDIRECTS:
+                raise AuthError("Authentication probe redirect limit exceeded")
+            location = _get_header_ci(probe_response.headers, "Location")
+            if not location:
+                raise AuthError("Authentication probe redirect is missing Location")
+            try:
+                current_url = resolve_registry_url(origin, location, response_url)
+            except ValueError:
+                raise AuthError("Unsafe authentication probe redirect") from None
+            probe = RegistryRequest(
+                method="GET", url=current_url, headers={},
+                timeout=original_request.timeout, allow_redirects=False,
+            )
+            redirects += 1
 
 
 class LoggingMiddleware(BaseMiddleware):
@@ -580,7 +634,8 @@ class RetryMiddleware(BaseMiddleware):
 class CachingMiddleware(BaseMiddleware):
     """Middleware that caches GET responses for immutable content.
     
-    Caches responses based on URL, Accept header, and query parameters.
+    Caches responses based on URL, Accept header, query parameters, and
+    redirect policy.
     Suitable for registry manifests and blobs that are content-addressed
     and therefore immutable.
 
@@ -636,8 +691,8 @@ class CachingMiddleware(BaseMiddleware):
         """Generate cache key from request.
         
         Includes HTTP method, URL, relevant headers (e.g. Accept),
-        and query parameters (if available) to avoid collisions
-        between requests that can yield different representations.
+        query parameters, and redirect policy to avoid collisions between
+        requests that can yield different representations.
         """
         # Base components
         method = getattr(request, "method", "")
@@ -658,7 +713,8 @@ class CachingMiddleware(BaseMiddleware):
             sorted_items = sorted(params.items())
             params_component = "&".join(f"{k}={v}" for k, v in sorted_items)
 
-        return f"{method}:{url}:accept={accept}:params={params_component}"
+        redirects = getattr(request, "allow_redirects", True)
+        return f"{method}:{url}:accept={accept}:params={params_component}:redirects={redirects}"
     
     def _should_cache(self, response: RegistryResponse) -> bool:
         """Determine if response should be cached."""

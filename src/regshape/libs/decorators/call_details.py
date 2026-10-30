@@ -358,7 +358,7 @@ def debug_call(func):
 
 
 @debug_call
-def http_request(url: str, method: str = "GET", headers: dict = None, **kwargs):
+def http_request(url: str, method: str = "GET", headers: dict = None, **kwargs) -> requests.Response:
     """Thin wrapper around :func:`requests.request` decorated with
     ``@debug_call``.
 
@@ -371,5 +371,15 @@ def http_request(url: str, method: str = "GET", headers: dict = None, **kwargs):
     :param kwargs: Additional keyword arguments forwarded to
         :func:`requests.request` (e.g. ``timeout``).
     :return: :class:`requests.Response`
+    :raises requests.exceptions.RequestException: A sanitized transport failure
+        if Requests raises a parsing/argument ValueError with automatic redirects
+        disabled. This occurs before telemetry or middleware can log the error.
     """
-    return requests.request(method, url, headers=headers or {}, **kwargs)
+    try:
+        return requests.request(method, url, headers=headers or {}, **kwargs)
+    except ValueError:
+        if kwargs.get("allow_redirects", True):
+            raise
+        raise requests.exceptions.RequestException(
+            "Invalid registry request or redirect response"
+        ) from None
