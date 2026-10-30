@@ -37,7 +37,7 @@ the first version of every operation in that row.
 | Referrer listing/filtering/pagination, including tag-to-digest resolution | Implemented | [#46](https://github.com/toddysm/regshape/issues/46), [merged #68](https://github.com/toddysm/regshape/pull/68) | - | [API reference: referrers](../specs/operations/referrers.md) | [Command reference: referrers](../specs/cli/referrer.md) | 2026-10-30 |
 | Local Open Container Initiative (OCI) image-layout authoring, validation, and registry push | Implemented | - | - | [Design: layout creation](../specs/layout/oci-layout-create.md), [design/reference: layout push](../specs/cli/layout-push.md) | [How-to: create layouts](guides/create-oci-layout.md), [command reference: layouts](../specs/cli/layout.md) | - |
 | Docker daemon image listing, export/conversion, and registry push | Implemented | - | - | [Design: Docker integration](../specs/docker/docker-desktop-integration.md) | [How-to: Docker integration](guides/docker-desktop-integration.md) | - |
-| Opt-in request diagnostics, timing, metrics, and log output | Partial | Ordinary-transfer coverage gaps are not separately filed | - | [Design: telemetry](../specs/telemetry-enhancements.md) | [Command reference: supported telemetry flags](../specs/cli/tag.md) | - |
+| Opt-in request diagnostics, timing, metrics, and log output | Partial | Ordinary-transfer coverage gaps are not separately filed | - | [Design: telemetry](../specs/telemetry-enhancements.md) | [Option reference: current telemetry flags](#telemetry-options-current-baseline) | - |
 | Break Mode request mutation | Planned | [#29](https://github.com/toddysm/regshape/issues/29) | [Issue requirements: #29](https://github.com/toddysm/regshape/issues/29) | [Architecture: Break Mode](../specs/architecture.md) | - | - |
 | Break Mode telemetry integration | Planned | [#38](https://github.com/toddysm/regshape/issues/38); depends on #29 | [Issue requirements: #38](https://github.com/toddysm/regshape/issues/38) | [Design: telemetry enhancements](../specs/telemetry-enhancements.md) | - | - |
 | Python Package Index (PyPI) release publication | Implemented | [Closed #57](https://github.com/toddysm/regshape/issues/57), [v0.1.1 release](https://github.com/toddysm/regshape/releases/tag/v0.1.1) | - | [Developer guide: contributing](../CONTRIBUTING.md) | [Overview/install reference](../README.md) | - |
@@ -86,6 +86,34 @@ remote monitoring exporter. Source inspection and bounded mocked probes found:
 Issue [#38](https://github.com/toddysm/regshape/issues/38) is specifically about
 Break Mode logging, not these ordinary-transfer gaps. No additional telemetry
 issues were created as part of this bootstrap.
+
+#### Telemetry options (current baseline)
+
+Use these leaf-command options only where the command's `--help` lists them.
+They are not currently exposed by `docker push`. Collection is opt-in: format,
+verbosity, and log-file options alone do not enable it.
+
+| Option | Placement | Default | Behavior |
+| --- | --- | --- | --- |
+| `--time-methods` | After the leaf command | Off | Collect timing for instrumented methods. |
+| `--time-scenarios` | After the leaf command | Off | Render timing summaries for instrumented workflows. |
+| `--debug-calls` | After the leaf command | Off | Trace instrumented request/response headers and elapsed time. |
+| `--metrics` | After the leaf command | Off | Show aggregate request, byte, status, and timing metrics, subject to the limitations above. |
+| `--telemetry-format` | After the leaf command | `text` | Select `text` or `json` telemetry events; JSON events are newline-delimited. This does not change ordinary command output. |
+| `--telemetry-verbosity`, `-tv` | After the leaf command | `1` | Select `0` (off), `1` (normal), or `2` (verbose). Zero overrides the telemetry enable flags. |
+| `--log-file PATH` | Before the command group | None | Append enabled telemetry output to a file as well as standard error. It does not enable telemetry by itself. |
+
+For example, keep the tag result on standard output and mirror enabled
+telemetry events to a log file:
+
+```bash
+regshape --log-file telemetry.log tag list \
+  -i registry.example.com/team/image --json \
+  --time-methods --time-scenarios --metrics --debug-calls \
+  --telemetry-format json
+```
+
+#### Progress baseline
 
 The current [layout push renderer](../src/regshape/cli/layout.py) opens a
 per-blob bar only for interactive, non-JSON command output and completes it when
