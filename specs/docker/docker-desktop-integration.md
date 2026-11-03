@@ -157,6 +157,10 @@ The optional observer receives typed
 unchanged. Export/conversion precedes these blob observations and supplies no
 invented byte total.
 
+See the [callback reference](../../docs/library/transfer-progress.md) and
+[progress guide](../../docs/guides/live-transfer-progress.md) for usage and
+single-row output examples.
+
 ---
 
 ## Multi-Platform Image Support
@@ -342,7 +346,7 @@ regshape docker push [OPTIONS]
 |---|---|---|---|---|
 | `--image` | `-i` | string | required | Docker image reference (name:tag or ID) |
 | `--dest` | `-d` | string | required | Destination registry reference (`registry/repo[:tag]`) |
-| `--platform` | | string | `None` | Platform filter (`os/architecture`). Omit to push all platforms. |
+| `--platform` | | string | `None` | Export platform filter (`os/architecture`); select one when export would contain multiple manifest entries |
 | `--force` | | flag | `false` | Skip blob existence checks |
 | `--chunked` | | flag | `false` | Use chunked upload |
 | `--chunk-size` | | integer | `65536` | Chunk size for chunked upload |

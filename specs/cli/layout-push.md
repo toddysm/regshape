@@ -377,6 +377,10 @@ suppress animation and per-state progress lines. Stdout result schemas remain
 unchanged. Text telemetry/logging is coordinated with the active row; progress
 controls never enter log files.
 
+See the [progress guide](../../docs/guides/live-transfer-progress.md) for
+single-row snapshots and the [callback reference](../../docs/library/transfer-progress.md)
+for resource ownership and compatibility.
+
 ---
 
 ## Implementation Notes

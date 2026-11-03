@@ -3,7 +3,8 @@
 This guide walks you through building a valid
 [OCI Image Layout](https://github.com/opencontainers/image-spec/blob/main/image-layout.md)
 on your local filesystem using `regshape`. No registry or network connection is
-required — all operations work entirely on disk.
+required for creation: those operations work entirely on disk. The optional
+push step below requires registry access.
 
 ## What is an OCI Image Layout?
 
@@ -266,6 +267,29 @@ regshape layout validate --path ./my-image
 
 ---
 
+## Optional: Push the completed layout
+
+After validation, publish a single-manifest layout to a registry:
+
+```bash
+regshape layout push --path ./my-image --dest registry.example.com/team/example:v1
+```
+
+On interactive stderr, preparation is followed by one live row per unique
+blob. Byte updates, verification, and the final state overwrite that row;
+shared layer/config references do not add duplicates. Both monolithic and
+`--chunked` uploads report progress.
+
+Use `--no-progress` to disable animation or `--json` for the existing structured
+result. Neither changes upload validation or repairs registry errors. A later
+manifest failure prevents overall push completion even if its blobs uploaded.
+For multi-manifest layouts, omit the destination tag override and retain the
+existing per-entry reference behavior.
+
+See [live transfer progress](live-transfer-progress.md) for screen snapshots,
+stream separation and telemetry, or the [layout push reference](../../specs/cli/layout-push.md)
+for all options.
+
 ## Using the Python library directly
 
 All CLI commands are thin wrappers over the `regshape.libs.layout` module,
@@ -330,3 +354,4 @@ update_manifest_annotations(layout, {"org.opencontainers.image.version": "1.0.0"
 - [OCI Artifacts Guidance](https://github.com/opencontainers/image-spec/blob/main/artifacts-guidance.md)
 - [regshape layout spec](../../specs/layout/oci-layout-create.md)
 - [regshape layout CLI spec](../../specs/cli/layout.md)
+- [Library transfer callbacks](../library/transfer-progress.md)

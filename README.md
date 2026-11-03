@@ -86,6 +86,8 @@ See the [tag command reference](specs/cli/tag.md) for pagination and output opti
 
 - [Creating OCI Layouts](docs/guides/create-oci-layout.md)
 - [Docker Desktop Integration](docs/guides/docker-desktop-integration.md)
+- [Live Transfer Progress](docs/guides/live-transfer-progress.md)
+- [Library Transfer Callbacks](docs/library/transfer-progress.md)
 
 ### Architecture & Design
 
