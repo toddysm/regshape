@@ -1,17 +1,26 @@
 # Project state
 
-Captured on **2026-10-30** against
-[main at ed17d2e](https://github.com/toddysm/regshape/commit/ed17d2eef64da73528998e5c0917dff4e91820c5).
+<!-- doc-type: overview -->
+
+Reconciled on **2026-11-03** against
+[main at a842f97](https://github.com/toddysm/regshape/commit/a842f971eeec2749789f2ddfa2044ec1295dd8cc).
+The original baseline was captured on 2026-10-30 at
+[ed17d2e](https://github.com/toddysm/regshape/commit/ed17d2eef64da73528998e5c0917dff4e91820c5);
+unchanged capability evidence is retained below, while live progress and its
+required documentation are now merged.
 This inventory distinguishes implemented behavior from partial capabilities,
 unmerged proposals, and planned work. It is a dated snapshot, not an assertion
 that every registry or platform has been tested.
 
 Tracking is **issues-only** because Project access is unavailable in this
 workspace. The linked issues and pull requests remain authoritative for newer
-changes. The baseline was captured in the inventory bootstrap. Live-progress
-planning status was updated on **2026-11-02** following approval of design
-revision 2 and its implementation kickoff; its design remains in the feature
-issue, not a separate design document.
+changes. Live-progress design revision 2 remains in its feature issue, not a
+separate design document. All five required implementation/documentation items
+are closed and no longer dependency-blocked.
+
+**Implemented does not mean released.** Live progress targets the open
+[0.2 milestone](https://github.com/toddysm/regshape/milestone/1); this work did
+not publish a release or change the package version.
 
 ## Status meanings
 
@@ -45,7 +54,7 @@ the first version of every operation in that row.
 | Python Package Index (PyPI) release publication | Implemented | [Closed #57](https://github.com/toddysm/regshape/issues/57), [v0.1.1 release](https://github.com/toddysm/regshape/releases/tag/v0.1.1) | - | [Developer guide: contributing](../CONTRIBUTING.md) | [Overview/install reference](../README.md) | - |
 | Homebrew distribution and release-driven formula updates | Partial | [Tracker #63](https://github.com/toddysm/regshape/issues/63), [remaining documentation fix #62](https://github.com/toddysm/regshape/issues/62) | - | - | [How-to: Homebrew installation](guides/homebrew-install.md) | - |
 | OCI image-specification guidance for the development skill | In progress | [#66](https://github.com/toddysm/regshape/issues/66), [open #67](https://github.com/toddysm/regshape/pull/67) | [Issue requirements: #66](https://github.com/toddysm/regshape/issues/66) | [Current development skill](../.github/skills/regshape-dev/SKILL.md) | - | - |
-| Live transfer progress bars across blob, layout, and Docker commands | In progress | [Feature #72](https://github.com/toddysm/regshape/issues/72), [implementation #73](https://github.com/toddysm/regshape/issues/73), [#74](https://github.com/toddysm/regshape/issues/74), [#75](https://github.com/toddysm/regshape/issues/75), [#76](https://github.com/toddysm/regshape/issues/76), [documentation #77](https://github.com/toddysm/regshape/issues/77) | [Lightweight design: #72, revision 2](https://github.com/toddysm/regshape/issues/72) | - | - | - |
+| Live progress for blob get/upload and layout/Docker push | Implemented | [Feature #72](https://github.com/toddysm/regshape/issues/72), merged [#80](https://github.com/toddysm/regshape/pull/80), [#81](https://github.com/toddysm/regshape/pull/81), [#82](https://github.com/toddysm/regshape/pull/82), [#83](https://github.com/toddysm/regshape/pull/83), [#84](https://github.com/toddysm/regshape/pull/84) | [Lightweight design: #72, revision 2](https://github.com/toddysm/regshape/issues/72) | [Developer reference: transfer callbacks](library/transfer-progress.md), [API reference: blobs](../specs/operations/blobs.md) | [How-to: live transfer progress](guides/live-transfer-progress.md) | 2026-11-03 |
 
 ## Evidence and important boundaries
 
@@ -61,14 +70,16 @@ Their library counterparts are in [authentication](../src/regshape/libs/auth/),
 [layouts](../src/regshape/libs/layout/), and
 [Docker integration](../src/regshape/libs/docker/).
 Docker push exports/converts a daemon image to a local layout before uploading;
-this is not a general registry-to-local full-image pull command.
+this is not a general registry-to-local full-image pull command. Its existing
+multi-manifest tag-override restriction remains: select a platform for those
+exports. Live progress did not add multi-platform index publication.
 
 Automatic tag pagination is opt-in. It includes a client safety limit of ten
 consecutive empty linked pages; a terminal empty page completes normally, and
 received tags reset the counter. This is a client policy, not an OCI-mandated
 page limit. Referrer tag resolution and tag pagination are both merged.
 
-### Telemetry and progress are not complete coverage
+### Telemetry coverage remains partial
 
 [Telemetry configuration](../src/regshape/libs/decorators/__init__.py) defaults
 to disabled and emits local output/logs when enabled. It is not an automatic
@@ -115,23 +126,36 @@ regshape --log-file telemetry.log tag list \
   --telemetry-format json
 ```
 
-#### Progress baseline
+### Live transfer progress
 
-The current [layout push renderer](../src/regshape/cli/layout.py) opens a
-per-blob bar only for interactive, non-JSON command output and completes it when
-the blob finishes. The [layout library](../src/regshape/libs/layout/operations.py)
-has start/done callbacks but no live byte-progress events. Other transfer
-commands do not currently have progress bars.
+The shared [renderer](../src/regshape/cli/progress.py) now serves `blob get`,
+both modes of `blob upload`, `layout push`, and `docker push`. It retains one
+row per unique blob and overwrites that row for byte updates, retry,
+verification/commit, and final state. Image pushes show indeterminate
+preparation and unique done/skipped counts; shared references do not duplicate
+rows or downgrade an uploaded blob.
 
-Feature [#72](https://github.com/toddysm/regshape/issues/72) addresses that gap.
-Design revision 2 and its breakdown are **approved**, and implementation kickoff
-is authorized with library progress callbacks in
-[#73](https://github.com/toddysm/regshape/issues/73) first. The feature is
-**In progress**, not delivered: the callbacks, replayable uploads, and live
-renderers still require their implementation and validation. The approved
-display contract is one persistent row per unique blob, updated in place
-through progress, retries, verification, and the final state. The exactly one final
-user-documentation item is [#77](https://github.com/toddysm/regshape/issues/77).
+The [library callback contract](library/transfer-progress.md) reports actual
+logical bytes with trusted or unknown totals. File-backed uploads and integrity
+checks use bounded reads; replayable monolithic uploads reset counts on retry.
+Both streamed upload protocols require a final PUT with `201 Created` and
+applicable digest checks before reporting completion.
+
+`--no-progress`, explicit layout/Docker `--json`, structured telemetry, and
+noninteractive stderr suppress animation without changing transfer protocols
+or validation. Blob result JSON on stdout alone does not disable stderr progress.
+Existing result schemas and
+legacy layout callbacks remain compatible. These progress observations do not
+repair the separate telemetry gaps above.
+
+Feature [#72](https://github.com/toddysm/regshape/issues/72) is implemented
+through [#73](https://github.com/toddysm/regshape/issues/73),
+[#74](https://github.com/toddysm/regshape/issues/74),
+[#75](https://github.com/toddysm/regshape/issues/75),
+[#76](https://github.com/toddysm/regshape/issues/76), and the required final
+documentation item [#77](https://github.com/toddysm/regshape/issues/77).
+The [user guide](guides/live-transfer-progress.md) contains single-row snapshots,
+output-channel rules, retry/error semantics, and supported command examples.
 
 ### Release and Homebrew state
 
@@ -151,14 +175,20 @@ text in that tracker should not be read as reopening already closed work.
 ## Validation baseline and maintenance
 
 The [test workflow](../.github/workflows/tests.yml) covers Python 3.10, 3.11,
-and 3.12. [Post-merge main run 40982870365](https://github.com/toddysm/regshape/actions/runs/40982870365)
-passed **1,300 tests per version** at the captured revision, with successful
-Python/Actions CodeQL analyses. The registry feature tests use mocked responses;
-this is not evidence that every live registry has passed end-to-end testing.
+and 3.12. The final progress-documentation head passed
+**1,601 tests per version** in [run 41583659058](https://github.com/toddysm/regshape/actions/runs/41583659058),
+with successful Python/Actions CodeQL analyses and current-head agent review.
+Its signed merge has the same tree as the tested head. The existing auth-command
+Click deprecation warning remains unrelated to this feature.
+
+Focused production type checks and lint/security baseline comparisons found no
+new findings. Documentation validation checked links, command help, callback
+signatures, exact display snapshots, and executable examples with mocked
+transport. No documentation builder or Markdown linter is configured. The tests
+mock registry and Docker boundaries; they do not certify every live registry
+or daemon.
 
 Update this inventory when related work lands or a tracking decision changes.
 Do not mark a feature Implemented merely because its design or a pull request
-exists. For the new lightweight feature, design/breakdown approval and the
-inventory bootstrap are complete; this reviewed In progress transition is the
-remaining inventory prerequisite to the authorized first work item. Completion requires
-the implementation/documentation items and an inventory close-out update.
+exists. Completion requires all required implementation/documentation items
+and a merged inventory close-out before the tracking issue is closed.
