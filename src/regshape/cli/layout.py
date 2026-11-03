@@ -23,6 +23,7 @@ import sys
 import click
 
 from regshape.cli.formatting import emit_error, emit_json, progress_status
+from regshape.cli.progress import ProgressDisplay
 from regshape.libs.decorators import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import AuthError, BlobError, LayoutError, ManifestError
@@ -39,16 +40,15 @@ from regshape.libs.layout import (
     update_manifest_annotations,
     validate_layout,
 )
-from regshape.libs.refs import parse_image_ref
-from regshape.libs.transport import RegistryClient
-from regshape.libs.transport.client import TransportConfig
 from regshape.libs.models.mediatype import (
     OCI_IMAGE_CONFIG,
     OCI_IMAGE_LAYER_TAR_GZIP,
     OCI_IMAGE_LAYER_TAR_ZSTD,
     OCI_IMAGE_MANIFEST,
 )
-
+from regshape.libs.refs import parse_image_ref
+from regshape.libs.transport import RegistryClient
+from regshape.libs.transport.client import TransportConfig
 
 # Compression magic bytes
 _GZIP_MAGIC = b"\x1f\x8b"
@@ -738,6 +738,7 @@ def _format_size(size: int) -> str:
 
 @layout.command("push")
 @telemetry_options
+@click.option("--no-progress", is_flag=True, default=False, help="Disable interactive transfer progress.")
 @click.option(
     "--path", "-p", "layout_path",
     required=True,
@@ -771,11 +772,12 @@ def _format_size(size: int) -> str:
 @click.option("--json", "as_json", is_flag=True, default=False, help="Output JSON.")
 @click.pass_context
 @track_scenario("layout push")
-def push_cmd(ctx, layout_path, dest, force, chunked, chunk_size, dry_run, as_json):
+def push_cmd(ctx, layout_path, dest, force, chunked, chunk_size, dry_run, as_json, no_progress):
     """Push an OCI Image Layout to a remote registry.
 
     Reads the layout's index.json, uploads all blobs (layers and config),
-    then pushes each manifest to the destination registry.
+    then pushes each manifest to the destination registry. Interactive progress
+    retains one row per unique blob; JSON and --no-progress suppress animation.
     """
     # --- Parse destination ---
     try:
@@ -794,40 +796,6 @@ def push_cmd(ctx, layout_path, dest, force, chunked, chunk_size, dry_run, as_jso
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
-    # --- Progress helpers ---
-    use_progress = not as_json and sys.stderr.isatty()
-    current_bar = [None]  # mutable wrapper for closure
-
-    def progress_callback(event, **kwargs):
-        digest = kwargs.get("digest", "")
-        size = kwargs.get("size", 0)
-        if event == "blob_start":
-            label = f"  {_short_digest(digest)} ({_format_size(size)})"
-            if use_progress:
-                bar = click.progressbar(
-                    length=size, label=label, file=sys.stderr,
-                    width=36, show_pos=True,
-                )
-                bar.__enter__()
-                current_bar[0] = bar
-                # Immediately complete — we don't have per-byte callback from
-                # the library upload, so show as complete once done.
-            else:
-                progress_status(f"  Uploading {_short_digest(digest)} ({_format_size(size)})...")
-        elif event == "blob_done":
-            if use_progress and current_bar[0] is not None:
-                bar = current_bar[0]
-                bar.update(size)
-                bar.__exit__(None, None, None)
-                current_bar[0] = None
-            else:
-                progress_status(f"  Uploaded  {_short_digest(digest)}")
-        elif event == "blob_skip":
-            progress_status(f"  {_short_digest(digest)} ({_format_size(size)}) exists, skipping")
-        elif event == "manifest_done":
-            ref = kwargs.get("reference", "")
-            progress_status(f"  Manifest {_short_digest(digest)} -> {ref}  pushed")
-
     # --- Execute push ---
     dest_display = f"{registry}/{repo}"
     if tag_override:
@@ -837,24 +805,24 @@ def push_cmd(ctx, layout_path, dest, force, chunked, chunk_size, dry_run, as_jso
         progress_status(f"Pushing layout {layout_path} -> {dest_display}\n")
 
     try:
-        result = push_layout(
-            layout_path=layout_path,
-            client=client,
-            repo=repo,
-            tag_override=tag_override,
-            force=force,
-            chunked=chunked,
-            chunk_size=chunk_size,
-            progress_callback=progress_callback,
-        )
+        with ProgressDisplay(
+            disabled=no_progress, structured=as_json, total_blobs=None, show_counts=True,
+        ) as progress:
+            progress.prepare("Preparing OCI layout")
+            result = push_layout(
+                layout_path=layout_path,
+                client=client,
+                repo=repo,
+                tag_override=tag_override,
+                force=force,
+                chunked=chunked,
+                chunk_size=chunk_size,
+                transfer_callback=progress.observe,
+            )
     except LayoutError as exc:
         emit_error(layout_path, str(exc))
-    except (AuthError, BlobError, ManifestError) as exc:
+    except (AuthError, BlobError, ManifestError, OSError) as exc:
         emit_error(dest_display, str(exc))
-    finally:
-        if current_bar[0] is not None:
-            current_bar[0].__exit__(None, None, None)
-            current_bar[0] = None
 
     # --- Output ---
     if as_json:

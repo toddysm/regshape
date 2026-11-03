@@ -132,6 +132,7 @@ def push_image(
     force: bool = False,
     chunked: bool = False,
     chunk_size: int = 65536,
+    transfer_callback: ProgressCallback | None = None,
 ) -> PushResult:
 ```
 
@@ -145,11 +146,16 @@ Exports a Docker image and pushes it to a remote registry.
 3. Parse `dest` via `parse_image_ref()` to get `(registry, repo, reference)`.
 4. Build a `RegistryClient` with `TransportConfig`.
 5. Call `push_layout()` from `libs/layout/` to push the OCI layout to the
-   remote registry.
+   remote registry, forwarding `transfer_callback` unchanged for both upload
+   protocols and unique skipped blobs.
 6. Clean up the temporary directory.
 7. Return a `PushResult` (the existing dataclass from `libs/layout/`).
 
 This maximizes reuse — the network push logic is already implemented.
+The optional observer receives typed
+[transfer events](../../src/regshape/libs/progress.py); its exceptions propagate
+unchanged. Export/conversion precedes these blob observations and supplies no
+invented byte total.
 
 ---
 
@@ -341,17 +347,25 @@ regshape docker push [OPTIONS]
 | `--chunked` | | flag | `false` | Use chunked upload |
 | `--chunk-size` | | integer | `65536` | Chunk size for chunked upload |
 | `--json` | | flag | `false` | Output as JSON |
+| `--no-progress` | | flag | `false` | Disable interactive progress without changing the push |
 
 **Behaviour:**
 
-1. Call `push_image(image, dest, platform=platform, insecure=..., force=...,
-   chunked=..., chunk_size=...)`.
-2. Print push summary (blobs uploaded, blobs skipped, manifest digest,
-   platforms pushed).
+1. Show an indeterminate preparation row while exporting/converting the image.
+   Call `push_image(image, dest, platform=platform, insecure=..., force=...,
+   chunked=..., chunk_size=..., transfer_callback=...)`.
+2. Replace one row per unique blob through actual byte progress and final
+   state, with unique `done`/`skipped` counts. Then print the existing summary.
 3. Exit 0 on success, 1 on error.
 
 Inherits global options `--insecure`, `--verbose`, `--log-file` from the
 parent group.
+
+Animation is disabled for noninteractive stderr, `--json`, `--no-progress`,
+or an active structured telemetry context. This command does not acquire new
+telemetry switches or whole-command timing as part of progress support.
+The existing multi-manifest tag-override restriction remains: select a platform
+when Docker export would otherwise produce multiple manifest entries.
 
 ---
 

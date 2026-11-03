@@ -58,11 +58,12 @@ regshape layout push [OPTIONS]
 | `--chunked` | | flag | `false` | Use the chunked (streaming) upload protocol for blobs instead of monolithic |
 | `--chunk-size` | | integer | `65536` | Chunk size in bytes when `--chunked` is enabled |
 | `--dry-run` | | flag | `false` | Validate the layout and print what *would* be pushed without making any network calls |
+| `--json` | | flag | `false` | Preserve the structured result on stdout without animated progress |
+| `--no-progress` | | flag | `false` | Disable interactive progress without changing transfers or telemetry |
 
-Global options `--insecure`, `--verbose`, `--json`, and the telemetry family
-(`--time-methods`, `--time-scenarios`, `--debug-calls`, `--metrics`,
-`--telemetry-format`, `--telemetry-verbosity`) are inherited from the parent
-groups and are all supported.
+Root options include `--insecure`, `--verbose`, and `--log-file`.
+JSON and telemetry options belong to `layout push`; use
+`regshape layout push --help` for the complete command option list.
 
 ---
 
@@ -103,13 +104,15 @@ manifests. Each manifest is pushed by its digest, and if it carries an
         If 2xx, invoke skip callback and continue. If `BlobError` with
         status 404 (or no status), treat as "not present"; re-raise any
         other `BlobError`.
-      - For monolithic uploads: read blob bytes via
-        `read_blob(layout, blob.digest)` and call
-        `upload_blob(client, repo, data, blob.digest, blob.media_type)`.
+      - For monolithic uploads: open and verify the blob using bounded reads,
+        rewind it, and call `upload_blob_stream(...)` with its descriptor size
+        and optional typed observer.
       - For chunked uploads (`--chunked`): open the blob file directly
         from disk and call `upload_blob_chunked(...)` to stream without
         loading the entire blob into memory.
-      - Invoke progress callback with digest and size.
+      - Preserve the legacy string-event callback and independently forward
+        typed observations for both protocols. Require a final PUT with
+        `201 Created` before reporting a blob as uploaded.
    d. **Push manifest** — determine the reference:
       - If `--dest` included a tag and this is the only manifest: use
         that tag.
@@ -140,18 +143,20 @@ Digests and sizes are formatted the same way as in the normal push output.
 
 ### Plain text (default)
 
-When stderr is a TTY, each blob upload is shown as a Click progress bar
-that completes in one step (per-byte streaming progress is not available
-from the library upload). When stderr is *not* a TTY, simple
-"Uploading / Uploaded" lines are printed instead.
+On an interactive standard-error terminal, the shared renderer replaces one
+row per unique blob through transfer, retry, verification/commit and final
+state. The `done` and `skipped` counters count unique digests. A repeated shared
+blob does not append another row or downgrade an Uploaded row.
+
+Example final screen (intermediate states overwrite these same rows):
 
 ```
 Pushing layout ./my-image -> registry.io/myrepo/myimage
 
-  sha256:aaa...bbb (1.0 MB)  [####################################]  1048576/1048576
-  sha256:ccc...ddd (512.0 KB) exists, skipping
-  sha256:eee...fff (312 B)   [####################################]  312/312
-  Manifest sha256:def456...ghi -> latest  pushed
+Preparing OCI layout ... done
+Blob 1 [1 done/0 skipped] sha256:aaaa... Uploaded 1.0 MiB/1.0 MiB
+Blob 2 [1 done/1 skipped] sha256:cccc... Already present; skipped
+Blob 3 [2 done/1 skipped] sha256:eeee... Uploaded 312 B/312 B
 
 Push complete: 1 manifest(s), 2 blob(s) uploaded, 1 blob(s) skipped.
 ```
@@ -161,18 +166,13 @@ Non-TTY output (e.g. piped to a file):
 ```
 Pushing layout ./my-image -> registry.io/myrepo/myimage
 
-  Uploading sha256:aaa...bbb (1.0 MB)...
-  Uploaded  sha256:aaa...bbb
-  sha256:ccc...ddd (512.0 KB) exists, skipping
-  Uploading sha256:eee...fff (312 B)...
-  Uploaded  sha256:eee...fff
-  Manifest sha256:def456...ghi -> latest  pushed
-
 Push complete: 1 manifest(s), 2 blob(s) uploaded, 1 blob(s) skipped.
 ```
 
-Digests are truncated to `sha256:` + 12 hex characters in plain-text
-output. Sizes use human-friendly units (B, KB, MB, GB).
+Live rows use shortened digests and binary byte units (B, KiB, MiB, GiB);
+optional fields are omitted on narrow terminals. The existing final result
+counters and legacy callbacks retain their occurrence-based skip semantics,
+including repeated references across manifests; live counters are unique.
 
 ### JSON (`--json`)
 
@@ -318,7 +318,7 @@ regshape layout push \
 
 The CLI command delegates to a library function in `libs/layout/operations.py`:
 
-### `push_layout(layout_path, client, repo, tag_override, force, chunked, chunk_size, progress_callback) -> PushResult`
+### `push_layout(layout_path, client, repo, tag_override, force, chunked, chunk_size, progress_callback, *, transfer_callback=None) -> PushResult`
 
 **Parameters:**
 
@@ -333,8 +333,11 @@ The CLI command delegates to a library function in `libs/layout/operations.py`:
 - `progress_callback: Callable | None` — Optional callable invoked as
   `progress_callback(event, **kwargs)` for UI feedback. Events:
   `"blob_start"`, `"blob_skip"`, `"blob_done"`, `"manifest_done"`.
+- `transfer_callback: ProgressCallback | None` — Independent typed observer for
+  actual logical byte progress in both protocols and one skipped event per
+  unique existing digest. Observer exceptions propagate unchanged.
 
-**Returns:** A `PushResult` (dataclass or dict) containing the per-manifest
+**Returns:** A `PushResult` dataclass containing the per-manifest
 push report and summary statistics (manifests pushed, blobs uploaded, blobs
 skipped, bytes uploaded).
 
@@ -351,7 +354,7 @@ skipped, bytes uploaded).
 
 - **Internal:**
   - `libs/layout/operations.py` — `validate_layout`, `read_index`, `read_blob`
-  - `libs/blobs/operations.py` — `head_blob`, `upload_blob`, `upload_blob_chunked`
+  - [Blob operations](../../src/regshape/libs/blobs/operations.py) — `head_blob`, `upload_blob_stream`, `upload_blob_chunked`
   - `libs/manifests/operations.py` — `push_manifest`
   - `libs/transport/client.py` — `RegistryClient`, `TransportConfig`
   - `libs/refs.py` — `parse_image_ref`
@@ -363,19 +366,16 @@ skipped, bytes uploaded).
 
 ## Progress Bars
 
-The CLI command uses `click.progressbar()` to give visual feedback during
-uploads:
+The shared [renderer](../../src/regshape/cli/progress.py) uses Click terminal
+output and typed [transfer observations](../../src/regshape/libs/progress.py).
+Routine redraws are limited to ten per second; lifecycle transitions flush.
+Only a blob with a trusted size has a percentage. Preparation is indeterminate,
+and no whole-image byte percentage is invented.
 
-- **Blob upload progress** — one progress bar per blob. The bar is opened
-  when the upload starts and completed in a single update when the upload
-  finishes (per-byte streaming progress is not currently available from the
-  library upload functions). Blobs that are skipped (already present) show
-  a skip message instead of a progress bar.
-- There is **no** overall manifest-level progress bar.
-
-In `--json` mode, progress bars are suppressed and only the final JSON
-result is printed. Progress bars are also suppressed when stderr is not
-a TTY; simple text lines are printed instead (see Output Format above).
+`--json`, structured telemetry, `--no-progress`, and noninteractive stderr
+suppress animation and per-state progress lines. Stdout result schemas remain
+unchanged. Text telemetry/logging is coordinated with the active row; progress
+controls never enter log files.
 
 ---
 
@@ -390,8 +390,6 @@ a TTY; simple text lines are printed instead (see Output Format above).
   it and treat as "blob not present" rather than a fatal error.
 - When `--verbose` is set, print each HTTP request/response summary
   (handled automatically by the transport middleware and `--debug-calls`).
-- Progress bars use `click.progressbar()` for each blob upload. The bar is
-  completed in one step because the library upload functions do not expose
-  per-byte progress callbacks.
-- Chunked uploads open the blob file directly from disk for streaming
-  instead of loading the entire blob into memory via `read_blob()`.
+- Both upload modes use file-backed streams and forward descriptor totals.
+- Integrity checks hash payload files in bounded chunks rather than buffering
+  an entire layer before the progress display starts.
