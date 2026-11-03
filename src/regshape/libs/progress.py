@@ -115,6 +115,7 @@ class _TransferProgress:
         self.callback = callback
         self.transfer_id = uuid4().hex if callback is not None else ""
         self.bytes_completed = 0
+        self.attempt = 1
         self.total_bytes: int | None = None
         self.callback_failed = False
         self._terminal = False
@@ -166,6 +167,7 @@ class _TransferProgress:
         event = TransferProgress(
             self.transfer_id, self.digest, self.direction, phase,
             self.bytes_completed, self.total_bytes,
+            self.attempt,
         )
         delivered = False
         try:
@@ -187,6 +189,12 @@ class _TransferProgress:
         self.check_increment(amount)
         self.bytes_completed += amount
         self.emit(TransferPhase.TRANSFERRING)
+
+    def retry(self) -> None:
+        """Replace an unconfirmed whole-body attempt, never accumulate retransmissions."""
+        self.bytes_completed = 0
+        self.attempt += 1
+        self.emit(TransferPhase.RETRYING)
 
     def check_complete(self) -> None:
         """Reject a short transfer before verification/commit is reported successful."""

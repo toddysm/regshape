@@ -256,6 +256,41 @@ Uploads a blob using the chunked POST + N×PATCH + PUT protocol.
 
 ---
 
+### `upload_blob_stream`
+
+```python
+upload_blob_stream(
+    client, repo, source, digest, content_type="application/octet-stream",
+    *, progress_callback=None, total_size=None,
+)
+```
+
+This is the file/stream-capable monolithic alternative to the existing
+bytes-based `upload_blob`. It preserves POST-plus-PUT rather than switching
+registry protocols. The source remains caller-owned and is never closed.
+
+For seekable binary sources, remaining length is discovered by seeking to the
+end and restoring the original position, without reading the payload into memory.
+An explicit `total_size` must match that remaining length. Nonseekable sources
+require an explicit size and may be sent once; replay after consumption fails
+before a second request is dispatched. Short, extra, or nonbinary source data
+fails explicitly rather than truncating, padding, or completing an empty retry.
+
+The HTTP client reads the counted body incrementally with Content-Length.
+Progress measures bytes read for the client, not server acknowledgements.
+The full-byte state is `COMMITTING` while the final response is pending, then
+`VERIFYING`; success follows the registry response and applicable digest check.
+Source and callback failures propagate without being mistaken for retriable
+network failures, even if Requests wraps the original exception.
+
+Authentication retries in both client modes, configured transient retries, and
+Requests redirect rewinds reset to the original source offset. The same
+transfer ID is retained; `attempt` increases and a `RETRYING` event replaces
+unconfirmed bytes with zero instead of accumulating retransmissions. Existing
+retry eligibility and redirect policies are not broadened. The wrapper is
+closed after use, but the borrowed source is not. Known request length remains
+available to existing telemetry without reading the stream for measurement.
+
 ### Transfer progress
 
 `ProgressCallback`, `TransferProgress`, `TransferDirection`, and `TransferPhase`
@@ -273,7 +308,7 @@ Each frozen `TransferProgress` contains:
 | `phase` | A `TransferPhase` lifecycle state |
 | `bytes_completed` | Absolute processed/accepted payload bytes, never a delta |
 | `total_bytes` | Trusted size, or `None` for unknown; zero means known empty |
-| `attempt` | Logical invocation attempt, currently one; not the HTTP retry count |
+| `attempt` | Logical payload attempt; increases on monolithic body replay, not buffered-chunk HTTP retries |
 
 Downloads emit `PREPARING`, `TRANSFERRING` at zero and after each nonempty
 consumed chunk, `VERIFYING`, then `COMPLETED`. Both saved and verification-only
@@ -301,9 +336,9 @@ commits or unbounded reads.
 
 Buffered chunks retried by authentication or transport middleware contribute
 bytes only once after success. This item does not expose individual internal
-retry events; `attempt` stays one. `RETRYING` and `SKIPPED` are reserved lifecycle
-values for the later replay/orchestration work, not claims of implemented
-monolithic progress or terminal rendering.
+retry events; `attempt` stays one for that protocol. Monolithic streamed bodies
+emit `RETRYING` on rewind. `SKIPPED` is reserved for orchestration; this library
+contract does not itself implement terminal rendering.
 
 An operational observer receives one terminal `FAILED` or `CANCELLED` event
 when the transfer fails, or `COMPLETED` on success. A callback exception

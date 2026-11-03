@@ -19,6 +19,7 @@ from typing import Protocol, Callable
 
 from regshape.libs.auth import registryauth
 from regshape.libs.errors import AuthError
+from regshape.libs.transport.body import _UploadBody
 from regshape.libs.transport.models import RegistryRequest, RegistryResponse
 from regshape.libs.transport.urls import MAX_REDIRECTS, REDIRECT_STATUSES, resolve_registry_url
 
@@ -610,6 +611,8 @@ class RetryMiddleware(BaseMiddleware):
                 return self.process_response(processed_request, response)
                 
             except self.config.exceptions as exc:
+                if isinstance(processed_request.body, _UploadBody):
+                    processed_request.body.raise_if_failed()
                 last_exception = exc
                 
                 if attempt < self.config.max_retries:
