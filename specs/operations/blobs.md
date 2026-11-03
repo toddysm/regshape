@@ -86,6 +86,9 @@ def get_blob(
     digest: str,
     output_path: Optional[str] = None,
     chunk_size: int = _DEFAULT_CHUNK_SIZE,
+    *,
+    progress_callback: ProgressCallback | None = None,
+    total_size: int | None = None,
 ) -> BlobInfo:
 ```
 
@@ -97,7 +100,9 @@ Downloads a blob and verifies its digest.
 | `repo` | `str` | required | Repository name |
 | `digest` | `str` | required | Expected digest (e.g. `"sha256:..."` or `"sha512:..."`) |
 | `output_path` | `Optional[str]` | `None` | File path to write the blob to; when `None` body is consumed for digest verification only |
-| `chunk_size` | `int` | `65536` | Streaming chunk size in bytes |
+| `chunk_size` | `int` | `65536` | Positive streaming chunk size in bytes |
+| `progress_callback` | `Optional[ProgressCallback]` | `None` | Keyword-only observer of immutable transfer events |
+| `total_size` | `Optional[int]` | `None` | Keyword-only trusted size of the consumed payload |
 
 **Returns:** `BlobInfo` built from response headers after successful digest
 verification.
@@ -115,7 +120,8 @@ verification.
 6. After streaming, compare `"{algorithm}:{hexdigest}"` against `digest`. On
    mismatch: delete the output file (if written) and raise `BlobError`
    "Digest mismatch".
-7. Return `_blob_info_from_response(response, digest)`.
+7. Close the streamed response, then return `_blob_info_from_response(response, digest)`.
+   See [transfer progress](#transfer-progress) for opt-in lifecycle and size checks.
 
 **Decorator:** `@track_time`
 
@@ -207,6 +213,9 @@ def upload_blob_chunked(
     digest: str,
     content_type: str = _DEFAULT_CONTENT_TYPE,
     chunk_size: int = _DEFAULT_CHUNK_SIZE,
+    *,
+    progress_callback: ProgressCallback | None = None,
+    total_size: int | None = None,
 ) -> str:
 ```
 
@@ -219,7 +228,9 @@ Uploads a blob using the chunked POST + N×PATCH + PUT protocol.
 | `source` | `BinaryIO` | required | Open binary file-like object to read from |
 | `digest` | `str` | required | Expected content digest |
 | `content_type` | `str` | `"application/octet-stream"` | `Content-Type` on the completing PUT |
-| `chunk_size` | `int` | `65536` | Chunk size in bytes |
+| `chunk_size` | `int` | `65536` | Positive chunk size in bytes |
+| `progress_callback` | `Optional[ProgressCallback]` | `None` | Keyword-only observer of accepted-byte/lifecycle events |
+| `total_size` | `Optional[int]` | `None` | Keyword-only trusted bytes remaining from the current source offset |
 
 **Returns:** `str` — confirmed digest (same logic as `upload_blob`).
 
@@ -242,6 +253,87 @@ Uploads a blob using the chunked POST + N×PATCH + PUT protocol.
 5. Compare and return confirmed digest (same as `upload_blob`).
 
 **Decorator:** `@track_scenario("blob upload chunked")`
+
+---
+
+### Transfer progress
+
+`ProgressCallback`, `TransferProgress`, `TransferDirection`, and `TransferPhase`
+are available from `regshape.libs.progress` and re-exported by
+`regshape.libs.blobs`. No command-line renderer or telemetry flags are required.
+The callback is synchronous and optional; callers should keep it lightweight.
+
+Each frozen `TransferProgress` contains:
+
+| Field | Meaning |
+| --- | --- |
+| `transfer_id` | Opaque ID unique to the invocation, stable across its events |
+| `digest` | Valid SHA-256/SHA-512 blob digest; arbitrary URLs/strings are rejected when observing |
+| `direction` | `TransferDirection.DOWNLOAD` or `UPLOAD` |
+| `phase` | A `TransferPhase` lifecycle state |
+| `bytes_completed` | Absolute processed/accepted payload bytes, never a delta |
+| `total_bytes` | Trusted size, or `None` for unknown; zero means known empty |
+| `attempt` | Logical invocation attempt, currently one; not the HTTP retry count |
+
+Downloads emit `PREPARING`, `TRANSFERRING` at zero and after each nonempty
+consumed chunk, `VERIFYING`, then `COMPLETED`. Both saved and verification-only
+downloads are observed. Chunked uploads emit preparation/transfer updates after
+successful chunk responses, then `COMMITTING`, `VERIFYING`, and `COMPLETED`.
+The final upload response and applicable digest checks precede completion.
+Empty transfers still have lifecycle events.
+
+When observing a download without an explicit total, a valid decimal
+`Content-Length` is used only without transfer encoding and with identity
+content encoding. Otherwise the total stays unknown; compressed wire sizes are
+not confused with decoded payload bytes. Negative or unusable metadata becomes
+zero in the legacy `BlobInfo.size` result, but never a known-zero progress total.
+Upload source length is not probed: supply `total_size` when known, measured from
+the current source offset. The library never seeks or closes a caller-owned
+upload source.
+
+A trusted total mismatch raises `BlobError`, not a clamped percentage or
+successful result. Overruns retain the last valid counter and fail before an
+oversized upload chunk is sent; underruns fail before upload commit. Explicit
+totals are checked even without a callback. Absent both new arguments, inferred
+download-header size checks are not imposed on existing callers. Nonpositive,
+boolean, and noninteger chunk sizes are rejected before I/O, preventing empty
+commits or unbounded reads.
+
+Buffered chunks retried by authentication or transport middleware contribute
+bytes only once after success. This item does not expose individual internal
+retry events; `attempt` stays one. `RETRYING` and `SKIPPED` are reserved lifecycle
+values for the later replay/orchestration work, not claims of implemented
+monolithic progress or terminal rendering.
+
+An operational observer receives one terminal `FAILED` or `CANCELLED` event
+when the transfer fails, or `COMPLETED` on success. A callback exception
+propagates unchanged and disables further notifications to that callback;
+terminal notification is not attempted recursively. If failure notification
+itself raises, only the secondary exception type is logged and the original
+transfer error remains primary. Events never include credentials, URLs, headers,
+payload content, or raw exception messages.
+`KeyboardInterrupt`, `SystemExit`, and `GeneratorExit` are classified as
+cancelled; other transfer exceptions are classified as failed.
+
+Streamed responses and output-file handles are closed on success/failure.
+Existing output-file semantics remain: digest mismatches remove the invalid
+file; other failures may leave partial output, so callers must not use it as a
+successful download. Cleanup errors are surfaced without masking a primary
+transfer failure. No automatic remote-session cancellation or resumable-upload
+protocol is introduced.
+
+Example library use, given an existing authenticated `client` and a valid
+`digest`:
+
+```python
+from regshape.libs.blobs import TransferProgress, get_blob
+
+events: list[TransferProgress] = []
+info = get_blob(client, "team/image", digest, progress_callback=events.append)
+```
+
+The callback data supports later rendering decisions; it does not print, throttle,
+or allocate terminal rows. Existing layout callback event shapes are unchanged.
 
 ---
 
@@ -303,18 +395,19 @@ def _blob_info_from_response(response, fallback_digest: str) -> BlobInfo:
 
 Constructs a `BlobInfo` from `Docker-Content-Digest`, `Content-Type`, and
 `Content-Length` headers. Falls back to `fallback_digest` / `"application/octet-stream"` /
-`0` when headers are absent or unparseable.
+`0` when headers are absent, unparseable, or negative.
 
 ---
 
 ### `_stream_to_file`
 
 ```python
-def _stream_to_file(response, output_path: str, chunk_size: int, hasher) -> None:
+def _stream_to_file(response, output_path, chunk_size, update_hash, progress) -> None:
 ```
 
 Streams a response body to a file path in `chunk_size`-byte increments,
-calling `hasher.update(chunk)` for each chunk.
+calling `update_hash(chunk)` and reporting progress after writing each chunk.
+File cleanup preserves an existing transfer/observer error.
 
 ---
 

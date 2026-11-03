@@ -36,7 +36,7 @@ class BlobInfo:
     :param content_type: MIME type of the blob, taken from ``Content-Type``.
         Must be a non-empty string.
     :param size: Byte length of the blob, taken from ``Content-Length``.
-        Defaults to ``0`` when the header is absent or non-numeric.  Must
+        Defaults to ``0`` when the header is absent, non-numeric, or negative. Must
         be ``>= 0``.
     """
 

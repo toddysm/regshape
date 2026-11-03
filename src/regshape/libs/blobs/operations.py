@@ -19,6 +19,8 @@ concerns — error reporting is the caller's responsibility.
 """
 
 import hashlib
+import logging
+from collections.abc import Callable, Mapping
 from typing import BinaryIO, Optional
 from urllib.parse import parse_qsl, urlparse
 
@@ -29,11 +31,18 @@ from regshape.libs.decorators.timing import track_time
 from regshape.libs.errors import AuthError, BlobError
 from regshape.libs.models.blob import BlobInfo, BlobUploadSession
 from regshape.libs.models.error import OciErrorResponse
+from regshape.libs.progress import (
+    ProgressCallback,
+    TransferDirection,
+    TransferPhase,
+    _TransferProgress,
+)
 from regshape.libs.transport import RegistryClient
 
 _DEFAULT_CHUNK_SIZE = 65_536
 _DEFAULT_CONTENT_TYPE = "application/octet-stream"
 _SUPPORTED_ALGORITHMS = {"sha256", "sha512"}
+logger = logging.getLogger(__name__)
 
 
 # ===========================================================================
@@ -75,6 +84,9 @@ def get_blob(
     digest: str,
     output_path: Optional[str] = None,
     chunk_size: int = _DEFAULT_CHUNK_SIZE,
+    *,
+    progress_callback: ProgressCallback | None = None,
+    total_size: int | None = None,
 ) -> BlobInfo:
     """Download a blob and verify its digest.
 
@@ -97,6 +109,12 @@ def get_blob(
     :param output_path: File path to write the blob to. When ``None`` the
         content is streamed only for digest verification and then discarded.
     :param chunk_size: Streaming chunk size in bytes (default ``65536``).
+        Must be a positive integer.
+    :param progress_callback: Optional synchronous observer of immutable transfer
+        events. Callback errors propagate unchanged, without recursive notification.
+    :param total_size: Optional trusted size of the consumed payload. With progress
+        enabled, a valid Content-Length is used when encoding permits; otherwise
+        the total is unknown. A size mismatch raises :class:`BlobError`.
     :returns: :class:`~regshape.libs.models.blob.BlobInfo` built from
         response headers after successful digest verification.
     :raises AuthError: On authentication failure.
@@ -105,6 +123,7 @@ def get_blob(
         is supplied.
     :raises requests.exceptions.RequestException: On transport errors.
     """
+    _validate_chunk_size(chunk_size)
     algorithm, sep, _ = digest.partition(":")
     if not sep or algorithm not in _SUPPORTED_ALGORITHMS:
         raise BlobError(
@@ -112,39 +131,58 @@ def get_blob(
             f"supported algorithms: {', '.join(sorted(_SUPPORTED_ALGORITHMS))}",
         )
 
-    path = f"/v2/{repo}/blobs/{digest}"
-    response = client.get(path, stream=True)
-    _raise_for_blob_error(response, client.config.registry, repo, digest)
-
-    hasher = hashlib.new(algorithm)
-
-    if output_path is not None:
+    with _TransferProgress(
+        digest, TransferDirection.DOWNLOAD, progress_callback, total_size,
+    ) as progress:
+        path = f"/v2/{repo}/blobs/{digest}"
+        response = client.get(path, stream=True)
+        processed = False
         try:
-            _stream_to_file(response, output_path, chunk_size, hasher)
-        except OSError as exc:
-            raise BlobError(
-                f"Cannot write to output path: {output_path}",
-                str(exc),
-            ) from exc
-    else:
-        for chunk in response.iter_content(chunk_size=chunk_size):
-            if chunk:
-                hasher.update(chunk)
+            _raise_for_blob_error(response, client.config.registry, repo, digest)
+            if total_size is None and progress_callback is not None:
+                progress.set_total(_download_total(response.headers))
+            progress.emit(TransferPhase.TRANSFERRING)
+            hasher = hashlib.new(algorithm)
+            if output_path is not None:
+                try:
+                    _stream_to_file(response, output_path, chunk_size, hasher.update, progress)
+                except OSError as exc:
+                    if progress.callback_failed or isinstance(exc, requests.exceptions.RequestException):
+                        raise
+                    raise BlobError(
+                        f"Cannot write to output path: {output_path}", str(exc),
+                    ) from exc
+            else:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        hasher.update(chunk)
+                        progress.advance(len(chunk))
 
-    computed = f"{algorithm}:{hasher.hexdigest()}"
-    if computed != digest:
-        if output_path is not None:
-            import os
+            progress.check_complete()
+            progress.emit(TransferPhase.VERIFYING)
+            computed = f"{algorithm}:{hasher.hexdigest()}"
+            if computed != digest:
+                if output_path is not None:
+                    import os
+                    try:
+                        os.unlink(output_path)
+                    except OSError as exc:
+                        logger.error("Could not remove invalid blob output (%s)", type(exc).__name__)
+                raise BlobError(
+                    f"Digest mismatch: expected {digest}, got {computed}",
+                    f"registry={client.config.registry} repo={repo}",
+                )
+            info = _blob_info_from_response(response, digest)
+            processed = True
+        finally:
             try:
-                os.unlink(output_path)
-            except OSError:
-                pass
-        raise BlobError(
-            f"Digest mismatch: expected {digest}, got {computed}",
-            f"registry={client.config.registry} repo={repo}",
-        )
-
-    return _blob_info_from_response(response, digest)
+                _close_download_resource(response, failing=not processed)
+            except OSError as exc:
+                raise requests.exceptions.RequestException(
+                    "Could not close the blob download response",
+                ) from exc
+        progress.complete()
+        return info
 
 
 @track_time
@@ -244,6 +282,9 @@ def upload_blob_chunked(
     digest: str,
     content_type: str = _DEFAULT_CONTENT_TYPE,
     chunk_size: int = _DEFAULT_CHUNK_SIZE,
+    *,
+    progress_callback: ProgressCallback | None = None,
+    total_size: int | None = None,
 ) -> str:
     """Upload a blob using the chunked (POST + N×PATCH + PUT) protocol.
 
@@ -267,11 +308,42 @@ def upload_blob_chunked(
         completing PUT and verified against the registry's confirmed digest.
     :param content_type: MIME type sent on the completing PUT.
     :param chunk_size: Chunk size in bytes (default ``65536``).
+        Must be a positive integer.
+    :param progress_callback: Optional observer of accepted-byte/lifecycle events.
+        Buffered-chunk transport retries are counted only once after success.
+        Callback errors propagate unchanged; the caller retains ownership of source.
+    :param total_size: Optional trusted count of bytes remaining in source. No
+        seeking or pre-reading is performed to discover it; ``None`` is unknown.
     :returns: The confirmed digest from ``Docker-Content-Digest``.
     :raises AuthError: On authentication failure at any step.
     :raises BlobError: On a non-2xx response, an offset mismatch (416), or
         a confirmed digest mismatch.
     :raises requests.exceptions.RequestException: On transport errors.
+    """
+    _validate_chunk_size(chunk_size)
+    with _TransferProgress(
+        digest, TransferDirection.UPLOAD, progress_callback, total_size,
+    ) as progress:
+        result = _upload_blob_chunks(
+            client, repo, source, digest, content_type, chunk_size, progress,
+        )
+        progress.complete()
+        return result
+
+
+def _upload_blob_chunks(
+    client: RegistryClient,
+    repo: str,
+    source: BinaryIO,
+    digest: str,
+    content_type: str,
+    chunk_size: int,
+    progress: _TransferProgress,
+) -> str:
+    """Upload buffered chunks, advancing progress only after accepted responses.
+
+    The caller owns source and the observer lifecycle. This helper preserves
+    upload-session query values and performs final digest confirmation.
     """
     registry = client.config.registry
 
@@ -282,12 +354,14 @@ def upload_blob_chunked(
 
     location = init_response.headers.get("Location", "")
     session = BlobUploadSession.from_location(location)
+    progress.emit(TransferPhase.TRANSFERRING)
 
     # --- Step 2: PATCH loop ---
     while True:
         chunk = source.read(chunk_size)
         if not chunk:
             break
+        progress.check_increment(len(chunk))
         start = session.offset
         end = start + len(chunk) - 1
         patch_response = client.patch(
@@ -303,6 +377,7 @@ def upload_blob_chunked(
             patch_response, registry, session_id=session.session_id
         )
         session.offset += len(chunk)
+        progress.advance(len(chunk))
         # Update upload path if the registry rotates the session URL.
         new_location = patch_response.headers.get("Location", "")
         if new_location:
@@ -313,6 +388,8 @@ def upload_blob_chunked(
             except BlobError:
                 pass  # keep existing path if the new Location is unparseable
 
+    progress.check_complete()
+    progress.emit(TransferPhase.COMMITTING)
     # --- Step 3: completing PUT ---
     _put_base, _put_params = _split_upload_path(session.upload_path)
     _put_params.append(("digest", digest))
@@ -327,6 +404,7 @@ def upload_blob_chunked(
     )
     _raise_for_upload_error(put_response, registry, session_id=session.session_id)
 
+    progress.emit(TransferPhase.VERIFYING)
     confirmed = put_response.headers.get("Docker-Content-Digest", "")
     if confirmed and confirmed != digest:
         raise BlobError(
@@ -407,7 +485,7 @@ def _blob_info_from_response(
     response: requests.Response,
     fallback_digest: str,
 ) -> BlobInfo:
-    """Construct a :class:`BlobInfo` from *response* headers.
+    """Construct a :class:`BlobInfo`, normalizing unusable length metadata to zero.
 
     :param response: A successful HEAD or GET response.
     :param fallback_digest: Digest to use when ``Docker-Content-Digest`` is
@@ -417,7 +495,7 @@ def _blob_info_from_response(
     digest = response.headers.get("Docker-Content-Digest", fallback_digest)
     content_type = response.headers.get("Content-Type", "application/octet-stream")
     try:
-        size = int(response.headers.get("Content-Length", "0"))
+        size = max(0, int(response.headers.get("Content-Length", "0")))
     except ValueError:
         size = 0
     return BlobInfo(digest=digest, content_type=content_type, size=size)
@@ -427,21 +505,64 @@ def _stream_to_file(
     response: requests.Response,
     output_path: str,
     chunk_size: int,
-    hasher,
+    update_hash: Callable[[bytes], None],
+    progress: _TransferProgress,
 ) -> None:
     """Stream a response body to a file, updating *hasher* as bytes arrive.
 
     :param response: A streaming GET response.
     :param output_path: Destination file path.
     :param chunk_size: Read/write chunk size in bytes.
-    :param hasher: A :mod:`hashlib` hasher whose ``update`` method is called
-        for each chunk.
+    :param update_hash: Hash update function called for each nonempty chunk.
+    :param progress: Invocation-local observer, advanced after writing each chunk.
     """
-    with open(output_path, "wb") as fh:
+    fh = open(output_path, "wb")  # noqa: SIM115 - close must preserve the primary failure
+    consumed = False
+    try:
         for chunk in response.iter_content(chunk_size=chunk_size):
             if chunk:
-                hasher.update(chunk)
+                update_hash(chunk)
                 fh.write(chunk)
+                progress.advance(len(chunk))
+        consumed = True
+    finally:
+        _close_download_resource(fh, failing=not consumed)
+
+
+def _validate_chunk_size(chunk_size: int) -> None:
+    """Reject zero/negative/noninteger reads before network access or file creation."""
+    if isinstance(chunk_size, bool) or not isinstance(chunk_size, int) or chunk_size <= 0:
+        raise BlobError("Blob chunk_size must be a positive integer")
+
+
+def _download_total(headers: Mapping[str, str]) -> int | None:
+    """Use only a valid length measured in the same units as consumed payload bytes."""
+    if headers.get("Content-Encoding", "identity").strip().lower() != "identity":
+        return None
+    if headers.get("Transfer-Encoding"):
+        return None
+    raw = headers.get("Content-Length", "").strip()
+    if not raw.isascii() or not raw.isdecimal():
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _close_download_resource(
+    resource: BinaryIO | requests.Response, *, failing: bool,
+) -> None:
+    """Preserve this transfer's failure, not an unrelated caller exception context."""
+    try:
+        resource.close()
+    except (OSError, requests.exceptions.RequestException) as exc:
+        if not failing:
+            raise
+        logger.error(
+            "Download resource cleanup failed (%s); preserving the original error",
+            type(exc).__name__,
+        )
 
 
 def _raise_for_blob_error(
