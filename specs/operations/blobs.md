@@ -295,6 +295,8 @@ closed after use, but the borrowed source is not. Known request length remains
 available to existing telemetry without reading the stream for measurement.
 If a redirect changes the completing PUT into another method, its response
 cannot confirm the upload and raises `BlobError` instead of reporting success.
+For a nonempty payload, the final prepared request must also retain the counted
+body; a redirect that keeps PUT but discards its body is not confirmation.
 
 ### Transfer progress
 

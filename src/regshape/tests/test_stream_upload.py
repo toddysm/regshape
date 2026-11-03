@@ -498,3 +498,40 @@ def test_method_changing_redirect_cannot_confirm_upload(status: int, middleware:
         upload_blob_stream(client, "repo", io.BytesIO(DATA), DIGEST, progress_callback=events.append)
     assert events[-1].phase == TransferPhase.FAILED
     assert not any(e.phase == TransferPhase.COMPLETED for e in events)
+
+
+@pytest.mark.parametrize("middleware", [False, True])
+def test_body_discarding_301_cannot_confirm_upload(middleware: bool) -> None:
+    """Requests can preserve PUT while dropping its body; no digest fallback may hide that."""
+    events: list[TransferProgress] = []
+    puts = 0
+    source = io.BytesIO(DATA)
+
+    def send(request: requests.PreparedRequest, **kwargs: object) -> requests.Response:
+        """Return a successful bodyless PUT after the original stream was consumed."""
+        nonlocal puts
+        if request.method == "POST":
+            response = _response(202, {"Location": LOCATION})
+        else:
+            assert request.method == "PUT"
+            puts += 1
+            if puts == 1:
+                assert b"".join(iter(lambda: request.body.read(2), b"")) == DATA
+                response = _response(301, {"Location": "/redirected"})
+            else:
+                assert request.body is None
+                response = _response(201)
+        response.request = request
+        response.url = request.url
+        return response
+
+    with (
+        patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
+        patch("requests.adapters.HTTPAdapter.send", side_effect=send),
+        pytest.raises(BlobError, match="counted request body"),
+    ):
+        client = RegistryClient(TransportConfig(registry="registry.example.invalid", enable_middleware=middleware))
+        upload_blob_stream(client, "repo", source, DIGEST, progress_callback=events.append)
+    assert puts == 2 and not source.closed
+    assert events[-1].phase == TransferPhase.FAILED
+    assert not any(e.phase == TransferPhase.COMPLETED for e in events)
