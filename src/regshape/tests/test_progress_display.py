@@ -329,7 +329,7 @@ def test_final_newline_flush_failure_overwrites_original_row(
 
 @pytest.mark.parametrize("chunked", [False, True])
 @pytest.mark.parametrize("error_type", [OSError, KeyboardInterrupt, SystemExit])
-@pytest.mark.parametrize("failure_point", ["label", "newline-flush"])
+@pytest.mark.parametrize("failure_point", ["label", "label-flush", "newline-flush"])
 def test_nested_upload_telemetry_cannot_finalize_failed_success(
     tmp_path: Path, chunked: bool, error_type: type[BaseException], failure_point: str,
 ) -> None:
@@ -352,11 +352,14 @@ def test_nested_upload_telemetry_cannot_finalize_failed_success(
         return original_write(text)
 
     def flush() -> None:
-        """Fail once after the success row's newline, not on earlier telemetry lines."""
+        """Fail once after the success label or its newline, never on earlier telemetry."""
         nonlocal failed
-        if failure_point == "newline-flush" and not failed and any(
-            "Uploaded" in row for row in terminal.rows
-        ) and terminal.getvalue().endswith("\n"):
+        has_success = any("Uploaded" in row for row in terminal.rows)
+        after_newline = terminal.getvalue().endswith("\n")
+        fail_here = (failure_point == "label-flush" and not after_newline) or (
+            failure_point == "newline-flush" and after_newline
+        )
+        if not failed and has_success and fail_here:
             failed = True
             raise original
         original_flush()

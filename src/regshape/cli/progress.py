@@ -284,11 +284,10 @@ class ProgressDisplay:
         columns = max(1, self.columns())
         text = _safe_label(text)[:columns - 1]
         self._clear_row(columns)
-        click.echo(text, file=self.stream, nl=False, color=True)
-        self.stream.flush()
         self._visible = True
         self._rendered_length = len(text)
         self._rendered_columns = columns
+        click.echo(text, file=self.stream, nl=False, color=True)
 
     def _terminal_columns(self) -> int:
         """Measure stderr, not possibly redirected stdout; use Click-compatible fallback width."""
