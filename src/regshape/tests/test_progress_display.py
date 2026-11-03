@@ -3,6 +3,7 @@
 import hashlib
 import io
 import json
+import logging
 import os
 from collections.abc import Iterator
 from dataclasses import replace
@@ -407,11 +408,15 @@ def test_nested_upload_telemetry_cannot_finalize_failed_success(
 
 @pytest.mark.parametrize("error_type", [OSError, KeyboardInterrupt, SystemExit])
 @pytest.mark.parametrize("diagnostic_failure", ["clear-write", "clear-flush", "explicit-flush"])
+@pytest.mark.parametrize("stderr_logging", [False, True])
 def test_secondary_nested_telemetry_failure_preserves_primary_and_previous_rows(
-    error_type: type[BaseException], diagnostic_failure: str, caplog: pytest.LogCaptureFixture,
+    error_type: type[BaseException], diagnostic_failure: str,
+    stderr_logging: bool, caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Distinct diagnostic errors cannot replace a callback error or erase a prior blob row."""
     terminal = Terminal()
+    handler = logging.StreamHandler(terminal)
+    logger = logging.getLogger("regshape.cli.progress")
     config = TelemetryConfig(output=terminal, time_scenarios_enabled=True)
     configure_telemetry(config)
     original_write, original_flush = terminal.write, terminal.flush
@@ -457,6 +462,7 @@ def test_secondary_nested_telemetry_failure_preserves_primary_and_previous_rows(
         pytest.raises(error_type) as caught,
         patch.object(terminal, "write", side_effect=write),
         patch.object(terminal, "flush", side_effect=flush),
+        patch.object(logger, "handlers", [handler] if stderr_logging else []),
         ProgressDisplay(stream=terminal, total_blobs=2) as display,
     ):
         display.observe(_event(TransferPhase.COMPLETED, 100, digest="sha256:" + "b" * 64))
@@ -468,6 +474,8 @@ def test_secondary_nested_telemetry_failure_preserves_primary_and_previous_rows(
     assert "Blob 2" in rows[1] and "Uploaded" not in rows[1]
     assert ("Failed" if error_type is OSError else "Cancelled") in rows[1]
     assert display.completed == 1 and config.output is terminal
+    if stderr_logging:
+        assert terminal.rows[-2].startswith("Telemetry output failed")
 
 
 @pytest.mark.parametrize("operation", ["write", "flush"])

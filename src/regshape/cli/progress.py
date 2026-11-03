@@ -82,6 +82,7 @@ class _TelemetryStream(io.TextIOBase):
         super().__init__()
         self.display = display
         self._diagnostic_failed = False
+        self._diagnostic_error_type: str | None = None
 
     def writable(self) -> bool:
         """Support print-based telemetry emission."""
@@ -96,7 +97,7 @@ class _TelemetryStream(io.TextIOBase):
         except BaseException as exc:
             if not self.display._render_failed:
                 raise
-            self._report_failure(exc)
+            self._defer_failure(exc)
         return len(text)
 
     def flush(self) -> None:
@@ -108,15 +109,22 @@ class _TelemetryStream(io.TextIOBase):
         except BaseException as exc:
             if not self.display._render_failed:
                 raise
-            self._report_failure(exc)
+            self._defer_failure(exc)
 
-    def _report_failure(self, error: BaseException) -> None:
-        """Log suppressed secondary diagnostics once while the original callback error unwinds."""
+    def _defer_failure(self, error: BaseException) -> None:
+        """Retain a safe error type without moving the cursor before progress cleanup."""
         self._diagnostic_failed = True
+        self._diagnostic_error_type = type(error).__name__
+
+    def report_failure(self) -> None:
+        """Report a suppressed diagnostic only after progress cursor cleanup is finished."""
+        if self._diagnostic_error_type is None:
+            return
         logger.error(
             "Telemetry output failed (%s); preserving original progress error",
-            type(error).__name__,
+            self._diagnostic_error_type,
         )
+        self._diagnostic_error_type = None
 
 
 @final
@@ -193,6 +201,7 @@ class ProgressDisplay:
         finally:
             if self.config.output is self._proxy:
                 self.config.output = self._old_output
+            self._proxy.report_failure()
         return False
 
     @property
