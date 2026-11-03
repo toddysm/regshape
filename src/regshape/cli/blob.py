@@ -13,6 +13,7 @@
 """
 
 import os
+import stat
 
 import click
 import requests
@@ -316,10 +317,12 @@ def blob_upload(ctx, repo, source_file, digest, media_type, chunked, chunk_size,
     try:
         with ProgressDisplay(disabled=no_progress) as progress, open(source_file, "rb") as fh:
             if chunked:
+                source_stat = os.fstat(fh.fileno())
                 confirmed = upload_blob_chunked(
                     client=client, repo=repo_name, source=fh, digest=digest,
                     content_type=media_type, chunk_size=chunk_size,
-                    total_size=os.fstat(fh.fileno()).st_size, progress_callback=progress.observe,
+                    total_size=source_stat.st_size if stat.S_ISREG(source_stat.st_mode) else None,
+                    progress_callback=progress.observe,
                 )
             else:
                 confirmed = upload_blob_stream(

@@ -114,16 +114,17 @@ class ProgressDisplay:
                     success=exc is None,
                     cancelled=isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)),
                 )
-            if self._event is not None and self._event.phase in _TERMINAL:
-                self._draw(force=True)
-                self._finish_transfer_row()
-            elif self._event is not None and exc is not None:
+            if self._event is not None and exc is not None:
                 phase = (
                     TransferPhase.CANCELLED
                     if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit))
                     else TransferPhase.FAILED
                 )
+                self._finished.pop(self._event.digest, None)
                 self.observe(replace(self._event, phase=phase))
+            elif self._event is not None and self._event.phase in _TERMINAL:
+                self._draw(force=True)
+                self._finish_transfer_row()
             elif self._event is not None:
                 self._draw(force=True)
                 self._end_row()
@@ -210,27 +211,45 @@ class ProgressDisplay:
             TransferPhase.CANCELLED: "Cancelled",
         }
         state = labels[event.phase]
-        if self.columns() < 40:
-            return f"{prefix} {state}"
-        text = f"{prefix} {event.digest[:19]}... {state}"
-        if event.phase == TransferPhase.SKIPPED:
-            return text
-        text += " " + _bytes(event.bytes_completed)
-        if event.total_bytes is not None:
-            text += "/" + _bytes(event.total_bytes)
-        elif event.phase not in _TERMINAL:
-            text += " (total unknown)"
+        width = max(0, self.columns() - 1)
+        count = "" if event.phase == TransferPhase.SKIPPED else _bytes(event.bytes_completed)
+        if count and event.total_bytes is not None:
+            count += "/" + _bytes(event.total_bytes)
+        if len(f"{prefix} {state} {count}".rstrip()) > width:
+            prefix = f"Blob {index}"
+        if len(f"{prefix} {state} {count}".rstrip()) > width and count:
+            count = _bytes(event.bytes_completed)
+        if len(f"{prefix} {state} {count}".rstrip()) > width:
+            prefix = f"#{index}"
+            if event.phase == TransferPhase.SKIPPED:
+                state = "Skipped"
+        text = f"{prefix} {state} {count}".rstrip()
+        extras: list[str] = []
+        if event.phase == TransferPhase.TRANSFERRING and event.total_bytes:
+            ratio = event.bytes_completed / event.total_bytes
+            filled = int(ratio * 12)
+            bar = f" [{'#' * filled}{'-' * (12 - filled)}] {ratio:.0%}"
+            extras.append(bar if len(text + bar) <= width else f" {ratio:.0%}")
+        if event.total_bytes is None and event.phase not in _TERMINAL:
+            extras.append(" (total unknown)")
+        for extra in extras:
+            if len(text + extra) <= width:
+                text += extra
+        algorithm, digest = event.digest.split(":", 1)
+        short_digest = f" {algorithm}:{digest[:4]}..."
+        if len(text + short_digest) <= width:
+            text = prefix + short_digest + text[len(prefix):]
         if event.phase == TransferPhase.TRANSFERRING:
-            if event.total_bytes:
-                ratio = event.bytes_completed / event.total_bytes
-                filled = int(ratio * 12)
-                text += f" [{'#' * filled}{'-' * (12 - filled)}] {ratio:.0%}"
             elapsed = self.clock() - self._started if self._started is not None else 0
             if elapsed > 0 and event.bytes_completed:
                 rate = event.bytes_completed / elapsed
-                text += f" {_bytes(rate)}/s"
-                if event.total_bytes and event.bytes_completed < event.total_bytes:
-                    text += f" ~{(event.total_bytes - event.bytes_completed) / rate:.0f}s remaining"
+                rate_text = f" {_bytes(rate)}/s"
+                if len(text + rate_text) <= width:
+                    text += rate_text
+                    if event.total_bytes and event.bytes_completed < event.total_bytes:
+                        eta = f" ~{(event.total_bytes - event.bytes_completed) / rate:.0f}s remaining"
+                        if len(text + eta) <= width:
+                            text += eta
         return text
 
     def _draw(self, *, force: bool) -> None:

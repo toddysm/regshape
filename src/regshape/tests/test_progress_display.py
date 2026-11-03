@@ -3,6 +3,8 @@
 import hashlib
 import io
 import json
+import os
+from collections.abc import Iterator
 from pathlib import Path
 from typing import BinaryIO
 from unittest.mock import patch
@@ -99,6 +101,27 @@ def telemetry_reset():
     configure_telemetry(TelemetryConfig())
 
 
+@pytest.fixture
+def upload_source(tmp_path: Path, source_kind: str) -> Iterator[Path]:
+    """Provide a regular file or a bounded, EOF-terminated real pipe descriptor path."""
+    if source_kind == "regular":
+        path = tmp_path / "source"
+        path.write_bytes(b"abcdef")
+        yield path
+        return
+    if not Path("/dev/fd").is_dir():
+        pytest.skip("Descriptor paths are not available on this platform")
+    reader, writer = os.pipe()
+    try:
+        try:
+            os.write(writer, b"abcdef")
+        finally:
+            os.close(writer)
+        yield Path(f"/dev/fd/{reader}")
+    finally:
+        os.close(reader)
+
+
 def _event(
     phase: TransferPhase, count: int = 0, total: int | None = 100, *,
     attempt: int = 1, digest: str = DIGEST,
@@ -180,6 +203,21 @@ def test_narrow_and_resized_terminal_never_wraps_active_row() -> None:
     assert len(terminal.rows[-2]) <= 23
 
 
+@pytest.mark.parametrize("width", [24, 39, 40, 41, 80])
+def test_narrow_transfer_keeps_state_and_changing_byte_count(width: int) -> None:
+    """Optional fields yield to state and current bytes on both sides of the old boundary."""
+    terminal, now = Terminal(), [0.0]
+    terminal.resize(width)
+    with ProgressDisplay(stream=terminal, clock=lambda: now[0], columns=lambda: width) as display:
+        display.observe(_event(TransferPhase.TRANSFERRING, 2, 6))
+        assert "Uploading" in terminal.rows[-1] and "2 B" in terminal.rows[-1]
+        now[0] = 1
+        display.observe(_event(TransferPhase.TRANSFERRING, 4, 6))
+        assert "Uploading" in terminal.rows[-1] and "4 B" in terminal.rows[-1]
+        assert len(terminal.rows[-1]) < width and len(terminal.rows) == 1
+        display.observe(_event(TransferPhase.COMPLETED, 6, 6))
+
+
 @pytest.mark.parametrize("reason", ["disabled", "structured", "nonterminal", "json-telemetry"])
 def test_suppressed_progress_writes_no_controls_or_state_lines(reason: str) -> None:
     """Disabled/noninteractive/structured paths keep their original result channels clean."""
@@ -219,6 +257,36 @@ def test_render_cleanup_preserves_original_failure(caplog: pytest.LogCaptureFixt
         raise original
     assert caught.value is original
     assert "preserving original error" in caplog.text
+
+
+@pytest.mark.parametrize("error_type", [OSError, KeyboardInterrupt, SystemExit])
+def test_failed_success_render_is_not_redrawn_as_success(error_type: type[BaseException]) -> None:
+    """Transient output failure/cancellation during completion retains only a failed final row."""
+    terminal = Terminal()
+    original_write = terminal.write
+    original = error_type("during completion")
+    failed = False
+
+    def write(text: str) -> int:
+        """Fail once on the final label, then allow exception cleanup to render."""
+        nonlocal failed
+        if "Uploaded" in text and not failed:
+            failed = True
+            raise original
+        return original_write(text)
+
+    with (
+        pytest.raises(error_type) as caught,
+        patch.object(terminal, "write", side_effect=write),
+        ProgressDisplay(stream=terminal) as display,
+    ):
+        display.observe(_event(TransferPhase.TRANSFERRING, 40))
+        display.observe(_event(TransferPhase.COMPLETED, 100))
+    assert caught.value is original
+    assert display.completed == 0
+    rows = [r for r in terminal.rows if r.startswith("Blob")]
+    assert len(rows) == 1 and "Uploaded" not in rows[0]
+    assert ("Failed" if error_type is OSError else "Cancelled") in rows[0]
 
 
 def test_terminal_event_during_partial_diagnostic_is_not_lost() -> None:
@@ -266,14 +334,14 @@ def test_preparation_label_cannot_inject_terminal_controls() -> None:
     assert len([r for r in terminal.rows if r]) == 1
 
 
-@pytest.mark.parametrize("chunked", [False, True])
+@pytest.mark.parametrize("chunked,source_kind", [(False, "regular"), (True, "regular"), (True, "pipe")])
 @pytest.mark.parametrize("mode", ["tty", "disabled", "structured"])
-def test_blob_upload_real_library_consumption(tmp_path: Path, chunked: bool, mode: str) -> None:
+def test_blob_upload_real_library_consumption(
+    upload_source: Path, chunked: bool, source_kind: str, mode: str,
+) -> None:
     """Both real upload protocols produce intermediate observations through command wiring."""
     data = b"abcdef"
     digest = "sha256:" + hashlib.sha256(data).hexdigest()
-    path = tmp_path / "source"
-    path.write_bytes(data)
     observations: list[TransferProgress] = []
     methods: list[str] = []
     payloads: list[bytes] = []
@@ -318,7 +386,7 @@ def test_blob_upload_real_library_consumption(tmp_path: Path, chunked: bool, mod
             response.headers["Docker-Content-Digest"] = digest
         return response
 
-    args = ["blob", "upload", "--repo", "registry.example.invalid/repo", "--file", str(path),
+    args = ["blob", "upload", "--repo", "registry.example.invalid/repo", "--file", str(upload_source),
             "--digest", digest, "--chunk-size", "2"]
     if chunked:
         args.append("--chunked")
@@ -338,9 +406,13 @@ def test_blob_upload_real_library_consumption(tmp_path: Path, chunked: bool, mod
     assert json.loads(result.stdout)["digest"] == digest
     assert methods == (["POST", "PATCH", "PATCH", "PATCH", "PUT"] if chunked else ["POST", "PUT"])
     assert any(e.phase == TransferPhase.TRANSFERRING and 0 < e.bytes_completed < 6 for e in observations)
+    assert all(
+        e.total_bytes == (None if source_kind == "pipe" else 6)
+        for e in observations if e.phase != TransferPhase.PREPARING
+    )
     assert observations[-1].phase == TransferPhase.COMPLETED and result.stderr == ""
     if mode == "tty":
-        assert any("Uploading 2 B/6 B" in row for frame in frames for row in frame)
+        assert any("Uploading 2 B" in row for frame in frames for row in frame)
         assert len([row for row in terminal.rows if row.startswith("Blob")]) == 1
         assert "Uploaded" in terminal.rows[0]
     else:
