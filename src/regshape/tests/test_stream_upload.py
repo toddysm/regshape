@@ -2,6 +2,8 @@
 
 import hashlib
 import io
+import os
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import pytest
@@ -175,16 +177,17 @@ def test_consumed_nonseekable_source_is_not_replayed(failure: str) -> None:
 
 @pytest.mark.parametrize("payload,total", [(b"", 0), (DATA, 6), (DATA, 3), (DATA, 9), (DATA, None)])
 def test_nonseekable_size_contract(payload: bytes, total: int | None) -> None:
-    """Require known size and detect short/extra bodies without false completion."""
+    """Use a trusted frame length without consuming trailing nonseekable data."""
     source = _Nonseekable(payload)
     events: list[TransferProgress] = []
-    digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+    framed = payload[:total] if total is not None else payload
+    digest = "sha256:" + hashlib.sha256(framed).hexdigest()
 
     def respond(method: str, url: str, **kwargs: object) -> requests.Response:
         """Consume the exact body supplied to the simulated HTTP transport."""
         if method == "POST":
             return _response(202, {"Location": LOCATION})
-        assert b"".join(iter(lambda: kwargs["data"].read(2), b"")) == payload
+        assert b"".join(iter(lambda: kwargs["data"].read(2), b"")) == framed
         return _response(201, {"Docker-Content-Digest": digest})
 
     with (
@@ -192,14 +195,124 @@ def test_nonseekable_size_contract(payload: bytes, total: int | None) -> None:
         patch("regshape.libs.decorators.call_details.requests.request", side_effect=respond),
     ):
         client = RegistryClient(TransportConfig(registry="registry.example.invalid"))
-        if total == len(payload):
+        if total is not None and total <= len(payload):
             upload_blob_stream(client, "repo", source, digest, total_size=total, progress_callback=events.append)
             assert events[-1].phase == TransferPhase.COMPLETED
+            assert source.read() == payload[total:]
         else:
             with pytest.raises(BlobError):
                 upload_blob_stream(client, "repo", source, digest, total_size=total, progress_callback=events.append)
             assert events[-1].phase == TransferPhase.FAILED
     assert not source.closed
+
+
+def test_pipe_payload_does_not_wait_for_writer_eof() -> None:
+    """A producer may keep its pipe open until the framed upload has completed."""
+    reader, writer = os.pipe()
+    source = os.fdopen(reader, "rb", buffering=0)
+    producer = os.fdopen(writer, "wb", buffering=0)
+    producer.write(DATA)
+
+    def respond(method: str, url: str, **kwargs: object) -> requests.Response:
+        """Consume exactly the framed body without consulting the still-open writer."""
+        if method == "POST":
+            return _response(202, {"Location": LOCATION})
+        assert b"".join(iter(lambda: kwargs["data"].read(2), b"")) == DATA
+        return _response(201, {"Docker-Content-Digest": DIGEST})
+
+    try:
+        with (
+            patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
+            patch("regshape.libs.decorators.call_details.requests.request", side_effect=respond),
+            ThreadPoolExecutor(max_workers=1) as pool,
+        ):
+            client = RegistryClient(TransportConfig(registry="registry.example.invalid"))
+            future = pool.submit(upload_blob_stream, client, "repo", source, DIGEST, total_size=6)
+            try:
+                assert future.result(timeout=2) == DIGEST
+                assert not source.closed
+            finally:
+                producer.close()
+    finally:
+        producer.close()
+        source.close()
+
+
+@pytest.mark.parametrize("middleware", [False, True])
+def test_stream_digest_mismatch_closes_wrapper_not_source(middleware: bool) -> None:
+    """A consumed upload with the wrong confirmed digest fails exactly once."""
+    source = io.BytesIO(DATA)
+    events: list[TransferProgress] = []
+    bodies: list[_UploadBody] = []
+
+    def respond(method: str, url: str, **kwargs: object) -> requests.Response:
+        """Consume the complete body and return an inconsistent digest."""
+        if method == "POST":
+            return _response(202, {"Location": LOCATION})
+        body = kwargs["data"]
+        assert isinstance(body, _UploadBody)
+        bodies.append(body)
+        assert b"".join(iter(lambda: body.read(2), b"")) == DATA
+        return _response(201, {"Docker-Content-Digest": "sha256:" + "0" * 64})
+
+    with (
+        patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
+        patch("regshape.libs.decorators.call_details.requests.request", side_effect=respond),
+        pytest.raises(BlobError, match="different digest"),
+    ):
+        client = RegistryClient(TransportConfig(registry="registry.example.invalid", enable_middleware=middleware))
+        upload_blob_stream(client, "repo", source, DIGEST, progress_callback=events.append)
+    assert [e.phase for e in events][-2:] == [TransferPhase.VERIFYING, TransferPhase.FAILED]
+    assert sum(e.phase == TransferPhase.FAILED for e in events) == 1
+    assert not any(e.phase == TransferPhase.COMPLETED for e in events)
+    assert bodies[0].closed and not source.closed
+
+
+@pytest.mark.parametrize("middleware", [False, True])
+def test_source_error_is_restored_without_replay(middleware: bool) -> None:
+    """A wrapped partial source-read error stays primary and emits a single failure."""
+    error = OSError("source failure")
+    events: list[TransferProgress] = []
+    bodies: list[_UploadBody] = []
+
+    class BrokenSource(io.BytesIO):
+        """Fail after one partial payload while retaining caller ownership."""
+
+        def read(self, size: int = -1) -> bytes:
+            """Raise the original file error on the second client read."""
+            if self.tell() >= 2:
+                raise error
+            return super().read(size)
+
+    source = BrokenSource(DATA)
+
+    def respond(method: str, url: str, **kwargs: object) -> requests.Response:
+        """Mimic an adapter wrapping a read failure as a retriable connection error."""
+        if method == "POST":
+            return _response(202, {"Location": LOCATION})
+        body = kwargs["data"]
+        assert isinstance(body, _UploadBody)
+        bodies.append(body)
+        try:
+            b"".join(iter(lambda: body.read(2), b""))
+        except OSError as exc:
+            raise requests.exceptions.ConnectionError("wrapped source error") from exc
+        raise AssertionError("Source must fail")
+
+    with (
+        patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
+        patch("regshape.libs.decorators.call_details.requests.request", side_effect=respond),
+        pytest.raises(OSError) as caught,
+    ):
+        client = RegistryClient(TransportConfig(
+            registry="registry.example.invalid", enable_middleware=middleware, enable_retries=True,
+            retry_config=RetryConfig(max_retries=2, backoff_factor=0, exceptions=(OSError,)),
+        ))
+        upload_blob_stream(client, "repo", source, DIGEST, progress_callback=events.append)
+    assert caught.value is error and len(bodies) == 1
+    assert bodies[0].closed and not source.closed
+    assert events[-1].phase == TransferPhase.FAILED and events[-1].bytes_completed == 2
+    assert sum(e.phase == TransferPhase.FAILED for e in events) == 1
 
 
 def test_real_requests_adapter_receives_stream_and_updates_metrics() -> None:

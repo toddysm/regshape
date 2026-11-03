@@ -97,7 +97,9 @@ class _UploadBody(io.RawIOBase):
         return 0
 
     def _check_eof(self) -> None:
-        """Reject extra source bytes rather than silently truncating to Content-Length."""
+        """Check file growth without reading beyond a nonseekable framing boundary."""
+        if self.origin is None:
+            return
         if not self._eof_checked:
             extra = self.source.read(1)
             if not isinstance(extra, bytes):

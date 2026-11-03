@@ -300,7 +300,8 @@ def upload_blob_stream(
     :param digest: Expected digest, passed to the completing PUT.
     :param content_type: Payload media type.
     :param progress_callback: Optional synchronous immutable-event observer.
-    :param total_size: Trusted remaining size; inferred by seeking when omitted.
+    :param total_size: Trusted payload size, inferred by seeking when omitted.
+        For a nonseekable source this frames the payload without waiting for EOF.
     :returns: The registry-confirmed digest, or the supplied digest if absent.
     :raises BlobError: On size/replay/integrity or registry failures.
     :raises AuthError: On authentication failure.

@@ -272,9 +272,12 @@ registry protocols. The source remains caller-owned and is never closed.
 For seekable binary sources, remaining length is discovered by seeking to the
 end and restoring the original position, without reading the payload into memory.
 An explicit `total_size` must match that remaining length. Nonseekable sources
-require an explicit size and may be sent once; replay after consumption fails
-before a second request is dispatched. Short, extra, or nonbinary source data
-fails explicitly rather than truncating, padding, or completing an empty retry.
+require an explicit size that frames one payload, without an EOF lookahead:
+pipe writers need not close before receiving the upload result, and bytes after
+the frame remain unread. Replay after consumption fails before a second request.
+Short/nonbinary data and size changes in seekable files fail explicitly rather
+than padding or completing an empty retry. The caller must provide the correct
+nonseekable frame size; the library cannot infer additional data beyond it.
 
 The HTTP client reads the counted body incrementally with Content-Length.
 Progress measures bytes read for the client, not server acknowledgements.
