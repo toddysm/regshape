@@ -89,6 +89,7 @@ class ProgressDisplay:
         self._started: float | None = None
         self._last_draw = float("-inf")
         self._visible = False
+        self._row_advanced = False
         self._rendered_length = 0
         self._rendered_columns = 0
         self._partial_diagnostic = False
@@ -286,9 +287,11 @@ class ProgressDisplay:
     def _clear_row(self, columns: int) -> None:
         """Erase the active row, including its reflowed footprint after a terminal shrink."""
         wrapped = max(0, (self._rendered_length - 1) // columns) if self._visible else 0
-        controls = "\r\x1b[2K" + "\x1b[1A\r\x1b[2K" * wrapped
+        controls = ("\x1b[1A" if self._row_advanced else "") + "\r\x1b[2K"
+        controls += "\x1b[1A\r\x1b[2K" * wrapped
         click.echo(controls, file=self.stream, nl=False, color=True)
         self._visible = False
+        self._row_advanced = False
 
     def _finish_transfer_row(self) -> None:
         """Retain a terminal transfer row and clear only its active state."""
@@ -297,10 +300,13 @@ class ProgressDisplay:
         self._started = None
 
     def _end_row(self) -> None:
-        """Retain the final rendered row exactly once."""
+        """Track a written newline before flushing so failed finalization can repaint it."""
         if self.enabled and self._visible:
-            click.echo(file=self.stream)
+            self.stream.write("\n")
+            self._row_advanced = True
+            self.stream.flush()
             self._visible = False
+            self._row_advanced = False
 
     def write_diagnostic(self, text: str) -> None:
         """Write telemetry without leaving an old progress row behind."""

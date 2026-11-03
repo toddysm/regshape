@@ -5,6 +5,7 @@ import io
 import json
 import os
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import BinaryIO
 from unittest.mock import patch
@@ -286,6 +287,39 @@ def test_failed_success_render_is_not_redrawn_as_success(error_type: type[BaseEx
     assert display.completed == 0
     rows = [r for r in terminal.rows if r.startswith("Blob")]
     assert len(rows) == 1 and "Uploaded" not in rows[0]
+    assert ("Failed" if error_type is OSError else "Cancelled") in rows[0]
+
+
+@pytest.mark.parametrize("error_type", [OSError, KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize("direction", list(TransferDirection))
+def test_final_newline_flush_failure_overwrites_original_row(
+    error_type: type[BaseException], direction: TransferDirection,
+) -> None:
+    """Failure after a written final newline must repaint the preceding blob row."""
+    terminal = Terminal()
+    original_flush = terminal.flush
+    original = error_type("after final newline")
+    failed = False
+
+    def flush() -> None:
+        """Interrupt once only after the terminal cursor has advanced past the success row."""
+        nonlocal failed
+        if not failed and terminal.getvalue().endswith("\n"):
+            failed = True
+            raise original
+        original_flush()
+
+    with (
+        pytest.raises(error_type) as caught,
+        patch.object(terminal, "flush", side_effect=flush),
+        ProgressDisplay(stream=terminal) as display,
+    ):
+        display.observe(replace(_event(TransferPhase.TRANSFERRING, 40), direction=direction))
+        display.observe(replace(_event(TransferPhase.COMPLETED, 100), direction=direction))
+    assert caught.value is original and display.completed == 0
+    rows = [r for r in terminal.rows if r.startswith("Blob")]
+    assert len(rows) == 1
+    assert "Uploaded" not in rows[0] and "Downloaded" not in rows[0]
     assert ("Failed" if error_type is OSError else "Cancelled") in rows[0]
 
 
