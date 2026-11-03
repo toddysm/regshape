@@ -227,6 +227,25 @@ def test_narrow_transfer_keeps_state_and_changing_byte_count(width: int) -> None
         display.observe(_event(TransferPhase.COMPLETED, 6, 6))
 
 
+@pytest.mark.parametrize("columns", [0, -1])
+def test_uninitialized_terminal_size_uses_a_positive_fallback(
+    columns: int, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing terminal size must not be interpreted as a one-column reflow footprint."""
+    terminal = Terminal()
+    monkeypatch.setenv("COLUMNS", "80")
+    with (
+        patch.object(terminal, "fileno", return_value=2),
+        patch("os.get_terminal_size", return_value=os.terminal_size((columns, 24))),
+        ProgressDisplay(stream=terminal) as display,
+    ):
+        assert display.columns() == 80
+        display.observe(_event(TransferPhase.TRANSFERRING, 40))
+        display.observe(_event(TransferPhase.COMPLETED, 100))
+    assert "\x1b[1A" not in terminal.getvalue()
+    assert len([r for r in terminal.rows if r.startswith("Blob")]) == 1
+
+
 @pytest.mark.parametrize("reason", ["disabled", "structured", "nonterminal", "json-telemetry"])
 def test_suppressed_progress_writes_no_controls_or_state_lines(reason: str) -> None:
     """Disabled/noninteractive/structured paths keep their original result channels clean."""
@@ -555,6 +574,27 @@ def test_transfer_and_rendering_errors_coordinate_library_logging(
     if not fallback_logging:
         assert "Progress observer failed" in log_output.getvalue()
         assert "\x1b" not in log_output.getvalue() and log_handler.stream is log_output
+
+
+def test_fallback_logging_format_and_terminator_are_preserved() -> None:
+    """Coordinating the standard fallback handler keeps its configured text contract."""
+    terminal = Terminal()
+    fallback = logging.StreamHandler(terminal)
+    fallback.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    fallback.terminator = " [end]\n"
+    logger = logging.getLogger("regshape.tests.progress")
+    with (
+        patch.object(logging.getLogger(), "handlers", []),
+        patch.object(logger, "handlers", []),
+        patch("logging.lastResort", fallback),
+    ):
+        with ProgressDisplay(stream=terminal) as display:
+            display.observe(_event(TransferPhase.TRANSFERRING, 40))
+            logger.warning("diagnostic")
+            display.observe(_event(TransferPhase.COMPLETED, 100))
+        assert logging.lastResort is fallback
+    assert terminal.rows[0] == "WARNING: diagnostic [end]"
+    assert len([r for r in terminal.rows if r.startswith("Blob")]) == 1
 
 
 def test_terminal_event_during_partial_diagnostic_is_not_lost() -> None:

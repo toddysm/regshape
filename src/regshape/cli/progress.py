@@ -204,6 +204,7 @@ class ProgressDisplay:
             replacement = logging.StreamHandler(self._proxy)
             replacement.setLevel(fallback.level)
             replacement.setFormatter(fallback.formatter)
+            replacement.terminator = fallback.terminator
             for log_filter in fallback.filters:
                 replacement.addFilter(log_filter)
             self._last_resort_proxy = replacement
@@ -409,9 +410,10 @@ class ProgressDisplay:
     def _terminal_columns(self) -> int:
         """Measure stderr, not possibly redirected stdout; use Click-compatible fallback width."""
         try:
-            return os.get_terminal_size(self.stream.fileno()).columns
+            columns = os.get_terminal_size(self.stream.fileno()).columns
         except OSError:
             return shutil.get_terminal_size((80, 24)).columns
+        return columns if columns > 0 else shutil.get_terminal_size((80, 24)).columns
 
     def _clear_row(self, columns: int) -> None:
         """Erase the active row, including its reflowed footprint after a terminal shrink."""
