@@ -26,6 +26,7 @@ import requests
 
 from datetime import datetime, timezone
 from typing import IO, Optional
+from regshape.libs.decorators.streams import TextOutput
 from urllib.parse import urlparse
 
 from regshape.libs.decorators.sanitization import redact_headers
@@ -74,7 +75,7 @@ def format_curl_debug(
     status_code: int,
     reason: str,
     resp_headers: dict,
-    out: IO = None,
+    out: TextOutput | None = None,
     *,
     elapsed: Optional[float] = None,
     resp_body: Optional[bytes] = None,
@@ -169,7 +170,7 @@ def format_curl_debug_json(
     status_code: int,
     reason: str,
     resp_headers: dict,
-    out: IO = None,
+    out: TextOutput | None = None,
     *,
     elapsed: Optional[float] = None,
     resp_body: Optional[bytes] = None,

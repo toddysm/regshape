@@ -22,6 +22,7 @@ import sys
 
 from datetime import datetime, timezone
 from typing import IO, Optional
+from regshape.libs.decorators.streams import TextOutput
 
 _BLOCK_WIDTH = 66
 _LABEL_COL = 12        # "  scenario  " / "    method  "
@@ -29,7 +30,7 @@ _ELAPSED_WIDTH = 7     # " 0.523s" — right-justified
 _NAME_WIDTH = _BLOCK_WIDTH - _LABEL_COL - _ELAPSED_WIDTH  # 47
 
 
-def telemetry_write(line: str, out: IO = None, log_file: IO = None) -> None:
+def telemetry_write(line: str, out: TextOutput | None = None, log_file: IO = None) -> None:
     """Write a telemetry line to *out* and optionally to the log file.
 
     :param line: Text to write (newline appended automatically).
@@ -91,7 +92,7 @@ def _render_text_block(
     scenario_elapsed: Optional[float],
     method_timings: list[tuple[str, float]],
     metrics,
-    out: IO,
+    out: TextOutput,
     log_file: Optional[IO],
     verbosity: int,
 ) -> None:
@@ -153,7 +154,7 @@ def _render_json_block(
     scenario_elapsed: Optional[float],
     method_timings: list[tuple[str, float]],
     metrics,
-    out: IO,
+    out: TextOutput,
     log_file: Optional[IO],
 ) -> None:
     """Render the telemetry summary block as NDJSON events.
@@ -212,7 +213,7 @@ def print_telemetry_block(
     scenario_name: str | None,
     scenario_elapsed: float | None,
     method_timings: list[tuple[str, float]],
-    out: IO = None,
+    out: TextOutput | None = None,
     *,
     metrics=None,
 ) -> None:
