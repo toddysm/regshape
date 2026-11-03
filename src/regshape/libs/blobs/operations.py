@@ -38,6 +38,7 @@ from regshape.libs.progress import (
     _TransferProgress,
 )
 from regshape.libs.transport import RegistryClient
+from regshape.libs.transport.body import _UploadBody
 
 _DEFAULT_CHUNK_SIZE = 65_536
 _DEFAULT_CONTENT_TYPE = "application/octet-stream"
@@ -272,6 +273,68 @@ def upload_blob(
             f"registry={registry} repo={repo}",
         )
     return confirmed or digest
+
+
+@track_scenario("blob upload streamed")
+def upload_blob_stream(
+    client: RegistryClient,
+    repo: str,
+    source: BinaryIO,
+    digest: str,
+    content_type: str = _DEFAULT_CONTENT_TYPE,
+    *,
+    progress_callback: ProgressCallback | None = None,
+    total_size: int | None = None,
+) -> str:
+    """Upload a monolithic body without buffering a file solely to report progress.
+
+    The source is borrowed and never closed. Seekable sources are replayed from
+    their initial offset for authentication, redirects, and configured retries.
+    Nonseekable sources require an explicit size and cannot be replayed after
+    consumption. Bytes observed while the HTTP client reads are unconfirmed
+    until the final response/digest check succeeds.
+
+    :param client: Authenticated registry transport.
+    :param repo: Destination repository.
+    :param source: Binary payload positioned at its intended start.
+    :param digest: Expected digest, passed to the completing PUT.
+    :param content_type: Payload media type.
+    :param progress_callback: Optional synchronous immutable-event observer.
+    :param total_size: Trusted payload size, inferred by seeking when omitted.
+        For a nonseekable source this frames the payload without waiting for EOF.
+    :returns: The registry-confirmed digest, or the supplied digest if absent.
+    :raises BlobError: On size/replay/integrity or registry failures.
+    :raises AuthError: On authentication failure.
+    :raises requests.exceptions.RequestException: On transport failures.
+    """
+    with _TransferProgress(
+        digest, TransferDirection.UPLOAD, progress_callback, total_size,
+    ) as progress:
+        with _UploadBody(source, progress) as body:
+            response = client.post(f"/v2/{repo}/blobs/uploads/")
+            _raise_for_upload_error(response, client.config.registry, session_id=None)
+            session = BlobUploadSession.from_location(response.headers.get("Location", ""))
+            path, params = _split_upload_path(session.upload_path)
+            params.append(("digest", digest))
+            response = client.put(
+                path, data=body, params=params,
+                headers={"Content-Type": content_type, "Content-Length": str(len(body))},
+            )
+            body.raise_if_failed()
+            _raise_for_upload_error(response, client.config.registry, session_id=session.session_id)
+            if response.request is not None and response.request.method != "PUT":
+                raise BlobError("Streamed upload redirect changed the completing PUT method")
+            if response.request is not None and len(body) and response.request.body is not body:
+                raise BlobError("Streamed upload redirect removed the counted request body")
+            if response.status_code != 201:
+                raise BlobError("Streamed upload completion requires HTTP 201 Created")
+            progress.check_complete()
+            progress.emit(TransferPhase.VERIFYING)
+            confirmed = response.headers.get("Docker-Content-Digest", "")
+            if confirmed and confirmed != digest:
+                raise BlobError("Registry confirmed a different digest for the streamed upload")
+        progress.complete()
+        return confirmed or digest
 
 
 @track_scenario("blob upload chunked")

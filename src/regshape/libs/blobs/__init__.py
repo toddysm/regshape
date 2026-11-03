@@ -18,6 +18,7 @@ from regshape.libs.blobs.operations import (
     mount_blob,
     upload_blob,
     upload_blob_chunked,
+    upload_blob_stream,
 )
 from regshape.libs.progress import (
     ProgressCallback,
@@ -37,4 +38,5 @@ __all__ = [
     "mount_blob",
     "upload_blob",
     "upload_blob_chunked",
+    "upload_blob_stream",
 ]

@@ -287,6 +287,16 @@ def debug_call(func):
         if data is not None:
             if isinstance(data, (bytes, str)):
                 req_content_length = len(data) if isinstance(data, bytes) else len(data.encode('utf-8'))
+            else:
+                raw_length = next(
+                    (value for key, value in req_headers.items() if key.lower() == "content-length"),
+                    None,
+                )
+                if isinstance(raw_length, str) and raw_length.isascii() and raw_length.isdecimal():
+                    try:
+                        req_content_length = int(raw_length)
+                    except ValueError:
+                        req_content_length = None
 
         # Measure elapsed time
         start = time.perf_counter()

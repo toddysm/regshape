@@ -20,7 +20,7 @@
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Any, Optional, List
 
 import requests
 
@@ -28,12 +28,25 @@ from regshape.libs.auth import registryauth
 from regshape.libs.auth.credentials import resolve_credentials
 from regshape.libs.decorators.call_details import http_request
 from regshape.libs.errors import AuthError
+from regshape.libs.transport.body import _UploadBody
 from regshape.libs.transport.middleware import (
     MiddlewarePipeline, Middleware, AuthMiddleware, LoggingMiddleware,
     RetryMiddleware, CachingMiddleware, RetryConfig,
     _normalize_www_authenticate,
 )
 from regshape.libs.transport.models import RegistryRequest, RegistryResponse
+
+
+def _send_http_request(*args: Any, **kwargs: Any) -> requests.Response:
+    """Prepare counted bodies without changing existing HTTP argument conventions."""
+    body = kwargs.get("data")
+    if isinstance(body, _UploadBody):
+        body.prepare_attempt()
+        try:
+            return http_request(*args, **kwargs)
+        finally:
+            body.raise_if_failed()
+    return http_request(*args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +219,7 @@ class RegistryClient:
         
         # Use http_request for telemetry (--debug-calls)
         redirect_options = {} if request.allow_redirects else {"allow_redirects": False}
-        response = http_request(
+        response = _send_http_request(
             url=url,
             method=request.method,
             headers=request.headers,
@@ -235,7 +248,7 @@ class RegistryClient:
         **kwargs
     ) -> requests.Response:
         """Handle legacy authentication, retaining redirect policy on probes/retries."""
-        response = http_request(url, method, headers=req_headers, timeout=timeout, **kwargs)
+        response = _send_http_request(url, method, headers=req_headers, timeout=timeout, **kwargs)
         self.last_response = response
 
         if response.status_code != 401:
@@ -283,7 +296,7 @@ class RegistryClient:
         )
         req_headers["Authorization"] = f"{normalized_scheme} {auth_value}"
 
-        response = http_request(url, method, headers=req_headers, timeout=timeout, **kwargs)
+        response = _send_http_request(url, method, headers=req_headers, timeout=timeout, **kwargs)
         self.last_response = response
         return response
 
