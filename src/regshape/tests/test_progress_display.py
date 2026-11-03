@@ -22,6 +22,7 @@ from regshape.libs.decorators import (
     get_telemetry_config,
 )
 from regshape.libs.decorators.output import telemetry_write
+from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.progress import (
     ProgressCallback,
     TransferDirection,
@@ -402,6 +403,90 @@ def test_nested_upload_telemetry_cannot_finalize_failed_success(
     assert len(rows) == 1 and "Uploaded" not in rows[0]
     assert ("Failed" if error_type is OSError else "Cancelled") in rows[0]
     assert "scenario" in terminal.getvalue()
+
+
+@pytest.mark.parametrize("error_type", [OSError, KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize("diagnostic_failure", ["clear-write", "clear-flush", "explicit-flush"])
+def test_secondary_nested_telemetry_failure_preserves_primary_and_previous_rows(
+    error_type: type[BaseException], diagnostic_failure: str, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Distinct diagnostic errors cannot replace a callback error or erase a prior blob row."""
+    terminal = Terminal()
+    config = TelemetryConfig(output=terminal, time_scenarios_enabled=True)
+    configure_telemetry(config)
+    original_write, original_flush = terminal.write, terminal.flush
+    primary = error_type("primary callback")
+    secondary = RuntimeError("secondary diagnostic")
+    primary_failed = secondary_failed = False
+
+    def write(text: str) -> int:
+        """Optionally fail before the diagnostic's cursor-clear write."""
+        nonlocal secondary_failed
+        if primary_failed and not secondary_failed and diagnostic_failure == "clear-write" and "\x1b[2K" in text:
+            secondary_failed = True
+            raise secondary
+        return original_write(text)
+
+    def flush() -> None:
+        """Fail after the target newline, then optionally after a diagnostic cursor move."""
+        nonlocal primary_failed, secondary_failed
+        if not primary_failed and terminal.getvalue().endswith("\n") and any(
+            "Blob 2" in row and "Uploaded" in row for row in terminal.rows
+        ):
+            primary_failed = True
+            raise primary
+        if primary_failed and not secondary_failed and diagnostic_failure == "clear-flush" and terminal.getvalue().endswith("\x1b[2K"):
+            secondary_failed = True
+            raise secondary
+        if primary_failed and not secondary_failed and diagnostic_failure == "explicit-flush":
+            secondary_failed = True
+            raise secondary
+        original_flush()
+
+    @track_scenario("nested upload")
+    def upload(display: ProgressDisplay) -> None:
+        """Run the actual scenario finalizer while the original callback exception unwinds."""
+        try:
+            display.observe(_event(TransferPhase.TRANSFERRING, 40))
+            display.observe(_event(TransferPhase.COMPLETED, 100))
+        finally:
+            if diagnostic_failure == "explicit-flush":
+                config.output.flush()
+
+    with (
+        pytest.raises(error_type) as caught,
+        patch.object(terminal, "write", side_effect=write),
+        patch.object(terminal, "flush", side_effect=flush),
+        ProgressDisplay(stream=terminal, total_blobs=2) as display,
+    ):
+        display.observe(_event(TransferPhase.COMPLETED, 100, digest="sha256:" + "b" * 64))
+        upload(display)
+    assert caught.value is primary and secondary_failed
+    assert "Telemetry output failed (RuntimeError); preserving original progress error" in caplog.text
+    rows = [r for r in terminal.rows if r.startswith("Blob")]
+    assert len(rows) == 2 and "Blob 1" in rows[0] and "Uploaded" in rows[0]
+    assert "Blob 2" in rows[1] and "Uploaded" not in rows[1]
+    assert ("Failed" if error_type is OSError else "Cancelled") in rows[1]
+    assert display.completed == 1 and config.output is terminal
+
+
+@pytest.mark.parametrize("operation", ["write", "flush"])
+def test_diagnostic_error_without_pending_failure_propagates(operation: str) -> None:
+    """Best-effort output is restricted to an already-failing progress callback."""
+    terminal = Terminal()
+    config = TelemetryConfig(output=terminal)
+    configure_telemetry(config)
+    error = OSError("ordinary diagnostic error")
+    with (
+        pytest.raises(OSError) as caught,
+        patch.object(terminal, operation, side_effect=error),
+        ProgressDisplay(stream=terminal),
+    ):
+        if operation == "write":
+            config.output.write("diagnostic")
+        else:
+            config.output.flush()
+    assert caught.value is error and config.output is terminal
 
 
 def test_terminal_event_during_partial_diagnostic_is_not_lost() -> None:

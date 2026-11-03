@@ -46,6 +46,34 @@ def _failure_phase(error: BaseException) -> TransferPhase:
     )
 
 
+class _UnflushedStream(io.TextIOBase, IO[str]):
+    """Borrow a write-only Click destination while deferring its automatic flush."""
+
+    def __init__(self, stream: IO[str]) -> None:
+        """Retain the destination; closing this adapter never closes the borrowed stream."""
+        super().__init__()
+        self.stream = stream
+
+    def write(self, text: str) -> int:
+        """Forward a write so callers can record cursor movement before flushing."""
+        return self.stream.write(text)
+
+    def writable(self) -> bool:
+        """Expose the adapter's write-only capability."""
+        return True
+
+    def flush(self) -> None:
+        """Leave flushing to the renderer after it records the completed control write."""
+
+    def isatty(self) -> bool:
+        """Preserve Click's terminal detection and platform ANSI handling."""
+        return self.stream.isatty()
+
+    def fileno(self) -> int:
+        """Expose the borrowed descriptor for Click's native terminal handling."""
+        return self.stream.fileno()
+
+
 class _TelemetryStream(io.TextIOBase):
     """Route complete/partial telemetry writes around an active progress row."""
 
@@ -53,20 +81,42 @@ class _TelemetryStream(io.TextIOBase):
         """Borrow the display stream without taking ownership of it."""
         super().__init__()
         self.display = display
+        self._diagnostic_failed = False
 
     def writable(self) -> bool:
         """Support print-based telemetry emission."""
         return True
 
     def write(self, text: str) -> int:
-        """Preserve text bytes while suspending/redrawing the active row at newlines."""
-        self.display.write_diagnostic(text)
+        """Coordinate diagnostics; after a callback failure preserve that primary exception."""
+        if self.display._render_failed and self._diagnostic_failed:
+            return len(text)
+        try:
+            self.display.write_diagnostic(text)
+        except BaseException as exc:
+            if not self.display._render_failed:
+                raise
+            self._report_failure(exc)
         return len(text)
 
     def flush(self) -> None:
         """Flush the borrowed stream without closing it."""
-        if not self.display.stream.closed:
+        if self.display.stream.closed or (self.display._render_failed and self._diagnostic_failed):
+            return
+        try:
             self.display.stream.flush()
+        except BaseException as exc:
+            if not self.display._render_failed:
+                raise
+            self._report_failure(exc)
+
+    def _report_failure(self, error: BaseException) -> None:
+        """Log suppressed secondary diagnostics once while the original callback error unwinds."""
+        self._diagnostic_failed = True
+        logger.error(
+            "Telemetry output failed (%s); preserving original progress error",
+            type(error).__name__,
+        )
 
 
 @final
@@ -106,6 +156,7 @@ class ProgressDisplay:
         self._preparation: str | None = None
         self._old_output = self.config.output
         self._proxy = _TelemetryStream(self)
+        self._control_output = _UnflushedStream(self.stream)
 
     def __enter__(self) -> "ProgressDisplay":
         """Temporarily coordinate telemetry only when it targets this terminal."""
@@ -301,9 +352,10 @@ class ProgressDisplay:
         wrapped = max(0, (self._rendered_length - 1) // columns) if self._visible else 0
         controls = ("\x1b[1A" if self._row_advanced else "") + "\r\x1b[2K"
         controls += "\x1b[1A\r\x1b[2K" * wrapped
-        click.echo(controls, file=self.stream, nl=False, color=True)
+        click.echo(controls, file=self._control_output, nl=False, color=True)
         self._visible = False
         self._row_advanced = False
+        self.stream.flush()
 
     def _finish_transfer_row(self) -> None:
         """Retain a terminal transfer row and clear only its active state."""
