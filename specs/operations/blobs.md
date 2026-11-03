@@ -297,6 +297,8 @@ If a redirect changes the completing PUT into another method, its response
 cannot confirm the upload and raises `BlobError` instead of reporting success.
 For a nonempty payload, the final prepared request must also retain the counted
 body; a redirect that keeps PUT but discards its body is not confirmation.
+The completing response must be `201 Created`; other successful-looking codes,
+including nonterminal `202 Accepted`, are not treated as completed uploads.
 
 ### Transfer progress
 

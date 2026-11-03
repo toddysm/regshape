@@ -326,6 +326,8 @@ def upload_blob_stream(
                 raise BlobError("Streamed upload redirect changed the completing PUT method")
             if response.request is not None and len(body) and response.request.body is not body:
                 raise BlobError("Streamed upload redirect removed the counted request body")
+            if response.status_code != 201:
+                raise BlobError("Streamed upload completion requires HTTP 201 Created")
             progress.check_complete()
             progress.emit(TransferPhase.VERIFYING)
             confirmed = response.headers.get("Docker-Content-Digest", "")

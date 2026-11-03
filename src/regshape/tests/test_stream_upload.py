@@ -535,3 +535,28 @@ def test_body_discarding_301_cannot_confirm_upload(middleware: bool) -> None:
     assert puts == 2 and not source.closed
     assert events[-1].phase == TransferPhase.FAILED
     assert not any(e.phase == TransferPhase.COMPLETED for e in events)
+
+
+@pytest.mark.parametrize("status", [200, 202, 204])
+@pytest.mark.parametrize("middleware", [False, True])
+def test_nonterminal_success_status_cannot_complete_upload(status: int, middleware: bool) -> None:
+    """Only the distribution protocol's final 201 confirms a streamed upload."""
+    events: list[TransferProgress] = []
+
+    def respond(method: str, url: str, **kwargs: object) -> requests.Response:
+        """Consume the full payload but do not confirm a created blob."""
+        if method == "POST":
+            return _response(202, {"Location": LOCATION})
+        assert b"".join(iter(lambda: kwargs["data"].read(2), b"")) == DATA
+        return _response(status)
+
+    with (
+        patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
+        patch("regshape.libs.decorators.call_details.requests.request", side_effect=respond),
+        pytest.raises(BlobError, match="201 Created"),
+    ):
+        client = RegistryClient(TransportConfig(registry="registry.example.invalid", enable_middleware=middleware))
+        upload_blob_stream(client, "repo", io.BytesIO(DATA), DIGEST, progress_callback=events.append)
+    assert events[-1].phase == TransferPhase.FAILED
+    assert sum(e.phase == TransferPhase.FAILED for e in events) == 1
+    assert not any(e.phase == TransferPhase.COMPLETED for e in events)
