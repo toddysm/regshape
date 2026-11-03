@@ -8,15 +8,17 @@ that every registry or platform has been tested.
 
 Tracking is **issues-only** because Project access is unavailable in this
 workspace. The linked issues and pull requests remain authoritative for newer
-changes. The approved bootstrap scope includes the baseline inventory and the
-Planned live-progress row; its design remains in the feature issue, not a
-separate design document.
+changes. The baseline was captured in the inventory bootstrap. Live-progress
+planning status was updated on **2026-11-02** following approval of design
+revision 2 and its implementation kickoff; its design remains in the feature
+issue, not a separate design document.
 
 ## Status meanings
 
 - **Implemented:** the described capability is present on the captured main.
 - **Partial:** useful behavior exists, but the stated gaps remain.
-- **In progress:** work is proposed in an open pull request, not yet on main.
+- **In progress:** implementation is authorized or underway, but the capability
+  is not yet complete on main.
 - **Planned:** tracked work that has not been implemented.
 
 The **PRD doc** column can link either a product requirements document or an
@@ -43,7 +45,7 @@ the first version of every operation in that row.
 | Python Package Index (PyPI) release publication | Implemented | [Closed #57](https://github.com/toddysm/regshape/issues/57), [v0.1.1 release](https://github.com/toddysm/regshape/releases/tag/v0.1.1) | - | [Developer guide: contributing](../CONTRIBUTING.md) | [Overview/install reference](../README.md) | - |
 | Homebrew distribution and release-driven formula updates | Partial | [Tracker #63](https://github.com/toddysm/regshape/issues/63), [remaining documentation fix #62](https://github.com/toddysm/regshape/issues/62) | - | - | [How-to: Homebrew installation](guides/homebrew-install.md) | - |
 | OCI image-specification guidance for the development skill | In progress | [#66](https://github.com/toddysm/regshape/issues/66), [open #67](https://github.com/toddysm/regshape/pull/67) | [Issue requirements: #66](https://github.com/toddysm/regshape/issues/66) | [Current development skill](../.github/skills/regshape-dev/SKILL.md) | - | - |
-| Live transfer progress bars across blob, layout, and Docker commands | Planned | [Feature #72](https://github.com/toddysm/regshape/issues/72), [implementation #73](https://github.com/toddysm/regshape/issues/73), [#74](https://github.com/toddysm/regshape/issues/74), [#75](https://github.com/toddysm/regshape/issues/75), [#76](https://github.com/toddysm/regshape/issues/76), [documentation #77](https://github.com/toddysm/regshape/issues/77) | [Lightweight design: #72, revision 1](https://github.com/toddysm/regshape/issues/72) | - | - | - |
+| Live transfer progress bars across blob, layout, and Docker commands | In progress | [Feature #72](https://github.com/toddysm/regshape/issues/72), [implementation #73](https://github.com/toddysm/regshape/issues/73), [#74](https://github.com/toddysm/regshape/issues/74), [#75](https://github.com/toddysm/regshape/issues/75), [#76](https://github.com/toddysm/regshape/issues/76), [documentation #77](https://github.com/toddysm/regshape/issues/77) | [Lightweight design: #72, revision 2](https://github.com/toddysm/regshape/issues/72) | - | - | - |
 
 ## Evidence and important boundaries
 
@@ -122,9 +124,13 @@ has start/done callbacks but no live byte-progress events. Other transfer
 commands do not currently have progress bars.
 
 Feature [#72](https://github.com/toddysm/regshape/issues/72) addresses that gap.
-Its design and breakdown are **unapproved**, its row is **Planned**, and no
-implementation has started. The proposed callback names, progress opt-out, and
-redraw budget remain subject to design approval. The exactly one final
+Design revision 2 and its breakdown are **approved**, and implementation kickoff
+is authorized with library progress callbacks in
+[#73](https://github.com/toddysm/regshape/issues/73) first. The feature is
+**In progress**, not delivered: the callbacks, replayable uploads, and live
+renderers still require their implementation and validation. The approved
+display contract is one persistent row per unique blob, updated in place
+through progress, retries, verification, and the final state. The exactly one final
 user-documentation item is [#77](https://github.com/toddysm/regshape/issues/77).
 
 ### Release and Homebrew state
@@ -152,7 +158,7 @@ this is not evidence that every live registry has passed end-to-end testing.
 
 Update this inventory when related work lands or a tracking decision changes.
 Do not mark a feature Implemented merely because its design or a pull request
-exists. For the new lightweight feature, approval of the issue design and
-breakdown, authorized merging of this inventory bootstrap, and a reviewed
-transition to In progress are required before Build. Completion also requires
+exists. For the new lightweight feature, design/breakdown approval and the
+inventory bootstrap are complete; this reviewed In progress transition is the
+remaining inventory prerequisite to the authorized first work item. Completion requires
 the implementation/documentation items and an inventory close-out update.
