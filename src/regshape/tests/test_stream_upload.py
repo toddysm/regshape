@@ -354,3 +354,34 @@ def test_exhausted_retries_never_complete() -> None:
         upload_blob_stream(client, "repo", io.BytesIO(DATA), DIGEST, progress_callback=events.append)
     assert puts == 2 and events[-1].phase == TransferPhase.FAILED
     assert not any(e.phase == TransferPhase.COMPLETED for e in events)
+
+
+@pytest.mark.parametrize("status", [302, 303])
+@pytest.mark.parametrize("middleware", [False, True])
+def test_method_changing_redirect_cannot_confirm_upload(status: int, middleware: bool) -> None:
+    """A redirected GET response is not evidence that the blob PUT was committed."""
+    events: list[TransferProgress] = []
+
+    def send(request: requests.PreparedRequest, **kwargs: object) -> requests.Response:
+        """Return a successful GET after Requests changes the upload method."""
+        if request.method == "POST":
+            response = _response(202, {"Location": LOCATION})
+        elif request.method == "PUT":
+            assert b"".join(iter(lambda: request.body.read(2), b"")) == DATA
+            response = _response(status, {"Location": "/redirected"})
+        else:
+            assert request.method == "GET"
+            response = _response(200, {"Docker-Content-Digest": DIGEST})
+        response.request = request
+        response.url = request.url
+        return response
+
+    with (
+        patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
+        patch("requests.adapters.HTTPAdapter.send", side_effect=send),
+        pytest.raises(BlobError, match="completing PUT"),
+    ):
+        client = RegistryClient(TransportConfig(registry="registry.example.invalid", enable_middleware=middleware))
+        upload_blob_stream(client, "repo", io.BytesIO(DATA), DIGEST, progress_callback=events.append)
+    assert events[-1].phase == TransferPhase.FAILED
+    assert not any(e.phase == TransferPhase.COMPLETED for e in events)
