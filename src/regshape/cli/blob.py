@@ -12,8 +12,11 @@
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
+import errno
+import logging
 import os
 import stat
+from typing import BinaryIO
 
 import click
 import requests
@@ -33,6 +36,8 @@ from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import AuthError, BlobError
 from regshape.libs.refs import parse_image_ref
 from regshape.libs.transport import RegistryClient, TransportConfig
+
+logger = logging.getLogger(__name__)
 
 
 # ===========================================================================
@@ -317,11 +322,10 @@ def blob_upload(ctx, repo, source_file, digest, media_type, chunked, chunk_size,
     try:
         with ProgressDisplay(disabled=no_progress) as progress, open(source_file, "rb") as fh:
             if chunked:
-                source_stat = os.fstat(fh.fileno())
                 confirmed = upload_blob_chunked(
                     client=client, repo=repo_name, source=fh, digest=digest,
                     content_type=media_type, chunk_size=chunk_size,
-                    total_size=source_stat.st_size if stat.S_ISREG(source_stat.st_mode) else None,
+                    total_size=_trusted_file_size(fh),
                     progress_callback=progress.observe,
                 )
             else:
@@ -414,6 +418,38 @@ def blob_mount(ctx, repo, digest, from_repo):
 # Internal helpers
 # ===========================================================================
 
+
+
+def _trusted_file_size(source: BinaryIO) -> int | None:
+    """Verify a regular file's hinted bounds without consuming its upload bytes.
+
+    Virtual files can report zero or an allocation size instead of their content
+    length. Return ``None`` for unverified bounds or unsupported seeking; retain
+    known zero for genuinely empty files. The caller must keep content stable.
+
+    :raises OSError: On read errors or inability to restore the original position.
+    """
+    info = os.fstat(source.fileno())
+    if not stat.S_ISREG(info.st_mode) or not source.seekable():
+        return None
+    position = source.tell()
+    try:
+        source.seek(info.st_size)
+        if source.read(1):
+            return None
+        if info.st_size:
+            source.seek(info.st_size - 1)
+            if not source.read(1):
+                return None
+        return info.st_size
+    except OSError as exc:
+        if exc.errno not in (errno.EINVAL, errno.ESPIPE, errno.ENOTSUP):
+            raise
+        logger.debug("File size probe unsupported (%s); using an unknown total", type(exc).__name__)
+        return None
+    finally:
+        if source.tell() != position:
+            source.seek(position)
 
 
 def _file_size(path: str) -> int:

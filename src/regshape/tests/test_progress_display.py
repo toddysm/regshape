@@ -1,10 +1,12 @@
 """Screen-frame and command wiring tests for single-row progress rendering."""
 
+import errno
 import hashlib
 import io
 import json
 import logging
 import os
+import stat
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
@@ -15,6 +17,7 @@ import pytest
 import requests
 from click.testing import CliRunner
 
+from regshape.cli.blob import _trusted_file_size
 from regshape.cli.main import regshape
 from regshape.cli.progress import ProgressDisplay
 from regshape.libs.decorators import (
@@ -113,9 +116,9 @@ def telemetry_reset():
 @pytest.fixture
 def upload_source(tmp_path: Path, source_kind: str) -> Iterator[Path]:
     """Provide a regular file or a bounded, EOF-terminated real pipe descriptor path."""
-    if source_kind == "regular":
+    if source_kind != "pipe":
         path = tmp_path / "source"
-        path.write_bytes(b"abcdef")
+        path.write_bytes(b"" if source_kind == "empty" else b"abcdef")
         yield path
         return
     if not Path("/dev/fd").is_dir():
@@ -642,13 +645,17 @@ def test_preparation_label_cannot_inject_terminal_controls() -> None:
     assert len([r for r in terminal.rows if r]) == 1
 
 
-@pytest.mark.parametrize("chunked,source_kind", [(False, "regular"), (True, "regular"), (True, "pipe")])
+@pytest.mark.parametrize("chunked,source_kind", [
+    (False, "regular"), (True, "regular"), (True, "pipe"),
+    (True, "virtual-zero"), (True, "virtual-oversized"), (True, "virtual-undersized"),
+    (False, "empty"), (True, "empty"),
+])
 @pytest.mark.parametrize("mode", ["tty", "disabled", "structured"])
 def test_blob_upload_real_library_consumption(
     upload_source: Path, chunked: bool, source_kind: str, mode: str,
 ) -> None:
     """Both real upload protocols produce intermediate observations through command wiring."""
-    data = b"abcdef"
+    data = b"" if source_kind == "empty" else b"abcdef"
     digest = "sha256:" + hashlib.sha256(data).hexdigest()
     observations: list[TransferProgress] = []
     methods: list[str] = []
@@ -656,6 +663,18 @@ def test_blob_upload_real_library_consumption(
     frames: list[list[str]] = []
     terminal, now = Terminal(), [0.0]
     observe = ProgressDisplay.observe
+    original_stat = os.fstat
+
+    def stat_source(descriptor: int) -> os.stat_result:
+        """Model virtual-file size hints while retaining an actual file-backed reader."""
+        result = original_stat(descriptor)
+        if source_kind.startswith("virtual-"):
+            fields = list(result)
+            fields[stat.ST_SIZE] = {
+                "virtual-zero": 0, "virtual-oversized": 4096, "virtual-undersized": 2,
+            }[source_kind]
+            return os.stat_result(fields)
+        return result
 
     def display(*, disabled: bool) -> ProgressDisplay:
         """Supply a real terminal and controlled clock without bypassing command options."""
@@ -705,6 +724,7 @@ def test_blob_upload_real_library_consumption(
     with (
         patch("regshape.cli.blob.ProgressDisplay", side_effect=display),
         patch.object(ProgressDisplay, "observe", record),
+        patch("regshape.cli.blob.os.fstat", side_effect=stat_source),
         patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
         patch("regshape.libs.decorators.call_details.requests.request", side_effect=respond),
     ):
@@ -712,15 +732,18 @@ def test_blob_upload_real_library_consumption(
     assert result.exit_code == 0, result.output
     assert b"".join(payloads) == data
     assert json.loads(result.stdout)["digest"] == digest
-    assert methods == (["POST", "PATCH", "PATCH", "PATCH", "PUT"] if chunked else ["POST", "PUT"])
-    assert any(e.phase == TransferPhase.TRANSFERRING and 0 < e.bytes_completed < 6 for e in observations)
+    assert methods == (["POST"] + ["PATCH"] * ((len(data) + 1) // 2) + ["PUT"] if chunked else ["POST", "PUT"])
+    if data:
+        assert any(e.phase == TransferPhase.TRANSFERRING and 0 < e.bytes_completed < 6 for e in observations)
+    known_size = source_kind in ("regular", "empty")
     assert all(
-        e.total_bytes == (None if source_kind == "pipe" else 6)
+        e.total_bytes == (len(data) if known_size else None)
         for e in observations if e.phase != TransferPhase.PREPARING
     )
     assert observations[-1].phase == TransferPhase.COMPLETED and result.stderr == ""
     if mode == "tty":
-        assert any("Uploading 2 B" in row for frame in frames for row in frame)
+        if data:
+            assert any("Uploading 2 B" in row for frame in frames for row in frame)
         assert len([row for row in terminal.rows if row.startswith("Blob")]) == 1
         assert "Uploaded" in terminal.rows[0]
     else:
@@ -757,6 +780,35 @@ def test_blob_upload_stream_wiring_preserves_json(tmp_path: Path, chunked: bool,
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["size"] == 6 and len(seen) == 2
     assert result.stderr == ""
+
+
+@pytest.mark.parametrize("error_number", [errno.EINVAL, errno.ESPIPE, errno.EIO])
+def test_size_probe_unsupported_seek_and_io_errors(
+    tmp_path: Path, error_number: int, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Unsupported length probes use unknown totals; genuine I/O errors remain explicit."""
+    path = tmp_path / "source"
+    path.write_bytes(b"abcdef")
+    error = OSError(error_number, "synthetic probe error")
+    caplog.set_level(logging.DEBUG, logger="regshape.cli.blob")
+    with path.open("rb") as source:
+        original_seek = source.seek
+
+        def seek(offset: int, whence: int = 0) -> int:
+            """Reject only the boundary probe while retaining valid reads and rewinds."""
+            if offset == 6:
+                raise error
+            return original_seek(offset, whence)
+
+        with patch.object(source, "seek", side_effect=seek):
+            if error_number == errno.EIO:
+                with pytest.raises(OSError) as caught:
+                    _trusted_file_size(source)
+                assert caught.value is error
+            else:
+                assert _trusted_file_size(source) is None
+                assert "File size probe unsupported" in caplog.text
+        assert source.tell() == 0 and source.read() == b"abcdef"
 
 
 @pytest.mark.parametrize("disabled", [False, True])

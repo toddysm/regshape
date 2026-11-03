@@ -273,8 +273,10 @@ registries that do not support monolithic uploads.
 
 Both modes verify the confirmed digest returned by the registry against
 `--digest` before reporting success.
-Use `--chunked` for pipe-backed files: their byte total remains unknown,
-not the zero size returned by file metadata.
+Use `--chunked` for pipe-backed or virtual files. Regular-file size hints are
+checked at their boundaries without consuming upload bytes; unverified hints
+remain unknown rather than being treated as trusted zero or allocation sizes.
+Genuinely empty regular files retain a known zero total.
 
 #### Options
 
