@@ -137,11 +137,14 @@ class ProgressDisplay:
     ``clock`` and ``columns`` are deterministic test seams, not CLI options.
     The synchronous context temporarily coordinates existing logging handlers
     bound to this terminal; other output destinations remain untouched.
+    ``show_counts`` adds unique successful-transfer (``done``) and already-present
+    counts when space permits; skipped blobs never contribute transferred bytes.
     """
 
     def __init__(
         self, *, disabled: bool = False, structured: bool = False,
         stream: IO[str] | None = None, total_blobs: int | None = 1,
+        show_counts: bool = False,
         clock: Callable[[], float] = time.monotonic,
         columns: Callable[[], int] | None = None,
     ) -> None:
@@ -150,6 +153,7 @@ class ProgressDisplay:
         self.config = get_telemetry_config()
         self.enabled = not disabled and not structured and self.config.output_format != "json" and self.stream.isatty()
         self.total_blobs = total_blobs
+        self.show_counts = show_counts
         self.clock = clock
         self.columns = columns or self._terminal_columns
         self._event: TransferProgress | None = None
@@ -276,14 +280,22 @@ class ProgressDisplay:
         """Show an indeterminate preparation row before any blob becomes active."""
         self._preparation = label
         if self.enabled:
-            self._write_row(self._preparation + " ...")
+            try:
+                self._write_row(self._preparation + " ...")
+            except BaseException:
+                self._render_failed = True
+                raise
 
     def finish_preparation(self, *, success: bool = True, cancelled: bool = False) -> None:
         """Overwrite preparation once with its final state before allocating blob rows."""
         if self._preparation is not None and self.enabled:
             state = "cancelled" if cancelled else ("done" if success else "failed")
-            self._write_row(self._preparation + " ... " + state)
-            self._end_row()
+            try:
+                self._write_row(self._preparation + " ... " + state)
+                self._end_row()
+            except BaseException:
+                self._render_failed = True
+                raise
         self._preparation = None
 
     def observe(self, event: TransferProgress) -> None:
@@ -331,6 +343,11 @@ class ProgressDisplay:
         """Describe logical bytes and state without treating a full byte count as success."""
         index = self._indices[event.digest]
         prefix = f"Blob {index}" + (f"/{self.total_blobs}" if self.total_blobs is not None else "")
+        if self.show_counts:
+            pending = event.digest not in self._finished
+            completed = self.completed + (pending and event.phase == TransferPhase.COMPLETED)
+            skipped = self.skipped + (pending and event.phase == TransferPhase.SKIPPED)
+            prefix += f" [{completed} done/{skipped} skipped]"
         labels = {
             TransferPhase.PREPARING: "Preparing",
             TransferPhase.TRANSFERRING: "Downloading" if event.direction == TransferDirection.DOWNLOAD else "Uploading",

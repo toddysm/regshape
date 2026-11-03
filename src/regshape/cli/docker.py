@@ -15,9 +15,15 @@
 import click
 
 from regshape.cli.formatting import emit_error, emit_json
+from regshape.cli.progress import ProgressDisplay
 from regshape.libs.docker import export_image, list_images, push_image
-from regshape.libs.errors import AuthError, BlobError, DockerError, LayoutError, ManifestError
-
+from regshape.libs.errors import (
+    AuthError,
+    BlobError,
+    DockerError,
+    LayoutError,
+    ManifestError,
+)
 
 # ===========================================================================
 # Helpers
@@ -170,6 +176,7 @@ def export_cmd(ctx, image, output, platform, as_json):
 
 
 @docker.command("push")
+@click.option("--no-progress", is_flag=True, default=False, help="Disable interactive transfer progress.")
 @click.option(
     "--image", "-i",
     required=True,
@@ -209,21 +216,30 @@ def export_cmd(ctx, image, output, platform, as_json):
 )
 @click.option("--json", "as_json", is_flag=True, default=False, help="Output JSON.")
 @click.pass_context
-def push_cmd(ctx, image, dest, platform, force, chunked, chunk_size, as_json):
-    """Push a Docker image to a remote OCI registry."""
+def push_cmd(ctx, image, dest, platform, force, chunked, chunk_size, as_json, no_progress):
+    """Push a Docker image, showing indeterminate preparation then per-blob progress.
+
+    JSON, noninteractive stderr and --no-progress suppress animation without
+    changing export, upload protocols or the result schema.
+    """
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        result = push_image(
-            image,
-            dest,
-            platform=platform,
-            insecure=insecure,
-            force=force,
-            chunked=chunked,
-            chunk_size=chunk_size,
-        )
-    except (DockerError, LayoutError, AuthError, BlobError, ManifestError) as exc:
+        with ProgressDisplay(
+            disabled=no_progress, structured=as_json, total_blobs=None, show_counts=True,
+        ) as progress:
+            progress.prepare("Preparing Docker image")
+            result = push_image(
+                image,
+                dest,
+                platform=platform,
+                insecure=insecure,
+                force=force,
+                chunked=chunked,
+                chunk_size=chunk_size,
+                transfer_callback=progress.observe,
+            )
+    except (DockerError, LayoutError, AuthError, BlobError, ManifestError, OSError) as exc:
         emit_error("docker push", str(exc))
 
     if as_json:
@@ -232,10 +248,10 @@ def push_cmd(ctx, image, dest, platform, force, chunked, chunk_size, as_json):
             "destination": dest,
             "manifests_pushed": len(result.manifests),
             "blobs_uploaded": sum(
-                1 for m in result.manifests for b in m.blobs if b.uploaded
+                1 for m in result.manifests for b in m.blobs if b.action == "uploaded"
             ),
             "blobs_skipped": sum(
-                1 for m in result.manifests for b in m.blobs if not b.uploaded
+                1 for m in result.manifests for b in m.blobs if b.action == "skipped"
             ),
         }
         if platform:
@@ -244,10 +260,10 @@ def push_cmd(ctx, image, dest, platform, force, chunked, chunk_size, as_json):
     else:
         total_manifests = len(result.manifests)
         total_uploaded = sum(
-            1 for m in result.manifests for b in m.blobs if b.uploaded
+            1 for m in result.manifests for b in m.blobs if b.action == "uploaded"
         )
         total_skipped = sum(
-            1 for m in result.manifests for b in m.blobs if not b.uploaded
+            1 for m in result.manifests for b in m.blobs if b.action == "skipped"
         )
         click.echo(
             f"Pushed {image} to {dest}: "

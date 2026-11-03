@@ -43,6 +43,7 @@ from regshape.libs.models.mediatype import (
     OCI_IMAGE_LAYER_TAR_GZIP,
     OCI_IMAGE_MANIFEST,
 )
+from regshape.libs.progress import ProgressCallback
 
 logger = logging.getLogger(__name__)
 
@@ -490,6 +491,7 @@ def push_image(
     force: bool = False,
     chunked: bool = False,
     chunk_size: int = 65536,
+    transfer_callback: ProgressCallback | None = None,
 ) -> PushResult:
     """Export a Docker image and push it to a remote OCI registry.
 
@@ -503,13 +505,20 @@ def push_image(
     :param force: Skip blob existence checks.
     :param chunked: Use chunked upload protocol for blobs.
     :param chunk_size: Chunk size in bytes for chunked uploads.
+    :param transfer_callback: Typed per-blob observer forwarded unchanged to
+        layout push, including unique skipped blobs. Export/conversion happens
+        before these observations; no image size is substituted as a byte total.
+        Observer exceptions propagate unchanged.
     :returns: :class:`~regshape.libs.layout.operations.PushResult`.
     :raises DockerError: On daemon errors.
     :raises LayoutError: On layout errors.
+    :raises TypeError: If the transfer observer is not callable.
     """
     from regshape.libs.refs import parse_image_ref
     from regshape.libs.transport.client import RegistryClient, TransportConfig
 
+    if transfer_callback is not None and not callable(transfer_callback):
+        raise TypeError("Transfer callback must be callable")
     tmp_dir = tempfile.mkdtemp(prefix="regshape-docker-")
     tmp_layout = Path(tmp_dir) / "layout"
 
@@ -532,6 +541,7 @@ def push_image(
             force=force,
             chunked=chunked,
             chunk_size=chunk_size,
+            transfer_callback=transfer_callback,
         )
         return result
     finally:

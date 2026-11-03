@@ -322,12 +322,9 @@ def upload_blob_stream(
             )
             body.raise_if_failed()
             _raise_for_upload_error(response, client.config.registry, session_id=session.session_id)
-            if response.request is not None and response.request.method != "PUT":
-                raise BlobError("Streamed upload redirect changed the completing PUT method")
+            _require_upload_commit(response, "Streamed")
             if response.request is not None and len(body) and response.request.body is not body:
                 raise BlobError("Streamed upload redirect removed the counted request body")
-            if response.status_code != 201:
-                raise BlobError("Streamed upload completion requires HTTP 201 Created")
             progress.check_complete()
             progress.emit(TransferPhase.VERIFYING)
             confirmed = response.headers.get("Docker-Content-Digest", "")
@@ -359,7 +356,7 @@ def upload_blob_chunked(
        each ``202`` response the session offset is advanced and the
        ``Location`` header (if present) is used for the next PATCH.
     3. ``PUT <upload-url>?digest={digest}`` — commits the upload with an
-       empty body.
+       empty body. Completion requires a final PUT with ``201 Created``.
 
     If *source* is exhausted immediately (zero-byte blob), the PATCH loop
     is skipped and only the completing PUT is issued.
@@ -466,6 +463,7 @@ def _upload_blob_chunks(
         },
     )
     _raise_for_upload_error(put_response, registry, session_id=session.session_id)
+    _require_upload_commit(put_response, "Chunked")
 
     progress.emit(TransferPhase.VERIFYING)
     confirmed = put_response.headers.get("Docker-Content-Digest", "")
@@ -524,6 +522,14 @@ def mount_blob(
 # ===========================================================================
 # Private helpers
 # ===========================================================================
+
+
+def _require_upload_commit(response: requests.Response, protocol: str) -> None:
+    """Raise :class:`BlobError` unless the response confirms a final PUT with 201 Created."""
+    if response.request is not None and response.request.method != "PUT":
+        raise BlobError(f"{protocol} upload redirect changed the completing PUT method")
+    if response.status_code != 201:
+        raise BlobError(f"{protocol} upload completion requires HTTP 201 Created")
 
 
 def _split_upload_path(upload_path: str) -> tuple[str, list[tuple[str, str]]]:

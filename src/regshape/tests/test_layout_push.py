@@ -90,7 +90,7 @@ class TestPushLayout:
     """Tests for the push_layout library function."""
 
     @patch("regshape.libs.manifests.push_manifest")
-    @patch("regshape.libs.blobs.upload_blob")
+    @patch("regshape.libs.blobs.upload_blob_stream")
     @patch("regshape.libs.blobs.head_blob")
     def test_push_uploads_all_blobs_and_manifest(
         self, mock_head, mock_upload, mock_push_manifest, tmp_path
@@ -114,7 +114,7 @@ class TestPushLayout:
         assert mock_push_manifest.call_count == 1
 
     @patch("regshape.libs.manifests.push_manifest")
-    @patch("regshape.libs.blobs.upload_blob")
+    @patch("regshape.libs.blobs.upload_blob_stream")
     @patch("regshape.libs.blobs.head_blob")
     def test_push_skips_existing_blobs(
         self, mock_head, mock_upload, mock_push_manifest, tmp_path
@@ -134,7 +134,7 @@ class TestPushLayout:
         mock_upload.assert_not_called()
 
     @patch("regshape.libs.manifests.push_manifest")
-    @patch("regshape.libs.blobs.upload_blob")
+    @patch("regshape.libs.blobs.upload_blob_stream")
     @patch("regshape.libs.blobs.head_blob")
     def test_push_force_skips_head_check(
         self, mock_head, mock_upload, mock_push_manifest, tmp_path
@@ -172,7 +172,7 @@ class TestPushLayout:
         assert result.blobs_uploaded == 2
 
     @patch("regshape.libs.manifests.push_manifest")
-    @patch("regshape.libs.blobs.upload_blob")
+    @patch("regshape.libs.blobs.upload_blob_stream")
     @patch("regshape.libs.blobs.head_blob")
     def test_push_uses_ref_name_annotation(
         self, mock_head, mock_upload, mock_push_manifest, tmp_path
@@ -192,7 +192,7 @@ class TestPushLayout:
         assert call_args[0][2] == "v1.0"
 
     @patch("regshape.libs.manifests.push_manifest")
-    @patch("regshape.libs.blobs.upload_blob")
+    @patch("regshape.libs.blobs.upload_blob_stream")
     @patch("regshape.libs.blobs.head_blob")
     def test_push_tag_override_wins(
         self, mock_head, mock_upload, mock_push_manifest, tmp_path
@@ -253,7 +253,7 @@ class TestPushLayout:
                         tag_override="latest")
 
     @patch("regshape.libs.manifests.push_manifest")
-    @patch("regshape.libs.blobs.upload_blob")
+    @patch("regshape.libs.blobs.upload_blob_stream")
     @patch("regshape.libs.blobs.head_blob")
     def test_push_progress_callback_receives_events(
         self, mock_head, mock_upload, mock_push_manifest, tmp_path
@@ -278,7 +278,7 @@ class TestPushLayout:
         assert "manifest_done" in events
 
     @patch("regshape.libs.manifests.push_manifest")
-    @patch("regshape.libs.blobs.upload_blob")
+    @patch("regshape.libs.blobs.upload_blob_stream")
     @patch("regshape.libs.blobs.head_blob")
     def test_push_result_has_correct_summary(
         self, mock_head, mock_upload, mock_push_manifest, tmp_path

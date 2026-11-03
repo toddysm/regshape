@@ -310,7 +310,8 @@ Genuinely empty regular files retain a known zero total.
    `Content-Range` header; advance the session offset.
 5. When the source is exhausted, issue `PUT <upload-url>?digest={digest}`
    with an empty body.
-6. Confirm the `Docker-Content-Digest` response header matches `--digest`.
+6. Require a final PUT with `201 Created` and confirm the
+   `Docker-Content-Digest` response header matches `--digest`.
 7. Print a JSON summary to stdout and exit `0`.
 
 #### Exit Codes

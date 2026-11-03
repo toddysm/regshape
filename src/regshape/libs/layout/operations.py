@@ -7,8 +7,8 @@
 .. module:: regshape.libs.layout.operations
    :platform: Unix, Windows
    :synopsis: Library-level functions for creating and managing OCI Image Layout
-              directories on the local filesystem. All operations are purely
-              filesystem-based — no network calls are made.
+              directories on the local filesystem, with registry push
+              orchestration for completed layouts.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
@@ -19,14 +19,21 @@ import os
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Union
+from typing import BinaryIO, Union
+from uuid import uuid4
 
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import BlobError, LayoutError
 from regshape.libs.models.descriptor import Descriptor
 from regshape.libs.models.manifest import ImageIndex, ImageManifest, parse_manifest
 from regshape.libs.models.mediatype import OCI_IMAGE_INDEX
-
+from regshape.libs.progress import (
+    ProgressCallback,
+    TransferDirection,
+    TransferPhase,
+    TransferProgress,
+)
+from regshape.libs.transport import RegistryClient
 
 # ===========================================================================
 # Internal constants
@@ -149,24 +156,33 @@ def _write_stage(layout: Path, stage: dict) -> None:
     _write_atomically(_stage_file(layout), content)
 
 
+def _hash_blob_stream(source: BinaryIO) -> str:
+    """Consume a borrowed source in 64 KiB chunks and return its SHA-256 digest."""
+    digest = hashlib.sha256()
+    while chunk := source.read(65536):
+        digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
 def _check_blob_integrity(layout: Path, digest: str, context: str) -> None:
-    """Raise :class:`~regshape.libs.errors.LayoutError` if the blob for
-    *digest* is absent or its content does not match the declared digest."""
+    """Require a readable referenced blob and verify SHA-256 without buffering it.
+
+    Other algorithms retain the existing readability-only validation behavior.
+    """
     blob = _blob_path(layout, digest)
     if not blob.exists():
         raise LayoutError(
             f"blob {digest} referenced by {context} does not exist",
             f"expected at {blob}",
         )
-    content = blob.read_bytes()
+    with blob.open("rb") as source:
+        actual = _hash_blob_stream(source)
     alg, _ = digest.split(":", 1)
-    if alg == "sha256":
-        actual = "sha256:" + hashlib.sha256(content).hexdigest()
-        if actual != digest:
-            raise LayoutError(
-                f"digest mismatch for blob {digest}",
-                f"computed {actual}",
-            )
+    if alg == "sha256" and actual != digest:
+        raise LayoutError(
+            f"digest mismatch for blob {digest}",
+            f"computed {actual}",
+        )
 
 
 # ===========================================================================
@@ -845,13 +861,15 @@ def _collect_blob_descriptors(manifest: ImageManifest) -> list[Descriptor]:
 @track_scenario("layout push")
 def push_layout(
     layout_path: Union[str, Path],
-    client,
+    client: RegistryClient,
     repo: str,
     tag_override: Union[str, None] = None,
     force: bool = False,
     chunked: bool = False,
     chunk_size: int = 65536,
     progress_callback=None,
+    *,
+    transfer_callback: ProgressCallback | None = None,
 ) -> PushResult:
     """Push an OCI Image Layout to a remote registry.
 
@@ -874,16 +892,23 @@ def push_layout(
         ``progress_callback(event, **kwargs)`` for UI feedback.  Events:
         ``"blob_start"``, ``"blob_skip"``, ``"blob_done"``,
         ``"manifest_done"``.
+    :param transfer_callback: Optional typed per-blob observer, independent of
+        the legacy callback. Both upload protocols report actual logical bytes;
+        existing blobs emit one skipped event per unique digest. Descriptor
+        sizes are trusted totals. Observer exceptions propagate unchanged.
     :returns: A :class:`PushResult` with per-manifest reports and summary
         statistics.
     :raises LayoutError: If the layout is invalid or incomplete.
     :raises regshape.libs.errors.AuthError: On authentication failure.
     :raises regshape.libs.errors.BlobError: On blob upload failure.
     :raises regshape.libs.errors.ManifestError: On manifest push failure.
+    :raises TypeError: If the typed observer is not callable.
     """
-    from regshape.libs.blobs import head_blob, upload_blob, upload_blob_chunked
+    from regshape.libs.blobs import head_blob, upload_blob_chunked, upload_blob_stream
     from regshape.libs.manifests import push_manifest
 
+    if transfer_callback is not None and not callable(transfer_callback):
+        raise TypeError("Transfer callback must be callable")
     layout = _lp(layout_path)
     validate_layout(layout)
 
@@ -964,6 +989,11 @@ def push_layout(
                 if progress_callback:
                     progress_callback("blob_skip", digest=blob_desc.digest,
                                       size=blob_desc.size)
+                if transfer_callback is not None:
+                    transfer_callback(TransferProgress(
+                        uuid4().hex, blob_desc.digest, TransferDirection.UPLOAD,
+                        TransferPhase.SKIPPED, 0, blob_desc.size,
+                    ))
                 continue
 
             # Upload
@@ -972,17 +1002,40 @@ def push_layout(
                                   size=blob_desc.size,
                                   media_type=blob_desc.media_type)
 
-            if chunked:
-                blob_file_path = _blob_path(layout, blob_desc.digest)
-                with open(blob_file_path, "rb") as blob_fh:
+            blob_file_path = _blob_path(layout, blob_desc.digest)
+            try:
+                blob_fh = blob_file_path.open("rb")
+            except OSError as exc:
+                raise LayoutError(
+                    f"Blob {blob_desc.digest} not found in {layout}", str(exc),
+                ) from exc
+            with blob_fh:
+                if chunked:
                     upload_blob_chunked(
                         client, repo, blob_fh,
                         blob_desc.digest,
                         chunk_size=chunk_size,
+                        total_size=blob_desc.size,
+                        progress_callback=transfer_callback,
                     )
-            else:
-                blob_data = read_blob(layout, blob_desc.digest)
-                upload_blob(client, repo, blob_data, blob_desc.digest)
+                else:
+                    algorithm, _ = blob_desc.digest.split(":", 1)
+                    if algorithm != "sha256":
+                        raise LayoutError(
+                            f"Unsupported digest algorithm: {algorithm!r}",
+                            "only sha256 is supported",
+                        )
+                    actual = _hash_blob_stream(blob_fh)
+                    if actual != blob_desc.digest:
+                        raise LayoutError(
+                            f"Digest mismatch for {blob_desc.digest}", f"computed {actual}",
+                        )
+                    blob_fh.seek(0)
+                    upload_blob_stream(
+                        client, repo, blob_fh, blob_desc.digest,
+                        total_size=blob_desc.size,
+                        progress_callback=transfer_callback,
+                    )
 
             uploaded_digests.add(blob_desc.digest)
             blob_report = BlobPushReport(
