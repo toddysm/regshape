@@ -19,8 +19,18 @@ from regshape.libs.blobs.operations import (
     upload_blob,
     upload_blob_chunked,
 )
+from regshape.libs.progress import (
+    ProgressCallback,
+    TransferDirection,
+    TransferPhase,
+    TransferProgress,
+)
 
 __all__ = [
+    "ProgressCallback",
+    "TransferDirection",
+    "TransferPhase",
+    "TransferProgress",
     "delete_blob",
     "get_blob",
     "head_blob",
