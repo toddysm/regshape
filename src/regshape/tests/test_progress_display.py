@@ -16,7 +16,11 @@ from click.testing import CliRunner
 
 from regshape.cli.main import regshape
 from regshape.cli.progress import ProgressDisplay
-from regshape.libs.decorators import TelemetryConfig, configure_telemetry
+from regshape.libs.decorators import (
+    TelemetryConfig,
+    configure_telemetry,
+    get_telemetry_config,
+)
 from regshape.libs.decorators.output import telemetry_write
 from regshape.libs.progress import (
     ProgressCallback,
@@ -321,6 +325,80 @@ def test_final_newline_flush_failure_overwrites_original_row(
     assert len(rows) == 1
     assert "Uploaded" not in rows[0] and "Downloaded" not in rows[0]
     assert ("Failed" if error_type is OSError else "Cancelled") in rows[0]
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+@pytest.mark.parametrize("error_type", [OSError, KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize("failure_point", ["label", "newline-flush"])
+def test_nested_upload_telemetry_cannot_finalize_failed_success(
+    tmp_path: Path, chunked: bool, error_type: type[BaseException], failure_point: str,
+) -> None:
+    """Real command/library scenario finalizers must not redraw a failed completion as success."""
+    data = b"abcdef"
+    digest = "sha256:" + hashlib.sha256(data).hexdigest()
+    path = tmp_path / "source"
+    path.write_bytes(data)
+    terminal = Terminal()
+    original_write, original_flush = terminal.write, terminal.flush
+    original = error_type(2 if error_type is SystemExit else "during completion")
+    failed = False
+
+    def write(text: str) -> int:
+        """Fail once when the success label is about to be written."""
+        nonlocal failed
+        if failure_point == "label" and not failed and "Uploaded" in text:
+            failed = True
+            raise original
+        return original_write(text)
+
+    def flush() -> None:
+        """Fail once after the success row's newline, not on earlier telemetry lines."""
+        nonlocal failed
+        if failure_point == "newline-flush" and not failed and any(
+            "Uploaded" in row for row in terminal.rows
+        ) and terminal.getvalue().endswith("\n"):
+            failed = True
+            raise original
+        original_flush()
+
+    def display(*, disabled: bool) -> ProgressDisplay:
+        """Coordinate real command telemetry with the same interactive destination."""
+        get_telemetry_config().output = terminal
+        return ProgressDisplay(stream=terminal, columns=lambda: 160, disabled=disabled)
+
+    def respond(method: str, url: str, **kwargs: object) -> requests.Response:
+        """Accept both real upload protocols and consume the monolithic counted source."""
+        response = requests.Response()
+        response.status_code = 201 if method == "PUT" else 202
+        response.headers["Location"] = "/v2/repo/blobs/uploads/session"
+        response._content = b""
+        response._content_consumed = True
+        if method == "PUT":
+            if not chunked:
+                body = kwargs["data"]
+                assert isinstance(body, io.RawIOBase)
+                while body.read(2):
+                    pass
+            response.headers["Docker-Content-Digest"] = digest
+        return response
+
+    args = ["blob", "upload", "--repo", "registry.example.invalid/repo", "--file", str(path),
+            "--digest", digest, "--time-scenarios"]
+    if chunked:
+        args.append("--chunked")
+    with (
+        patch.object(terminal, "write", side_effect=write),
+        patch.object(terminal, "flush", side_effect=flush),
+        patch("regshape.cli.blob.ProgressDisplay", side_effect=display),
+        patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
+        patch("regshape.libs.decorators.call_details.requests.request", side_effect=respond),
+    ):
+        result = CliRunner().invoke(regshape, args)
+    assert result.exit_code != 0 and result.stdout == "" and failed
+    rows = [r for r in terminal.rows if r.startswith("Blob")]
+    assert len(rows) == 1 and "Uploaded" not in rows[0]
+    assert ("Failed" if error_type is OSError else "Cancelled") in rows[0]
+    assert "scenario" in terminal.getvalue()
 
 
 def test_terminal_event_during_partial_diagnostic_is_not_lost() -> None:

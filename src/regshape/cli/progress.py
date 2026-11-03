@@ -37,6 +37,15 @@ def _safe_label(value: str) -> str:
     return value.encode("unicode_escape").decode("ascii")
 
 
+def _failure_phase(error: BaseException) -> TransferPhase:
+    """Distinguish cancellation from ordinary errors without exposing exception contents."""
+    return (
+        TransferPhase.CANCELLED
+        if isinstance(error, (KeyboardInterrupt, SystemExit, GeneratorExit))
+        else TransferPhase.FAILED
+    )
+
+
 class _TelemetryStream(io.TextIOBase):
     """Route complete/partial telemetry writes around an active progress row."""
 
@@ -90,6 +99,7 @@ class ProgressDisplay:
         self._last_draw = float("-inf")
         self._visible = False
         self._row_advanced = False
+        self._render_failed = False
         self._rendered_length = 0
         self._rendered_columns = 0
         self._partial_diagnostic = False
@@ -109,6 +119,7 @@ class ProgressDisplay:
     ) -> Literal[False]:
         """Restore output and preserve a primary error if rendering cleanup also fails."""
         try:
+            self._render_failed = False
             self._finish_diagnostic()
             if self._preparation is not None:
                 self.finish_preparation(
@@ -116,13 +127,8 @@ class ProgressDisplay:
                     cancelled=isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)),
                 )
             if self._event is not None and exc is not None:
-                phase = (
-                    TransferPhase.CANCELLED
-                    if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit))
-                    else TransferPhase.FAILED
-                )
                 self._finished.pop(self._event.digest, None)
-                self.observe(replace(self._event, phase=phase))
+                self.observe(replace(self._event, phase=_failure_phase(exc)))
             elif self._event is not None and self._event.phase in _TERMINAL:
                 self._draw(force=True)
                 self._finish_transfer_row()
@@ -190,11 +196,18 @@ class ProgressDisplay:
             self._started = self.clock()
         force = previous is None or previous.phase != event.phase or previous.attempt != event.attempt
         self._event = event
-        self._draw(force=force or event.phase in _TERMINAL)
-        if event.phase in _TERMINAL:
-            self._finished[event.digest] = event.phase
-            if not self._partial_diagnostic:
-                self._finish_transfer_row()
+        try:
+            self._draw(force=force or event.phase in _TERMINAL)
+            if event.phase in _TERMINAL:
+                self._finished[event.digest] = event.phase
+                if not self._partial_diagnostic:
+                    self._finish_transfer_row()
+        except BaseException as exc:
+            # Nested scenario telemetry runs before the display context exits.
+            self._event = replace(event, phase=_failure_phase(exc))
+            self._finished.pop(event.digest, None)
+            self._render_failed = True
+            raise
 
     def _text(self, event: TransferProgress) -> str:
         """Describe logical bytes and state without treating a full byte count as success."""
@@ -255,7 +268,7 @@ class ProgressDisplay:
 
     def _draw(self, *, force: bool) -> None:
         """Coalesce routine updates to ten per second while flushing state transitions."""
-        if not self.enabled or self._partial_diagnostic:
+        if not self.enabled or self._partial_diagnostic or self._render_failed:
             return
         if self._event is None and self._preparation is None:
             return
@@ -316,7 +329,8 @@ class ProgressDisplay:
         self._partial_diagnostic = not text.endswith("\n")
         if not self._partial_diagnostic:
             self._draw(force=True)
-            if self._event is not None and self._event.phase in _TERMINAL:
+            if self._event is not None and self._event.phase in _TERMINAL and not self._render_failed:
+                self._finished[self._event.digest] = self._event.phase
                 self._finish_transfer_row()
 
     def _finish_diagnostic(self) -> None:
