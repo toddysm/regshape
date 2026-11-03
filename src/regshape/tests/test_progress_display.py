@@ -24,11 +24,13 @@ from regshape.libs.decorators import (
 )
 from regshape.libs.decorators.output import telemetry_write
 from regshape.libs.decorators.scenario import track_scenario
+from regshape.libs.errors import BlobError
 from regshape.libs.progress import (
     ProgressCallback,
     TransferDirection,
     TransferPhase,
     TransferProgress,
+    _TransferProgress,
 )
 
 DIGEST = "sha256:" + "a" * 64
@@ -495,6 +497,64 @@ def test_diagnostic_error_without_pending_failure_propagates(operation: str) -> 
         else:
             config.output.flush()
     assert caught.value is error and config.output is terminal
+
+
+@pytest.mark.parametrize("timing", [False, True])
+@pytest.mark.parametrize("fallback_logging", [False, True])
+@pytest.mark.parametrize("error_type", [requests.exceptions.ConnectionError, BlobError])
+def test_transfer_and_rendering_errors_coordinate_library_logging(
+    timing: bool, fallback_logging: bool, error_type: type[Exception],
+) -> None:
+    """The real library failure tracker must not log outside the active progress cursor."""
+    terminal = Terminal()
+    config = TelemetryConfig(output=terminal, time_scenarios_enabled=timing)
+    configure_telemetry(config)
+    handler = logging.StreamHandler(terminal)
+    log_output = io.StringIO()
+    log_handler = logging.StreamHandler(log_output)
+    original_flush = terminal.flush
+    primary = error_type("primary transfer error")
+    failed = False
+
+    def flush() -> None:
+        """Fail once after the target failure row's newline, while a transfer error unwinds."""
+        nonlocal failed
+        if not failed and terminal.getvalue().endswith("\n") and any(
+            "Blob 2" in row and "Failed" in row for row in terminal.rows
+        ):
+            failed = True
+            raise OSError("secondary renderer error")
+        original_flush()
+
+    @track_scenario("nested transfer")
+    def transfer(display: ProgressDisplay) -> None:
+        """Invoke the actual library callback-failure logger under a primary transfer error."""
+        with _TransferProgress(DIGEST, TransferDirection.UPLOAD, display.observe, 100) as progress:
+            progress.advance(40)
+            raise primary
+
+    tracker_logger = logging.getLogger("regshape.libs.progress")
+    original_fallback = logging.lastResort
+    with (
+        pytest.raises(error_type) as caught,
+        patch.object(terminal, "flush", side_effect=flush),
+        patch.object(logging.getLogger(), "handlers", [] if fallback_logging else [handler, log_handler]),
+        patch.object(tracker_logger, "handlers", []),
+        patch("sys.stderr", terminal),
+        patch("logging.lastResort", original_fallback if fallback_logging else None),
+        ProgressDisplay(stream=terminal, total_blobs=2) as display,
+    ):
+        display.observe(_event(TransferPhase.COMPLETED, 100, digest="sha256:" + "b" * 64))
+        transfer(display)
+    assert caught.value is primary and failed
+    rows = [r for r in terminal.rows if r.startswith("Blob")]
+    assert len(rows) == 2 and "Uploaded" in rows[0] and "Failed" in rows[1]
+    assert "Progress observer failed during failure notification (OSError)" in terminal.getvalue()
+    assert display.completed == 1 and handler.stream is terminal and config.output is terminal
+    assert display._last_resort_proxy is None
+    if not fallback_logging:
+        assert "Progress observer failed" in log_output.getvalue()
+        assert "\x1b" not in log_output.getvalue() and log_handler.stream is log_output
 
 
 def test_terminal_event_during_partial_diagnostic_is_not_lost() -> None:

@@ -74,7 +74,7 @@ class _UnflushedStream(io.TextIOBase, IO[str]):
         return self.stream.fileno()
 
 
-class _TelemetryStream(io.TextIOBase):
+class _TelemetryStream(io.TextIOBase, IO[str]):
     """Route complete/partial telemetry writes around an active progress row."""
 
     def __init__(self, display: "ProgressDisplay") -> None:
@@ -135,6 +135,8 @@ class ProgressDisplay:
     explicit structured output, structured telemetry, or ``disabled=True``.
     Observations still update invocation-local counts when rendering is off.
     ``clock`` and ``columns`` are deterministic test seams, not CLI options.
+    The synchronous context temporarily coordinates existing logging handlers
+    bound to this terminal; other output destinations remain untouched.
     """
 
     def __init__(
@@ -165,18 +167,72 @@ class ProgressDisplay:
         self._old_output = self.config.output
         self._proxy = _TelemetryStream(self)
         self._control_output = _UnflushedStream(self.stream)
+        self._log_streams: list[tuple[logging.StreamHandler, IO[str]]] = []
+        self._old_last_resort: logging.Handler | None = None
+        self._last_resort_proxy: logging.StreamHandler | None = None
 
     def __enter__(self) -> "ProgressDisplay":
-        """Temporarily coordinate telemetry only when it targets this terminal."""
-        if self.enabled and self.config.output is self.stream:
-            self.config.output = self._proxy
+        """Coordinate telemetry and existing stderr logging without replacing global stderr."""
+        if self.enabled:
+            try:
+                if self.config.output is self.stream:
+                    self.config.output = self._proxy
+                self._redirect_logging()
+            except BaseException:
+                self._restore_outputs()
+                raise
         return self
+
+    def _redirect_logging(self) -> None:
+        """Route handlers bound to this exact terminal through the shared diagnostic writer."""
+        loggers = [logging.getLogger()] + [
+            item for item in list(logging.Logger.manager.loggerDict.values())
+            if isinstance(item, logging.Logger)
+        ]
+        for item in loggers:
+            for handler in list(item.handlers):
+                if isinstance(handler, logging.StreamHandler) and handler.stream is self.stream:
+                    handler.acquire()
+                    try:
+                        self._log_streams.append((handler, handler.stream))
+                        handler.stream = self._proxy
+                    finally:
+                        handler.release()
+        fallback = logging.lastResort
+        if isinstance(fallback, logging.StreamHandler) and fallback.stream is self.stream:
+            self._old_last_resort = fallback
+            replacement = logging.StreamHandler(self._proxy)
+            replacement.setLevel(fallback.level)
+            replacement.setFormatter(fallback.formatter)
+            for log_filter in fallback.filters:
+                replacement.addFilter(log_filter)
+            self._last_resort_proxy = replacement
+            logging.lastResort = replacement
+
+    def _restore_outputs(self) -> None:
+        """Restore only destinations still owned by this display, without fallible I/O."""
+        if self.config.output is self._proxy:
+            self.config.output = self._old_output
+        for handler, stream in reversed(self._log_streams):
+            handler.acquire()
+            try:
+                if handler.stream is self._proxy:
+                    handler.stream = stream
+            finally:
+                handler.release()
+        self._log_streams.clear()
+        if self._last_resort_proxy is not None:
+            if logging.lastResort is self._last_resort_proxy:
+                logging.lastResort = self._old_last_resort
+            self._last_resort_proxy.close()
+            self._last_resort_proxy = None
 
     def __exit__(
         self, exc_type: type[BaseException] | None,
         exc: BaseException | None, traceback: TracebackType | None,
     ) -> Literal[False]:
         """Restore output and preserve a primary error if rendering cleanup also fails."""
+        cleanup_error_type: str | None = None
         try:
             self._render_failed = False
             self._finish_diagnostic()
@@ -197,10 +253,11 @@ class ProgressDisplay:
         except BaseException as cleanup_error:
             if exc is None:
                 raise
-            logger.error("Progress cleanup failed (%s); preserving original error", type(cleanup_error).__name__)
+            cleanup_error_type = type(cleanup_error).__name__
         finally:
-            if self.config.output is self._proxy:
-                self.config.output = self._old_output
+            self._restore_outputs()
+            if cleanup_error_type is not None:
+                logger.error("Progress cleanup failed (%s); preserving original error", cleanup_error_type)
             self._proxy.report_failure()
         return False
 
