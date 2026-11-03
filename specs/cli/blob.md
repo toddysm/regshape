@@ -456,11 +456,17 @@ or validation. Noninteractive stderr and `--telemetry-format json` telemetry als
 disable animation and per-state progress lines. Text telemetry is coordinated
 with the active row; log files receive telemetry only, not terminal controls.
 
+For examples and callback semantics, see the
+[progress guide](../../docs/guides/live-transfer-progress.md) and
+[library reference](../../docs/library/transfer-progress.md).
+
 ## Global Behaviour
 
-- All output goes to **stdout** in JSON format.
+- Successful result data goes to **stdout** in JSON format; progress and
+  enabled telemetry use their separate stderr destinations.
 - All error messages go to **stderr** with an `Error [<reference>]: ` prefix, where `<reference>` is an implementation-defined diagnostic identifier.
-- The `--telemetry` flag (inherited from the root command) controls whether
-  timing and scenario data are collected for each operation.
-- `--dry-run` (when supported by the telemetry decorator layer) records the
-  scenario call chain without issuing real HTTP requests.
+- Command options `--time-methods`, `--time-scenarios`, `--debug-calls`,
+  `--metrics`, `--telemetry-format`, and `--telemetry-verbosity` control
+  instrumentation. There is no global `--telemetry` switch.
+- Blob commands do not expose `--dry-run`; `blob head` checks existence without
+  downloading the body.

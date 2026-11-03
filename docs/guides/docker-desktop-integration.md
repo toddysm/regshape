@@ -166,6 +166,11 @@ Pushed nginx:latest to registry.io/myrepo/nginx:v1: 1 manifest(s), 5 blob(s) upl
 
 Under the hood, `regshape docker push` creates a temporary OCI layout, then
 uses the existing `push_layout` infrastructure to upload blobs and manifests.
+An interactive stderr terminal first shows indeterminate preparation during
+export/conversion, then one live row per unique blob. Each row is overwritten
+through byte progress, retry, verification/commit and final state. Docker image
+size is not used as a fabricated transfer total. See
+[live transfer progress](live-transfer-progress.md) for snapshots and byte semantics.
 
 ### Authentication
 
@@ -185,6 +190,7 @@ error.
 | `--chunked` | | Use chunked (streaming) blob uploads |
 | `--chunk-size` | | Chunk size in bytes (default: 65536) |
 | `--json` | | Output as JSON |
+| `--no-progress` | | Disable interactive progress without changing the push or validation |
 
 ### Pushing to a local registry
 
@@ -198,21 +204,28 @@ docker run -d -p 5000:5000 --name registry registry:2
 regshape --insecure docker push --image nginx:latest --dest localhost:5000/nginx:latest
 
 # Verify
-regshape tag list -i localhost:5000/nginx --insecure
+regshape --insecure tag list -i localhost:5000/nginx
 ```
 
 ### Multi-platform push
 
-Multi-platform images are pushed correctly — shared blobs between platforms
-are deduplicated via the blob existence check (`HEAD` request before upload).
+The current Docker push path passes a tag override to layout push, which
+rejects exports containing multiple manifest entries. Select a platform for
+such images; live progress does not add multi-platform index publication.
 
 ```bash
-# Push all platforms
-regshape docker push --image myapp:latest --dest registry.io/myrepo/myapp:v1
-
 # Push only one platform
 regshape docker push --image myapp:latest --dest registry.io/myrepo/myapp:v1 --platform linux/amd64
 ```
+
+For supported pushes, shared blobs are deduplicated. Live `done`/`skipped`
+counters count unique digests, while existing JSON and summary counters retain
+their legacy semantics. `--json`, noninteractive stderr, and `--no-progress`
+suppress animation and per-state progress lines.
+
+Docker push does not gain the common telemetry switches or whole-command timing.
+The optional library `transfer_callback` is forwarded to layout push; see the
+[callback reference](../library/transfer-progress.md).
 
 ---
 

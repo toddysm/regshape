@@ -23,3 +23,11 @@ the security of the registry.
 RegShape is written in Python and offers Python libraries that can be leveraged 
 to build your own tools. The CLI tool is built on top of the libraries and uses
 [click](https://click.palletsprojects.com/) framework.
+
+## Guides and references
+
+- [Create an OCI layout](guides/create-oci-layout.md)
+- [Docker Desktop integration](guides/docker-desktop-integration.md)
+- [Monitor live transfer progress](guides/live-transfer-progress.md)
+- [Library transfer callbacks](library/transfer-progress.md)
+- [Implemented capabilities and remaining work](project-state.md)

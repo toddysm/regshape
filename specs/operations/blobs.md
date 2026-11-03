@@ -331,9 +331,10 @@ When observing a download without an explicit total, a valid decimal
 content encoding. Otherwise the total stays unknown; compressed wire sizes are
 not confused with decoded payload bytes. Negative or unusable metadata becomes
 zero in the legacy `BlobInfo.size` result, but never a known-zero progress total.
-Upload source length is not probed: supply `total_size` when known, measured from
-the current source offset. The library never seeks or closes a caller-owned
-upload source.
+Chunked upload does not probe or seek its source: supply `total_size` when
+known, measured from the current source offset. Monolithic streamed upload
+infers a seekable source's remaining length and rewinds for replay as described
+above. Neither API closes the caller-owned source.
 
 A trusted total mismatch raises `BlobError`, not a clamped percentage or
 successful result. Overruns retain the last valid counter and fail before an
