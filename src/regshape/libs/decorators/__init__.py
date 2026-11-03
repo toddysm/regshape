@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Callable, IO, Optional
 
 from regshape.libs.decorators.metrics import PerformanceMetrics
+from regshape.libs.decorators.streams import TextOutput
 
 
 @dataclass
@@ -61,7 +62,7 @@ class TelemetryConfig:
     metrics_enabled: bool = False
     verbosity: int = 1
     output_format: str = "text"
-    output: IO = field(default_factory=lambda: sys.stderr)
+    output: TextOutput = field(default_factory=lambda: sys.stderr)
     log_file_path: Optional[str] = None
     log_file: Optional[IO] = field(default=None, repr=False)
     method_timings: list[tuple[str, float]] = field(default_factory=list)
@@ -221,6 +222,7 @@ from regshape.libs.decorators.metrics import PerformanceMetrics                 
 __all__ = [
     'TelemetryConfig',
     'PerformanceMetrics',
+    'TextOutput',
     'configure_telemetry',
     'get_telemetry_config',
     'telemetry_options',

@@ -124,9 +124,8 @@ regshape blob head -r registry.example.com/myrepo -d sha256:abc123
 
 Download a blob and verify its digest. When `--output` is provided the blob
 content is streamed to that file path. When `--output` is omitted the blob
-metadata is printed to stdout without saving the content to disk; this
-behaves the same as `blob head` and is useful for scripts that only need
-the metadata after verifying the blob is accessible.
+content is still consumed and verified before metadata is printed to stdout.
+Unlike `blob head`, this transfers the entire blob.
 
 #### Options
 
@@ -135,7 +134,8 @@ the metadata after verifying the blob is accessible.
 | `--repo` | `-r` | `TEXT` | required | Repository in `registry/name` format |
 | `--digest` | `-d` | `TEXT` | required | Blob digest (`sha256:...`) |
 | `--output` | `-o` | `PATH` | `None` | File path to write blob content to |
-| `--chunk-size` | | `INT` | `65536` | Streaming chunk size in bytes (ignored without `--output`) |
+| `--chunk-size` | | `INT` | `65536` | Streaming chunk size in bytes |
+| `--no-progress` | | `FLAG` | `False` | Disable interactive stderr progress |
 
 #### Behavior
 
@@ -143,12 +143,12 @@ the metadata after verifying the blob is accessible.
 2. Issue `GET /v2/{name}/blobs/{digest}`.
 3. If `--output` is provided: stream the response body to the file at
    `--output` in `--chunk-size` byte increments, computing a running
-   SHA-256 digest as each chunk is written.
+   digest as each chunk is written.
 4. After the last byte is written, compare the computed digest against
    `--digest`. If they differ: delete the partial file and exit `1` with
    an error message.
-5. If `--output` is not provided: read the response body fully into memory,
-   verify the digest, and discard the content.
+5. If `--output` is not provided: consume bounded chunks, verify the digest,
+   and discard the content without buffering the complete blob.
 6. Print the blob metadata JSON to stdout and exit `0`.
 
 #### Exit Codes
@@ -284,14 +284,17 @@ Both modes verify the confirmed digest returned by the registry against
 | `--media-type` | | `TEXT` | `application/octet-stream` | Content-Type for the blob |
 | `--chunked` | | `FLAG` | `False` | Use chunked (streaming) upload protocol |
 | `--chunk-size` | | `INT` | `65536` | Chunk size in bytes (chunked mode only) |
+| `--no-progress` | | `FLAG` | `False` | Disable interactive stderr progress |
 
 #### Behavior (monolithic, default)
 
 1. Resolve credentials for the registry.
-2. Read `--file` fully into memory.
+2. Open `--file` as a binary stream; do not buffer the complete file.
 3. Issue `POST /v2/{name}/blobs/uploads/` to initiate the session.
-4. Issue `PUT <upload-url>?digest={digest}` with the file content as body.
-5. Confirm the `Docker-Content-Digest` response header matches `--digest`.
+4. Issue `PUT <upload-url>?digest={digest}` with a counted, length-aware file body.
+   Replayable authentication/retry/307 redirect attempts rewind this source.
+5. Require `201 Created` and confirm the `Docker-Content-Digest` response
+   header matches `--digest`; sending every byte alone is not success.
 6. Print a JSON summary to stdout and exit `0`.
 
 #### Behavior (chunked, `--chunked`)
@@ -432,6 +435,21 @@ regshape blob mount \
 | Registry error | `Error [<reference>]: Registry error for registry.example.com/targetrepo` |
 
 ---
+
+## Live progress (`get` and `upload`)
+
+On interactive stderr, each blob has one row whose byte count, retry,
+verification/commit, and final state are overwritten in place. Routine redraws
+are limited to ten per second; phase changes and final states flush immediately.
+Known nonzero sizes show a percentage; unknown sizes show bytes without an
+invented total or estimated completion. Retries reset logical byte/rate tracking.
+Failed or cancelled transfers never receive a successful final label.
+
+Progress never enters stdout: the existing JSON result schema is unchanged.
+Use `--no-progress` to disable the display without changing transfer protocols
+or validation. Noninteractive stderr and `--telemetry-format json` telemetry also
+disable animation and per-state progress lines. Text telemetry is coordinated
+with the active row; log files receive telemetry only, not terminal controls.
 
 ## Global Behaviour
 
