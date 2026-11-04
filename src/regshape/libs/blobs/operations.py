@@ -20,12 +20,13 @@ concerns — error reporting is the caller's responsibility.
 
 import hashlib
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from typing import BinaryIO, Optional
 from urllib.parse import parse_qsl, urlparse
 
 import requests
 
+from regshape.libs._http import download_total as _download_total
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.decorators.timing import track_time
 from regshape.libs.errors import AuthError, BlobError
@@ -602,21 +603,6 @@ def _validate_chunk_size(chunk_size: int) -> None:
     """Reject zero/negative/noninteger reads before network access or file creation."""
     if isinstance(chunk_size, bool) or not isinstance(chunk_size, int) or chunk_size <= 0:
         raise BlobError("Blob chunk_size must be a positive integer")
-
-
-def _download_total(headers: Mapping[str, str]) -> int | None:
-    """Use only a valid length measured in the same units as consumed payload bytes."""
-    if headers.get("Content-Encoding", "identity").strip().lower() != "identity":
-        return None
-    if headers.get("Transfer-Encoding"):
-        return None
-    raw = headers.get("Content-Length", "").strip()
-    if not raw.isascii() or not raw.isdecimal():
-        return None
-    try:
-        return int(raw)
-    except ValueError:
-        return None
 
 
 def _close_download_resource(

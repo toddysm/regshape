@@ -3,7 +3,8 @@
 <!-- doc-type: reference -->
 
 The Python library exposes optional, synchronous observations of blob
-transfers. Library functions do not render progress bars; configured telemetry
+transfers and manifest receipt. Library functions do not render progress bars;
+configured telemetry
 remains separate. For the command-line
 display, see [Monitor live transfer progress](../guides/live-transfer-progress.md).
 This reference describes the current development implementation and releases
@@ -182,6 +183,88 @@ that a later manifest push succeeded.
 Events contain no credentials, URLs, request/response headers, payload content,
 or raw exception text. Progress callbacks are independent of telemetry flags
 and do not resolve the [separate telemetry gaps](../guides/live-transfer-progress.md#control-output-and-combine-telemetry).
+
+## Manifest receive observations
+
+The manifest fetch adds a keyword-only callback while preserving its existing
+four positional arguments and three-string result:
+
+```python
+from regshape.libs.manifests import (
+    ManifestKind,
+    ManifestPhase,
+    ManifestProgress,
+    ManifestProgressCallback,
+    get_manifest,
+)
+
+events: list[ManifestProgress] = []
+body, content_type, reported_digest = get_manifest(
+    client, "team/example", "v1",
+    accept="application/vnd.oci.image.manifest.v1+json",
+    progress_callback=events.append,
+)
+```
+
+`client` is a configured `RegistryClient` as in the earlier example. These four
+observation names are also available from `regshape.libs.progress`.
+`ManifestProgressCallback` is `Callable[[ManifestProgress], None]`.
+Omitting the callback keeps buffered requests and emits no observations.
+
+| Frozen event field | Contract |
+| --- | --- |
+| `transfer_id: str` | Nonempty opaque identity, unique per invocation and stable through client-internal authentication/retries |
+| `kind: ManifestKind` | Advertised `UNKNOWN`, `MANIFEST` or `INDEX`; not payload validation |
+| `phase: ManifestPhase` | `PREPARING`, `TRANSFERRING`, `RECEIVED`, `FAILED` or `CANCELLED` |
+| `bytes_completed: int` | Absolute consumed payload bytes before text decoding, not characters or compressed wire size |
+| `total_bytes: int \| None` | Comparable advisory size; `None` means unknown and zero means known empty |
+
+Enum string values are lowercase. Invalid identity, enum types, booleans,
+negative/noninteger counts or a count above a present total raise `ValueError`.
+Manifest events have no digest, direction or attempt field; the existing blob
+event's required digest and verification semantics are unchanged.
+
+The sequence starts with zero-byte `PREPARING` (unknown kind and total), then
+`TRANSFERRING` at headers and after each nonempty chunk requested in 64 KiB reads.
+A small body may finish in one read; there is no artificial delay. Missing digest
+headers are valid, and tag/digest targets use the same event path without a
+progress-only HEAD request.
+
+Only a valid ASCII decimal Content-Length with no transfer encoding and
+identity/absent content encoding supplies a comparable total. Missing, invalid
+or compressed lengths remain unknown. If a successful stream disagrees with a
+comparable size hint, the total is discarded before an impossible count is
+published and one warning is logged. Actual bytes are never clamped; Requests
+framing/transport errors still propagate rather than returning partial success.
+
+`RECEIVED` follows consumption, Requests-compatible text decoding and response
+cleanup. It does **not** mean model-valid, digest-verified, stored or printed.
+The return remains complete decoded text, not byte-exact export or a
+bounded-memory API. Callers must still handle parsing/storage/output failures.
+
+Observers run synchronously. An observer exception propagates unchanged and
+disables further notifications, including when it fails on `RECEIVED`.
+Transport/HTTP failures close the owned response and emit `FAILED`;
+interruptions emit `CANCELLED`. Secondary cleanup or failure-observer errors are
+logged without replacing the primary error. If logging itself fails, those
+secondary failures are retained as exception context.
+
+Observed requests bypass both reads and writes of the optional response cache;
+repeated buffered fetches retain cache reuse. Two observed fetches can therefore
+make two network requests where buffered fetches hit cache. This is safe stream
+ownership, not an extra probe. Retry-discarded streams close before backoff; the
+final response remains owned by the fetch. Diagnostics that fail after acquiring
+a stream but before handoff close it at that boundary, including in legacy
+transport mode.
+
+Streamed request diagnostics do not capture the body: `body_preview: null`,
+`body_size: 0`, and the existing text `(empty)` placeholder describe no captured
+preview, not a zero-byte manifest. Request timing ends at headers, while operation
+timing includes consumption. No body pre-read is added for diagnostics.
+
+This library support does not yet add manifest command rendering or
+`--no-progress` to that command; those belong to the separate command integration.
+See the [complete manifest signature](../../specs/operations/manifests.md#get_manifest).
 
 ## Layout compatibility
 

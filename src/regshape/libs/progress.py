@@ -1,7 +1,8 @@
 """Immutable transfer observations, independent of terminal rendering and telemetry.
 
-Library-generated events contain an opaque invocation ID and a validated digest,
-never request URLs, headers, credentials, payloads, or exception messages.
+Blob events require a validated digest; manifest events use opaque invocation
+identity without implying digest verification. Neither contains request URLs,
+headers, credentials, payloads, or exception messages.
 """
 
 import logging
@@ -13,6 +14,7 @@ from types import TracebackType
 from typing import Literal, final
 from uuid import uuid4
 
+from regshape.libs._http import report_secondary_failure
 from regshape.libs.errors import BlobError
 
 logger = logging.getLogger(__name__)
@@ -85,6 +87,134 @@ class TransferProgress:
 
 
 ProgressCallback = Callable[[TransferProgress], None]
+
+
+class ManifestKind(str, Enum):
+    """Advertised media-type classification, not validation of the payload."""
+
+    UNKNOWN = "unknown"
+    MANIFEST = "manifest"
+    INDEX = "index"
+
+
+class ManifestPhase(str, Enum):
+    """Receive lifecycle; RECEIVED does not imply parsing, verification or output success."""
+
+    PREPARING = "preparing"
+    TRANSFERRING = "transferring"
+    RECEIVED = "received"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True)
+class ManifestProgress:
+    """Immutable manifest receipt observation, independent of tags and digest headers.
+
+    :param transfer_id: Nonempty opaque identity, stable for one fetch.
+    :param kind: Advertised manifest/index kind, or UNKNOWN.
+    :param phase: Receive lifecycle state.
+    :param bytes_completed: Absolute consumed payload bytes before text decoding.
+    :param total_bytes: Comparable advisory size, or None; never below the count.
+    :raises ValueError: For invalid identity, enum values or integer bounds.
+    """
+
+    transfer_id: str
+    kind: ManifestKind
+    phase: ManifestPhase
+    bytes_completed: int
+    total_bytes: int | None
+
+    def __post_init__(self) -> None:
+        """Validate snapshots without including potentially sensitive values in errors."""
+        if not isinstance(self.transfer_id, str) or not self.transfer_id:
+            raise ValueError("Manifest progress requires a non-empty transfer identity")
+        if not isinstance(self.kind, ManifestKind) or not isinstance(self.phase, ManifestPhase):
+            raise ValueError("Manifest progress requires a valid kind and phase")  # noqa: TRY004 - manifest event contract
+        counters = (
+            (self.bytes_completed,) if self.total_bytes is None
+            else (self.bytes_completed, self.total_bytes)
+        )
+        for value in counters:
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError("Manifest progress counters must be non-negative integers")
+        if self.total_bytes is not None and self.bytes_completed > self.total_bytes:
+            raise ValueError("Manifest progress cannot exceed its advisory total")
+
+
+ManifestProgressCallback = Callable[[ManifestProgress], None]
+
+
+@final
+class _ManifestProgress:
+    """Track one fetch and disable notifications after an observer raises."""
+
+    def __init__(self, callback: ManifestProgressCallback | None) -> None:
+        """Validate the optional callback before network access; None remains silent."""
+        if callback is not None and not callable(callback):
+            raise TypeError("Manifest progress callback must be callable")
+        self.callback = callback
+        self.transfer_id = uuid4().hex if callback is not None else ""
+        self.kind = ManifestKind.UNKNOWN
+        self.bytes_completed = 0
+        self.total_bytes: int | None = None
+        self.callback_failed = False
+
+    def __enter__(self) -> "_ManifestProgress":
+        """Emit preparation before issuing the request."""
+        self.emit(ManifestPhase.PREPARING)
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> Literal[False]:
+        """Notify failure once while preserving transport, callback and cancellation errors."""
+        if exc is not None and not self.callback_failed:
+            phase = (
+                ManifestPhase.CANCELLED
+                if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit))
+                else ManifestPhase.FAILED
+            )
+            try:
+                self.emit(phase)
+            except BaseException as observer_error:  # noqa: BLE001 - preserve primary error
+                report_secondary_failure(exc, observer_error, "Manifest failure observer")
+        return False
+
+    def emit(self, phase: ManifestPhase) -> None:
+        """Deliver an immutable snapshot synchronously; never recursively notify a failed observer."""
+        if self.callback is None or self.callback_failed:
+            return
+        event = ManifestProgress(
+            self.transfer_id, self.kind, phase, self.bytes_completed, self.total_bytes,
+        )
+        delivered = False
+        try:
+            self.callback(event)
+            delivered = True
+        finally:
+            if not delivered:
+                self.callback_failed = True
+
+    def discard_total(self) -> None:
+        """Invalidate inconsistent metadata once, before publishing a misleading bound."""
+        self.total_bytes = None
+        logger.warning("Manifest length metadata does not match consumed bytes; progress total is unknown")
+
+    def advance(self, amount: int) -> None:
+        """Count a consumed chunk, discarding an advisory total before an overrun event."""
+        self.bytes_completed += amount
+        if self.total_bytes is not None and self.bytes_completed > self.total_bytes:
+            self.discard_total()
+        self.emit(ManifestPhase.TRANSFERRING)
+
+    def finish_body(self) -> None:
+        """Discard a short size hint after successful EOF, not after a transport failure."""
+        if self.total_bytes is not None and self.bytes_completed != self.total_bytes:
+            self.discard_total()
 
 
 @final
