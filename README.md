@@ -62,23 +62,30 @@ regshape ping registry-1.docker.io
 Retrieve a manifest:
 
 ```bash
-regshape manifest get -i docker.io/library/alpine:latest
+regshape manifest get -a docker.io/library/alpine:latest
 ```
 
 List tags for a repository:
 
 ```bash
-regshape tag list -i docker.io/library/alpine
+regshape tag list -a docker.io/library/alpine
 ```
 
 Retrieve every page of tags:
 
 ```bash
-regshape tag list -i docker.io/library/alpine --all
+regshape tag list -a docker.io/library/alpine --all
 ```
 
 Use `--n` to set the all-pages request size and `--last` to start after a tag.
 See the [tag command reference](specs/cli/tag.md) for pagination and output options.
+
+`--artifact / -a` is the preferred selector in versions containing the 0.2
+artifact-option change. Older `--image-ref / -i` aliases remain functional but
+are deprecated in 0.2 help/docs; there is no runtime warning or removal date.
+Check installed command help if using an older release. See the
+[artifact-option migration guide](docs/guides/artifact-options.md) for the eight
+affected commands and unchanged Docker/blob options.
 
 ## Documentation
 
@@ -88,6 +95,7 @@ See the [tag command reference](specs/cli/tag.md) for pagination and output opti
 - [Docker Desktop Integration](docs/guides/docker-desktop-integration.md)
 - [Live Transfer Progress](docs/guides/live-transfer-progress.md)
 - [Library Transfer Callbacks](docs/library/transfer-progress.md)
+- [Artifact Options and Migration](docs/guides/artifact-options.md)
 
 ### Architecture & Design
 

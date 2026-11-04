@@ -267,6 +267,7 @@ Automated coverage uses deterministic mocked network and Docker boundaries.
 It does not establish compatibility with every live registry or daemon.
 
 - [Library transfer observers](../library/transfer-progress.md)
+- [Artifact options and legacy-flag migration](artifact-options.md)
 - [Blob command reference](../../specs/cli/blob.md)
 - [Layout push reference](../../specs/cli/layout-push.md)
 - [Docker integration guide](docker-desktop-integration.md)

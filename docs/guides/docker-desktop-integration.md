@@ -204,7 +204,7 @@ docker run -d -p 5000:5000 --name registry registry:2
 regshape --insecure docker push --image nginx:latest --dest localhost:5000/nginx:latest
 
 # Verify
-regshape --insecure tag list -i localhost:5000/nginx
+regshape --insecure tag list -a localhost:5000/nginx
 ```
 
 ### Multi-platform push
@@ -230,6 +230,10 @@ The optional library `transfer_callback` is forwarded to layout push; see the
 ---
 
 ## Error handling
+
+The registry-facing tag/manifest/referrer commands prefer `--artifact / -a`;
+Docker's local-image `--image / -i` selector is unchanged and is not deprecated.
+See the [artifact-option migration guide](artifact-options.md).
 
 | Error | Cause | Resolution |
 |-------|-------|------------|
