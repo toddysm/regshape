@@ -1,6 +1,6 @@
 # Manifest GET progress: functional requirements and engineering design
 
-- **Status:** Proposed revision 2; awaiting approval of this complete design and breakdown.
+- **Status:** Proposed revision 3; awaiting approval of this complete design and breakdown.
 - **Feature:** [#90](https://github.com/toddysm/regshape/issues/90).
 - **Design item:** [#101](https://github.com/toddysm/regshape/issues/101).
 - **Target:** [0.2](https://github.com/toddysm/regshape/milestone/1); not a release commitment.
@@ -146,6 +146,9 @@ current behavior. Each separate block is a snapshot of the **same overwritten
 stderr row**, not a new line appended for each phase. Byte units and adaptive
 truncation reuse the existing renderer. No reference or digest is required in
 the initial label.
+When emitting the result to stdout, temporarily clear/suspend that row and restore
+one row after the payload. Its logical identity stays the same, but its physical
+terminal position can move; never retain an old Writing row beside the result.
 
 Known-size index, during transfer (illustrative measured rate):
 
@@ -334,7 +337,9 @@ get_manifest(progress_callback=display.observe)
   | collected bytes -> Requests-compatible text decoder
   | response close -> RECEIVED observation
   v
-optional parse/extract -> Processing -> Writing -> existing output helper
+optional parse/extract -> Processing -> Writing
+  | stdout: clear/suspend row -> existing output helper -> rebase row
+  | file: existing output helper without terminal handoff
   | success: finish the same row as Downloaded
   | error/interrupt: unwind row as Failed/Cancelled, preserve original error
   v
@@ -346,7 +351,8 @@ existing command result/error handling; no progress on stdout
 | Additive manifest event types | [Shared library progress module](../../src/regshape/libs/progress.py) | R1, R2, R8: independent manifest contract and callback type |
 | Observed fetch / private text adapter | [Manifest operations](../../src/regshape/libs/manifests/operations.py) and [exports](../../src/regshape/libs/manifests/__init__.py) | R1, R5, R6, R8: streamed consumption, decoding, cleanup |
 | Stream-safe cache and retry ownership | [Transport middleware](../../src/regshape/libs/transport/middleware.py) | R6, R8: bypass live-stream caching, close discarded retry responses |
-| Display normalization / deferred finalization | [Shared CLI progress](../../src/regshape/cli/progress.py) | R2-R4, R7, R11: row identity and lifecycle |
+| Pre-handoff diagnostic ownership | [Request diagnostics](../../src/regshape/libs/decorators/call_details.py) | R8: close an acquired stream if metrics/debug output fails before returning it |
+| Display normalization / deferred finalization | [Shared CLI progress](../../src/regshape/cli/progress.py) | R2-R5, R7, R11: row identity, output handoff and lifecycle |
 | Command orchestration | [Manifest CLI](../../src/regshape/cli/manifest.py) | R3-R5, R7, R8: parse/extract/write inside display lifetime |
 | Regression evidence | [Tests](../../src/regshape/tests/) | R9: library, frame and command-to-library coverage |
 | References and guides | [Manifest API](../operations/manifests.md), [command](manifest.md), [callbacks](../../docs/library/transfer-progress.md), [guide](../../docs/guides/live-transfer-progress.md) | R10 |
@@ -436,6 +442,18 @@ auth/redirect/retry responses remain the client's responsibility. Buffered
 no-observer responses also receive explicit cleanup without changing their
 result data.
 
+Ownership starts where a response is acquired, not only when the manifest
+operation receives it. In `debug_call`, an acquired streamed HTTP response is
+still decorator-owned until post-response metric/debug emission succeeds and
+the response is returned. If that emission raises (including stderr or log-file
+failure), close that exact response without consuming it, then propagate the
+original diagnostic exception. If close also raises, preserve the original
+exception's identity; do not rely on `get_manifest` or a stale `last_response`
+to clean up a response they never received. Cover this boundary in both transport
+modes, with successful close and secondary-close-failure injection. Audit
+analogous pre-handoff response hooks without expanding telemetry coverage or
+changing output schemas.
+
 #### D3.1. Stream-safe middleware
 
 The current optional cache stores a live `RegistryResponse`, including an unread
@@ -518,6 +536,25 @@ completion before receipt. A display context must not auto-promote a pending
 manifest row to Downloaded on ordinary exit. In the command, every successful
 path explicitly completes it, tested by raw, full and part output cases.
 
+Result emission needs its own output handoff: stdout and stderr commonly share
+one terminal even though separate captures hide that fact. Before any stdout
+result write, clear the active row **through stderr** and suspend progress
+redraws. Leave the existing output helper and stdout bytes untouched; do not
+send the payload through the stderr diagnostic proxy. Keep the logical row/key
+pending while forgetting its old physical cursor footprint. After successful
+emission, restore/finalize that one row below the result at the new cursor
+position, never by moving upward across payload lines.
+
+On partial-output failure or interruption, preserve every payload character
+already written. Rebase safely before displaying Failed/Cancelled; a separating
+newline through stderr is allowed when the cursor boundary is unknown, but no
+cursor-up/erase may target result lines. Preserve the output exception if this
+cleanup also fails. Apply the handoff consistently to raw, full and part stdout
+paths, without fragile file-descriptor identity assumptions; it can conservatively
+suspend even when stdout is redirected or on a different terminal. Suppressed
+rendering is a no-op, and file output needs no stdout handoff. This coordinates
+this command's writes, not unrelated processes concurrently writing the terminal.
+
 Move expected post-receipt parse/part error emission outside the display context:
 carry the existing message/exit code through a private command-failure exception,
 then use the existing error helper after cleanup. This prevents a missing part's
@@ -559,7 +596,7 @@ deduplication, descriptor verification, aggregate object counts or concurrency.
 | --- | --- | --- |
 | R1, R2 / S4 | D2-D4 | Library item; event validation, no-observer and intermediate-read tests |
 | R3, R4 / S1, S3 | D5 | Command item; terminal frames and post-receipt failure tests |
-| R5 / S1-S4 | D2, D4, D6 | Library/command items; tuple, decoding, aliases, result and exit-code comparisons |
+| R5 / S1-S4 | D2, D4-D6 | Library/command items; tuple, decoding, aliases, shared-terminal result safety and exit-code comparisons |
 | R6 / S1, S2 | D3-D4 | Library/command items; length, rate and request-count assertions |
 | R7 / S2, S3 | D5, section 11 | Command item; suppression, diagnostics, throttling and width tests |
 | R8 / S3, S4 | D3, D3.1, D5 | Library cache/retry regressions and both implementation items' callback/cancellation/cleanup fault injection |
@@ -623,6 +660,8 @@ outside events and row labels; progress does not refresh expired credentials.
 | User interrupt | Cancel, close, propagate | Same row Cancelled; existing interruption behavior |
 | Missing/unsupported part | Not a fetch failure | Failed plus existing exit 2; never Cancelled |
 | Output/close failure | Fetch already received | Failed; partial output may remain; original error behavior |
+| Metrics/debug emission fails before response handoff | Diagnostic owner closes acquired stream; preserves original exception if close fails | Failed if started; operation is not expected to close an unseen response |
+| Result stdout shares the progress terminal | No library change | Clear/suspend via stderr before output; rebase without erasing payload, then finalize the same logical row |
 | Diagnostic/render cleanup failure | Do not mask active primary failure | Cleanup without duplicate success; propagate sole failure |
 
 One logical download is sequential. No new locks, contention policy, rate-limit
@@ -637,7 +676,8 @@ handling, pagination, cold-start service or concurrent rendering is introduced.
 | Privacy | New data collection avoided; events omit payloads/headers; existing caller-owned logs only |
 | Dependencies | Requests decoding behavior: public-property adapter and dependency-environment tests |
 | Infrastructure/deployment | No infrastructure change; existing package pipeline only |
-| Resource lifecycle | Stream/error/observer/retry cleanup and no live-stream cache reuse: D3.1 ownership plus fault-injection/repeated-fetch tests |
+| Resource lifecycle | Stream/error/observer/retry and pre-handoff diagnostic cleanup: D3/D3.1 ownership plus fault-injection/repeated-fetch tests |
+| Shared-terminal output | Unterminated row collides with stdout: D5 clear/suspend/rebase handoff, including preserved partial output |
 | Multi-tenancy/noisy neighbor | No hosted tenants; slow callbacks and large result memory remain caller-local |
 | Regression | Shared display/telemetry changes: all existing blob/layout/Docker regression suites |
 
@@ -706,7 +746,8 @@ Preserve blob digest validation, per-blob deduplication/counts and finalization;
 layout/Docker preparation and child propagation; stderr logging/telemetry
 coordination; failed final flush behavior; artifact option aliases and conflicts;
 manifest raw/part/file/Accept/output semantics; buffered cache reuse and safe
-stream bypass; discarded retry-response closure before waits. Tests must exercise real command
+stream bypass; discarded retry-response closure before waits; diagnostic-boundary
+closure; shared stdout/stderr cursor safety. Tests must exercise real command
 orchestration with a mocked streamed transport, not only a mocked final tuple.
 Review changed source documentation alongside behavior without rewriting
 unrelated legacy declarations.
@@ -727,8 +768,8 @@ undo; already emitted stdout or partial files cannot be transactionally undone.
 | Order | Work item | Dependencies | Proposed branch | Relative effort |
 | --- | --- | --- | --- | --- |
 | 1 | [#101: design and Planned inventory](https://github.com/toddysm/regshape/issues/101) | Existing merged foundations | `prd/manifest-get-progress-fd2ca782` | Small, document review and checks |
-| 2 | [#105: library observations](https://github.com/toddysm/regshape/issues/105) | #101 merged and Build authorized | `feature/manifest-get-progress/library-observations-fd2ca782` | Medium, including decoding/lifecycle and transport cache/retry tests |
-| 3 | [#104: renderer and command](https://github.com/toddysm/regshape/issues/104) | #105 | `feature/manifest-get-progress/command-renderer-fd2ca782` | Medium, highest shared-regression risk |
+| 2 | [#105: library observations](https://github.com/toddysm/regshape/issues/105) | #101 merged and Build authorized | `feature/manifest-get-progress/library-observations-fd2ca782` | Medium, including decoding/lifecycle, cache/retry and diagnostic-boundary tests |
+| 3 | [#104: renderer and command](https://github.com/toddysm/regshape/issues/104) | #105 | `feature/manifest-get-progress/command-renderer-fd2ca782` | Medium, including stdout handoff; highest shared-regression risk |
 | 4 | [#102: final user documentation](https://github.com/toddysm/regshape/issues/102) | #105 and #104 | `feature/manifest-get-progress/user-docs-fd2ca782` | Small, including examples/link validation |
 
 Each delivery estimate includes implementation, focused tests/type/lint checks,
@@ -762,6 +803,9 @@ Library tests cover:
   interruption and discarded-response close failure: close discarded streams
   before waiting/retrying and leave the final response for operation cleanup.
   Exercise shared blob-stream paths without changing retry/backoff policy.
+- In both transport modes, inject metrics/debug stderr/log-file failure after
+  acquiring a stream but before returning it; assert closure and original
+  diagnostic exception identity, including when close itself fails.
 
 Command/display tests cover:
 
@@ -776,6 +820,11 @@ Command/display tests cover:
   does not suppress progress. Suppression leaves streamed semantics unchanged.
 - Text telemetry, configured/fallback stderr logging, nested scenario errors,
   output failures and original-exception preservation.
+- Send stdout and stderr through the same terminal emulator, with separately
+  recorded channel bytes. Verify clear/suspend/rebase across multiline/raw/part
+  output, wrapping, resizing, partial writes and interruption: no stale Writing
+  row, no result character erased, exactly one final logical row and no terminal
+  controls in stdout. Retain separate-stream, redirected and file-output tests.
 - Existing blob, upload, layout/Docker, artifact-option and transport regressions.
 
 Use existing pytest suites and scoped type/lint tooling; no new test framework.
