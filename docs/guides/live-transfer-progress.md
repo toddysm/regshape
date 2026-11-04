@@ -2,13 +2,15 @@
 
 <!-- doc-type: how-to -->
 
-RegShape displays live progress for Open Container Initiative (OCI) blob
-downloads and uploads, layout pushes, and Docker pushes. Progress is automatic
+RegShape displays live progress for Open Container Initiative (OCI) manifest
+downloads, blob downloads and uploads, layout pushes, and Docker pushes. Progress is automatic
 on an interactive standard-error terminal; it does not require telemetry flags.
 
 These instructions describe the current development implementation. Check that
 `regshape blob upload --help` lists `--no-progress`; a packaged release must
 contain this feature before its installation provides these options.
+For manifest flags, receipt-versus-output completion and stdout handoff behavior,
+see the [manifest get reference](../../specs/cli/manifest.md#manifest-get).
 
 ## Before you start
 
@@ -209,8 +211,8 @@ a later manifest failure prevents overall push success.
 
 ## Control output and combine telemetry
 
-All four commands accept `--no-progress`. It disables the display, not byte
-validation, protocol checks, or telemetry:
+All five commands accept `--no-progress`. It disables the display, not streamed
+consumption, applicable validation/protocol checks, or telemetry:
 
 ```bash
 regshape blob upload --repo registry.example.com/team/example \
@@ -223,6 +225,7 @@ regshape blob upload --repo registry.example.com/team/example \
 | Redirected/noninteractive stderr | No animation or per-state progress spam |
 | `layout push --json` / `docker push --json` | No animated progress; existing JSON remains on stdout |
 | `blob get` / `blob upload` | Results always use stdout JSON; interactive stderr can still show progress |
+| `manifest get` | JSON/raw/part results remain on stdout or in `--output`; ordinary JSON does not suppress progress |
 | `--telemetry-format json` on supported commands | No animation mixed into structured telemetry |
 | Root `--log-file` with telemetry-enabled commands | Logs receive telemetry, not progress rows or terminal controls |
 

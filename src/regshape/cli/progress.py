@@ -1,4 +1,4 @@
-"""Single-row transfer rendering, isolated from library events and structured output."""
+"""Shared blob/manifest rows, diagnostic coordination and payload-safe terminal handoff."""
 
 import io
 import logging
@@ -7,20 +7,86 @@ import shutil
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from enum import Enum
 from types import TracebackType
 from typing import IO, Literal, final
 
 import click
 
 from regshape.libs.decorators import get_telemetry_config
-from regshape.libs.progress import TransferDirection, TransferPhase, TransferProgress
+from regshape.libs.progress import (
+    ManifestKind,
+    ManifestPhase,
+    ManifestProgress,
+    TransferDirection,
+    TransferPhase,
+    TransferProgress,
+)
 
 logger = logging.getLogger(__name__)
-_TERMINAL = {
+
+
+class _ManifestStage(Enum):
+    """CLI-only stages after receipt; library receipt alone never means command success."""
+
+    RECEIVED = "received"
+    PROCESSING = "processing"
+    WRITING = "writing"
+    COMPLETED = "completed"
+
+
+_RowKey = tuple[Literal["blob", "manifest"], str]
+_RowPhase = TransferPhase | _ManifestStage
+
+_TERMINAL: set[_RowPhase] = {
     TransferPhase.COMPLETED, TransferPhase.SKIPPED,
     TransferPhase.FAILED, TransferPhase.CANCELLED,
+    _ManifestStage.COMPLETED,
 }
+
+
+@dataclass(frozen=True)
+class _Row:
+    """Private rendering state; namespace keys keep blob digests and manifest IDs separate."""
+
+    key: _RowKey
+    label: str
+    phase: _RowPhase
+    bytes_completed: int
+    total_bytes: int | None
+    attempt: int = 1
+    direction: TransferDirection = TransferDirection.DOWNLOAD
+    digest: str | None = None
+
+    @property
+    def is_blob(self) -> bool:
+        """Distinguish verified blob rows from command-owned manifest completion."""
+        return self.key[0] == "blob"
+
+
+def _row(event: TransferProgress | ManifestProgress) -> _Row:
+    """Normalize observations without fabricating a digest or weakening public event types."""
+    if isinstance(event, TransferProgress):
+        return _Row(
+            ("blob", event.digest), "Blob", event.phase,
+            event.bytes_completed, event.total_bytes,
+            event.attempt, event.direction, event.digest,
+        )
+    if not isinstance(event, ManifestProgress):
+        raise TypeError("Progress display requires a blob or manifest observation")
+    phases: dict[ManifestPhase, _RowPhase] = {
+        ManifestPhase.PREPARING: TransferPhase.PREPARING,
+        ManifestPhase.TRANSFERRING: TransferPhase.TRANSFERRING,
+        ManifestPhase.RECEIVED: _ManifestStage.RECEIVED,
+        ManifestPhase.FAILED: TransferPhase.FAILED,
+        ManifestPhase.CANCELLED: TransferPhase.CANCELLED,
+    }
+    return _Row(
+        ("manifest", event.transfer_id),
+        "Index" if event.kind == ManifestKind.INDEX else "Manifest",
+        phases[event.phase], event.bytes_completed, event.total_bytes,
+    )
 
 
 def _bytes(value: float) -> str:
@@ -82,7 +148,7 @@ class _TelemetryStream(io.TextIOBase, IO[str]):
         super().__init__()
         self.display = display
         self._diagnostic_failed = False
-        self._diagnostic_error_type: str | None = None
+        self._diagnostic_error: BaseException | None = None
 
     def writable(self) -> bool:
         """Support print-based telemetry emission."""
@@ -112,24 +178,63 @@ class _TelemetryStream(io.TextIOBase, IO[str]):
             self._defer_failure(exc)
 
     def _defer_failure(self, error: BaseException) -> None:
-        """Retain a safe error type without moving the cursor before progress cleanup."""
+        """Retain a deferred diagnostic without moving the cursor; report only its type later."""
         self._diagnostic_failed = True
-        self._diagnostic_error_type = type(error).__name__
+        self._diagnostic_error = error
 
-    def report_failure(self) -> None:
-        """Report a suppressed diagnostic only after progress cursor cleanup is finished."""
-        if self._diagnostic_error_type is None:
+    def report_failure(self, primary: BaseException | None) -> None:
+        """Report a deferred diagnostic after cleanup without masking the original failure."""
+        if self._diagnostic_error is None:
             return
-        logger.error(
-            "Telemetry output failed (%s); preserving original progress error",
-            self._diagnostic_error_type,
-        )
-        self._diagnostic_error_type = None
+        error = self._diagnostic_error
+        self._diagnostic_error = None
+        try:
+            logger.error(
+                "Telemetry output failed (%s); preserving original progress error",
+                type(error).__name__,
+            )
+        except BaseException:
+            if primary is None:
+                raise
+            raise primary
+
+
+class _ManifestOutput:
+    """Suspend a manifest row while newline-terminated result helpers write stdout.
+
+    A class-based context preserves immutable caller exceptions. On partial
+    failure the display, not stdout, supplies a safe new line before repainting.
+    """
+
+    def __init__(self, display: "ProgressDisplay") -> None:
+        """Borrow the display; never replace or close the caller's stdout."""
+        self.display = display
+
+    def __enter__(self) -> None:
+        """Clear the row through stderr before any payload characters are written."""
+        self.display._begin_output()
+
+    def __exit__(
+        self, exc_type: type[BaseException] | None,
+        exc: BaseException | None, traceback: TracebackType | None,
+    ) -> Literal[False]:
+        """Rebase on success or retain a safe-boundary requirement on partial failure."""
+        self.display._output_suspended = False
+        if exc is not None:
+            self.display._record_failure(exc)
+        else:
+            self.display._output_needs_linebreak = False
+            try:
+                self.display._draw(force=True)
+            except BaseException as error:
+                self.display._record_failure(error)
+                raise
+        return False
 
 
 @final
 class ProgressDisplay:
-    """Render one active row and retain one final row per unique blob.
+    """Render sequential transfers with one row per blob digest or manifest invocation.
 
     Rendering is automatic only on an interactive stderr stream, disabled for
     explicit structured output, structured telemetry, or ``disabled=True``.
@@ -156,9 +261,10 @@ class ProgressDisplay:
         self.show_counts = show_counts
         self.clock = clock
         self.columns = columns or self._terminal_columns
-        self._event: TransferProgress | None = None
-        self._indices: dict[str, int] = {}
-        self._finished: dict[str, TransferPhase] = {}
+        self._event: _Row | None = None
+        self._indices: dict[_RowKey, int] = {}
+        self._finished: dict[_RowKey, _RowPhase] = {}
+        self._row_counts: dict[Literal["blob", "manifest"], int] = {"blob": 0, "manifest": 0}
         self._started: float | None = None
         self._last_draw = float("-inf")
         self._visible = False
@@ -167,6 +273,8 @@ class ProgressDisplay:
         self._rendered_length = 0
         self._rendered_columns = 0
         self._partial_diagnostic = False
+        self._output_suspended = False
+        self._output_needs_linebreak = False
         self._preparation: str | None = None
         self._old_output = self.config.output
         self._proxy = _TelemetryStream(self)
@@ -237,9 +345,10 @@ class ProgressDisplay:
         exc: BaseException | None, traceback: TracebackType | None,
     ) -> Literal[False]:
         """Restore output and preserve a primary error if rendering cleanup also fails."""
-        cleanup_error_type: str | None = None
+        cleanup_failure: BaseException | None = None
         try:
             self._render_failed = False
+            self._finish_output_boundary()
             self._finish_diagnostic()
             if self._preparation is not None:
                 self.finish_preparation(
@@ -247,8 +356,8 @@ class ProgressDisplay:
                     cancelled=isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)),
                 )
             if self._event is not None and exc is not None:
-                self._finished.pop(self._event.digest, None)
-                self.observe(replace(self._event, phase=_failure_phase(exc)))
+                self._finished.pop(self._event.key, None)
+                self._observe_row(replace(self._event, phase=_failure_phase(exc)))
             elif self._event is not None and self._event.phase in _TERMINAL:
                 self._draw(force=True)
                 self._finish_transfer_row()
@@ -256,28 +365,34 @@ class ProgressDisplay:
                 self._draw(force=True)
                 self._end_row()
         except BaseException as cleanup_error:
+            cleanup_failure = cleanup_error
             if exc is None:
                 raise
-            cleanup_error_type = type(cleanup_error).__name__
         finally:
             self._restore_outputs()
-            if cleanup_error_type is not None:
-                logger.error("Progress cleanup failed (%s); preserving original error", cleanup_error_type)
-            self._proxy.report_failure()
+            if cleanup_failure is not None and exc is not None:
+                try:
+                    logger.error(
+                        "Progress cleanup failed (%s); preserving original error",
+                        type(cleanup_failure).__name__,
+                    )
+                except BaseException:  # noqa: BLE001 - preserve the original cleanup owner
+                    raise exc
+            self._proxy.report_failure(exc if exc is not None else cleanup_failure)
         return False
 
     @property
     def completed(self) -> int:
         """Count unique successfully transferred blobs, not skipped occurrences."""
-        return sum(phase == TransferPhase.COMPLETED for phase in self._finished.values())
+        return sum(key[0] == "blob" and phase == TransferPhase.COMPLETED for key, phase in self._finished.items())
 
     @property
     def skipped(self) -> int:
         """Count unique already-present blobs without claiming transferred bytes."""
-        return sum(phase == TransferPhase.SKIPPED for phase in self._finished.values())
+        return sum(key[0] == "blob" and phase == TransferPhase.SKIPPED for key, phase in self._finished.items())
 
     def prepare(self, label: str) -> None:
-        """Show an indeterminate preparation row before any blob becomes active."""
+        """Show an indeterminate preparation row before any transfer becomes active."""
         self._preparation = label
         if self.enabled:
             try:
@@ -287,7 +402,7 @@ class ProgressDisplay:
                 raise
 
     def finish_preparation(self, *, success: bool = True, cancelled: bool = False) -> None:
-        """Overwrite preparation once with its final state before allocating blob rows."""
+        """Overwrite preparation once with its final state before allocating transfer rows."""
         if self._preparation is not None and self.enabled:
             state = "cancelled" if cancelled else ("done" if success else "failed")
             try:
@@ -298,57 +413,129 @@ class ProgressDisplay:
                 raise
         self._preparation = None
 
-    def observe(self, event: TransferProgress) -> None:
-        """Replace one blob row; retries reset its rate clock and terminal rows are unique.
+    def observe(self, event: TransferProgress | ManifestProgress) -> None:
+        """Update a sequential blob or manifest row without finalizing manifest receipt.
 
-        Events must describe sequential transfers. A new digest before the
-        preceding terminal event raises ``RuntimeError``; rendering errors
-        propagate to the library callback boundary.
+        Blob deduplication remains digest-based. Manifest identity is opaque and
+        independent of advertised kind; callers explicitly process/write/finish
+        the active manifest. Concurrent transfers raise RuntimeError.
         """
-        if event.digest in self._finished:
+        self._observe_row(_row(event))
+
+    def _observe_row(self, event: _Row) -> None:
+        """Reuse the shared redraw and finalization lifecycle for a normalized row."""
+        if event.key in self._finished:
             return
         if self._preparation is not None:
             self.finish_preparation()
         previous = self._event
-        if previous is not None and previous.digest != event.digest:
+        if previous is not None and previous.key != event.key:
             if previous.phase not in _TERMINAL:
-                raise RuntimeError("Concurrent blob progress is not supported")
+                raise RuntimeError("Concurrent transfer progress is not supported")
+            self._finish_output_boundary()
             self._finish_diagnostic()
             self._draw(force=True)
             self._finish_transfer_row()
             previous = None
-        if event.digest not in self._indices:
-            self._indices[event.digest] = len(self._indices) + 1
+        if event.key not in self._indices:
+            self._row_counts[event.key[0]] += 1
+            self._indices[event.key] = self._row_counts[event.key[0]]
             self._started = None
         if event.phase == TransferPhase.TRANSFERRING and self._started is None:
             self._started = self.clock()
         if previous is not None and previous.attempt != event.attempt:
             self._started = self.clock()
-        force = previous is None or previous.phase != event.phase or previous.attempt != event.attempt
+        force = (
+            previous is None or previous.phase != event.phase
+            or previous.attempt != event.attempt or previous.label != event.label
+            or previous.total_bytes != event.total_bytes
+        )
         self._event = event
         try:
             self._draw(force=force or event.phase in _TERMINAL)
             if event.phase in _TERMINAL:
-                self._finished[event.digest] = event.phase
+                self._finished[event.key] = event.phase
                 if not self._partial_diagnostic:
                     self._finish_transfer_row()
         except BaseException as exc:
             # Nested scenario telemetry runs before the display context exits.
-            self._event = replace(event, phase=_failure_phase(exc))
-            self._finished.pop(event.digest, None)
-            self._render_failed = True
+            self._record_failure(exc)
             raise
 
-    def _text(self, event: TransferProgress) -> str:
+    def _record_failure(self, error: BaseException) -> None:
+        """Keep failed state pending until outer cleanup, including nested telemetry failures."""
+        if self._event is not None:
+            self._finished.pop(self._event.key, None)
+            self._event = replace(self._event, phase=_failure_phase(error))
+        self._render_failed = True
+
+    def _manifest_row(self, *allowed: _ManifestStage) -> _Row:
+        """Require the active manifest stage rather than silently accepting missing observations."""
+        event = self._event
+        if event is None or event.is_blob or event.phase not in allowed:
+            raise RuntimeError("Manifest progress is not at the required stage")
+        if self._output_suspended:
+            raise RuntimeError("Manifest output is already in progress")
+        return event
+
+    def processing_manifest(self) -> None:
+        """Begin optional model parsing/extraction only after library receipt."""
+        event = self._manifest_row(_ManifestStage.RECEIVED)
+        self._observe_row(replace(event, phase=_ManifestStage.PROCESSING))
+
+    def writing_manifest(self) -> None:
+        """Begin output after receipt or processing without claiming successful completion."""
+        event = self._manifest_row(_ManifestStage.RECEIVED, _ManifestStage.PROCESSING)
+        self._observe_row(replace(event, phase=_ManifestStage.WRITING))
+
+    def finish_manifest(self) -> None:
+        """Finalize after output and scenario work return, flushing diagnostics before success."""
+        event = self._manifest_row(_ManifestStage.WRITING)
+        self._finish_output_boundary()
+        self._finish_diagnostic()
+        self._observe_row(replace(event, phase=_ManifestStage.COMPLETED))
+
+    def manifest_output(self) -> _ManifestOutput:
+        """Borrow a suspension scope for the existing newline-terminated stdout helpers."""
+        return _ManifestOutput(self)
+
+    def _begin_output(self) -> None:
+        """Erase only the active row, then forget its footprint before stdout can move the cursor."""
+        self._manifest_row(_ManifestStage.WRITING)
+        try:
+            self._finish_diagnostic()
+            if self.enabled and self._visible:
+                self._clear_row(max(1, self.columns()))
+        except BaseException as error:
+            self._record_failure(error)
+            raise
+        self._visible = self._row_advanced = False
+        self._rendered_length = self._rendered_columns = 0
+        self._output_suspended = True
+        self._output_needs_linebreak = True
+
+    def _finish_output_boundary(self) -> None:
+        """Protect partial stdout from cursor-up/erase by starting a fresh stderr line."""
+        if self._output_needs_linebreak and not self._output_suspended:
+            if self.enabled:
+                self.stream.write("\n")
+                self._output_needs_linebreak = False
+                self.stream.flush()
+            else:
+                self._output_needs_linebreak = False
+
+    def _text(self, event: _Row) -> str:
         """Describe logical bytes and state without treating a full byte count as success."""
-        index = self._indices[event.digest]
-        prefix = f"Blob {index}" + (f"/{self.total_blobs}" if self.total_blobs is not None else "")
-        if self.show_counts:
-            pending = event.digest not in self._finished
+        index = self._indices[event.key]
+        prefix = f"{event.label} {index}"
+        if event.is_blob and self.total_blobs is not None:
+            prefix += f"/{self.total_blobs}"
+        if self.show_counts and event.is_blob:
+            pending = event.key not in self._finished
             completed = self.completed + (pending and event.phase == TransferPhase.COMPLETED)
             skipped = self.skipped + (pending and event.phase == TransferPhase.SKIPPED)
             prefix += f" [{completed} done/{skipped} skipped]"
-        labels = {
+        labels: dict[_RowPhase, str] = {
             TransferPhase.PREPARING: "Preparing",
             TransferPhase.TRANSFERRING: "Downloading" if event.direction == TransferDirection.DOWNLOAD else "Uploading",
             TransferPhase.RETRYING: f"Retrying attempt {event.attempt}",
@@ -358,6 +545,10 @@ class ProgressDisplay:
             TransferPhase.SKIPPED: "Already present; skipped",
             TransferPhase.FAILED: "Failed",
             TransferPhase.CANCELLED: "Cancelled",
+            _ManifestStage.RECEIVED: "Received",
+            _ManifestStage.PROCESSING: "Processing",
+            _ManifestStage.WRITING: "Writing",
+            _ManifestStage.COMPLETED: "Downloaded",
         }
         state = labels[event.phase]
         width = max(0, self.columns() - 1)
@@ -365,7 +556,7 @@ class ProgressDisplay:
         if count and event.total_bytes is not None:
             count += "/" + _bytes(event.total_bytes)
         if len(f"{prefix} {state} {count}".rstrip()) > width:
-            prefix = f"Blob {index}"
+            prefix = f"{event.label} {index}"
         if len(f"{prefix} {state} {count}".rstrip()) > width and count:
             count = _bytes(event.bytes_completed)
         if len(f"{prefix} {state} {count}".rstrip()) > width:
@@ -384,10 +575,11 @@ class ProgressDisplay:
         for extra in extras:
             if len(text + extra) <= width:
                 text += extra
-        algorithm, digest = event.digest.split(":", 1)
-        short_digest = f" {algorithm}:{digest[:4]}..."
-        if len(text + short_digest) <= width:
-            text = prefix + short_digest + text[len(prefix):]
+        if event.digest is not None:
+            algorithm, digest = event.digest.split(":", 1)
+            short_digest = f" {algorithm}:{digest[:4]}..."
+            if len(text + short_digest) <= width:
+                text = prefix + short_digest + text[len(prefix):]
         if event.phase == TransferPhase.TRANSFERRING:
             elapsed = self.clock() - self._started if self._started is not None else 0
             if elapsed > 0 and event.bytes_completed:
@@ -403,10 +595,11 @@ class ProgressDisplay:
 
     def _draw(self, *, force: bool) -> None:
         """Coalesce routine updates to ten per second while flushing state transitions."""
-        if not self.enabled or self._partial_diagnostic or self._render_failed:
+        if not self.enabled or self._partial_diagnostic or self._render_failed or self._output_suspended:
             return
         if self._event is None and self._preparation is None:
             return
+        self._finish_output_boundary()
         now = self.clock()
         if not force and self.columns() == self._rendered_columns and now - self._last_draw < 0.1:
             return
@@ -459,6 +652,7 @@ class ProgressDisplay:
 
     def write_diagnostic(self, text: str) -> None:
         """Write telemetry without leaving an old progress row behind."""
+        self._finish_output_boundary()
         if self.enabled and self._visible:
             self._clear_row(max(1, self.columns()))
         self.stream.write(text)
@@ -466,7 +660,7 @@ class ProgressDisplay:
         if not self._partial_diagnostic:
             self._draw(force=True)
             if self._event is not None and self._event.phase in _TERMINAL and not self._render_failed:
-                self._finished[self._event.digest] = self._event.phase
+                self._finished[self._event.key] = self._event.phase
                 self._finish_transfer_row()
 
     def _finish_diagnostic(self) -> None:

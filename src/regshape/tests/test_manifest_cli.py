@@ -5,14 +5,21 @@ Tests for :mod:`regshape.cli.manifest`.
 """
 
 import json
+from contextlib import AbstractContextManager
+from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
 from click.testing import CliRunner
-from unittest.mock import patch
 
 from regshape.cli.main import regshape
 from regshape.libs.errors import AuthError, ManifestError
+from regshape.libs.manifests import (
+    ManifestKind,
+    ManifestPhase,
+    ManifestProgress,
+    ManifestProgressCallback,
+)
 from regshape.libs.models.mediatype import (
     OCI_IMAGE_CONFIG,
     OCI_IMAGE_INDEX,
@@ -74,6 +81,24 @@ def _runner():
     return CliRunner()
 
 
+def _manifest_response(
+    body: str, media_type: str, digest: str,
+) -> AbstractContextManager[MagicMock]:
+    """Stub a successful fetch with its required receive lifecycle for command-only tests."""
+    def fetch(
+        *, progress_callback: ManifestProgressCallback, **options: object,
+    ) -> tuple[str, str, str]:
+        """Publish synthetic receipt events without pretending to test streamed I/O here."""
+        size = len(body.encode("utf-8"))
+        kind = ManifestKind.INDEX if media_type == OCI_IMAGE_INDEX else ManifestKind.MANIFEST
+        progress_callback(ManifestProgress("cli-fixture", ManifestKind.UNKNOWN, ManifestPhase.PREPARING, 0, None))
+        progress_callback(ManifestProgress("cli-fixture", kind, ManifestPhase.TRANSFERRING, size, size))
+        progress_callback(ManifestProgress("cli-fixture", kind, ManifestPhase.RECEIVED, size, size))
+        return body, media_type, digest
+
+    return patch("regshape.cli.manifest.get_manifest", side_effect=fetch)
+
+
 # ---------------------------------------------------------------------------
 # TestParseImageRef — unit tests for the reference parser
 # ---------------------------------------------------------------------------
@@ -126,10 +151,11 @@ class TestParseImageRef:
 # ---------------------------------------------------------------------------
 
 class TestManifestGet:
+    """Keep fetch options, result formatting and error codes compatible with progress enabled."""
 
     def test_get_success_plain(self):
-        with patch("regshape.cli.manifest.get_manifest",
-                   return_value=(_MANIFEST_JSON, OCI_IMAGE_MANIFEST, DIGEST)):
+        """Normal fetch still emits the existing manifest JSON."""
+        with _manifest_response(_MANIFEST_JSON, OCI_IMAGE_MANIFEST, DIGEST):
             result = _runner().invoke(
                 regshape,
                 ["manifest", "get", "-i", f"{REGISTRY}/{REPO}:{TAG}"],
@@ -140,8 +166,8 @@ class TestManifestGet:
         assert parsed["mediaType"] == OCI_IMAGE_MANIFEST
 
     def test_get_raw_flag_skips_parsing(self):
-        with patch("regshape.cli.manifest.get_manifest",
-                   return_value=(_MANIFEST_JSON, OCI_IMAGE_MANIFEST, DIGEST)):
+        """Raw mode preserves decoded text without requiring model parsing."""
+        with _manifest_response(_MANIFEST_JSON, OCI_IMAGE_MANIFEST, DIGEST):
             result = _runner().invoke(
                 regshape,
                 ["manifest", "get", "-i", f"{REGISTRY}/{REPO}:{TAG}", "--raw"],
@@ -150,8 +176,8 @@ class TestManifestGet:
         assert '"schemaVersion"' in result.output
 
     def test_get_part_config(self):
-        with patch("regshape.cli.manifest.get_manifest",
-                   return_value=(_MANIFEST_JSON, OCI_IMAGE_MANIFEST, DIGEST)):
+        """Config extraction retains the descriptor output shape."""
+        with _manifest_response(_MANIFEST_JSON, OCI_IMAGE_MANIFEST, DIGEST):
             result = _runner().invoke(
                 regshape,
                 ["manifest", "get", "-i", f"{REGISTRY}/{REPO}:{TAG}", "--part", "config"],
@@ -162,8 +188,8 @@ class TestManifestGet:
         assert data["digest"] == CONFIG_DIGEST
 
     def test_get_part_layers(self):
-        with patch("regshape.cli.manifest.get_manifest",
-                   return_value=(_MANIFEST_JSON, OCI_IMAGE_MANIFEST, DIGEST)):
+        """Layer extraction retains its JSON array output."""
+        with _manifest_response(_MANIFEST_JSON, OCI_IMAGE_MANIFEST, DIGEST):
             result = _runner().invoke(
                 regshape,
                 ["manifest", "get", "-i", f"{REGISTRY}/{REPO}:{TAG}", "--part", "layers"],
@@ -175,8 +201,8 @@ class TestManifestGet:
         assert data[0]["digest"] == LAYER_DIGEST
 
     def test_get_part_annotations(self):
-        with patch("regshape.cli.manifest.get_manifest",
-                   return_value=(_MANIFEST_JSON, OCI_IMAGE_MANIFEST, DIGEST)):
+        """Annotation extraction preserves the existing field values."""
+        with _manifest_response(_MANIFEST_JSON, OCI_IMAGE_MANIFEST, DIGEST):
             result = _runner().invoke(
                 regshape,
                 ["manifest", "get", "-i", f"{REGISTRY}/{REPO}:{TAG}", "--part", "annotations"],
@@ -186,8 +212,8 @@ class TestManifestGet:
         assert "org.opencontainers.image.created" in data
 
     def test_get_part_subject_absent_exits_2(self):
-        with patch("regshape.cli.manifest.get_manifest",
-                   return_value=(_MANIFEST_JSON, OCI_IMAGE_MANIFEST, DIGEST)):
+        """A missing subject remains the existing selection error, not cancellation."""
+        with _manifest_response(_MANIFEST_JSON, OCI_IMAGE_MANIFEST, DIGEST):
             result = _runner().invoke(
                 regshape,
                 ["manifest", "get", "-i", f"{REGISTRY}/{REPO}:{TAG}", "--part", "subject"],
@@ -195,8 +221,8 @@ class TestManifestGet:
         assert result.exit_code == 2
 
     def test_get_part_config_on_index_exits_2(self):
-        with patch("regshape.cli.manifest.get_manifest",
-                   return_value=(_INDEX_JSON, OCI_IMAGE_INDEX, DIGEST)):
+        """An index without config retains exit status two."""
+        with _manifest_response(_INDEX_JSON, OCI_IMAGE_INDEX, DIGEST):
             result = _runner().invoke(
                 regshape,
                 ["manifest", "get", "-i", f"{REGISTRY}/{REPO}:{TAG}", "--part", "config"],
@@ -226,8 +252,7 @@ class TestManifestGet:
         Bearer challenge/retry logic lives in RegistryClient and is covered by
         test_transport_client.py; the CLI only needs to propagate the result.
         """
-        with patch("regshape.cli.manifest.get_manifest",
-                   return_value=(_MANIFEST_JSON, OCI_IMAGE_MANIFEST, DIGEST)):
+        with _manifest_response(_MANIFEST_JSON, OCI_IMAGE_MANIFEST, DIGEST):
             result = _runner().invoke(
                 regshape,
                 ["manifest", "get", "-i", f"{REGISTRY}/{REPO}:{TAG}"],
@@ -244,8 +269,8 @@ class TestManifestGet:
         assert result.exit_code == 1
 
     def test_get_image_index_plain(self):
-        with patch("regshape.cli.manifest.get_manifest",
-                   return_value=(_INDEX_JSON, OCI_IMAGE_INDEX, DIGEST)):
+        """An index remains normal JSON output rather than a blob or progress record."""
+        with _manifest_response(_INDEX_JSON, OCI_IMAGE_INDEX, DIGEST):
             result = _runner().invoke(
                 regshape,
                 ["manifest", "get", "-i", f"{REGISTRY}/{REPO}:{TAG}"],

@@ -35,9 +35,11 @@ jobs:
           python-version: "3.10"
       - name: Install package with the minimum supported Click
         run: python -m pip install -e ".[dev]" "click==8.1.0"
-      - name: Test artifact option and parser compatibility
+      - name: Test command, progress and parser compatibility
         run: >-
           python -m pytest -q
           src/regshape/tests/test_artifact_options.py
           src/regshape/tests/test_artifact_cli.py
           src/regshape/tests/test_refs.py
+          src/regshape/tests/test_manifest_cli.py
+          src/regshape/tests/test_manifest_cli_progress.py

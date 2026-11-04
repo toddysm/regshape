@@ -15,16 +15,25 @@
 
 import json
 import sys
+from collections.abc import Callable
+from functools import partial
 
 import click
 import requests
 
 from regshape.cli.formatting import emit_error, emit_json, emit_text, format_key_value
 from regshape.cli.options import artifact_option
+from regshape.cli.progress import ProgressDisplay
 from regshape.libs.decorators import telemetry_options
+from regshape.libs.decorators.output import flush_telemetry
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import AuthError, ManifestError
-from regshape.libs.manifests import delete_manifest, get_manifest, head_manifest, push_manifest
+from regshape.libs.manifests import (
+    delete_manifest,
+    get_manifest,
+    head_manifest,
+    push_manifest,
+)
 from regshape.libs.models.manifest import ImageIndex, ImageManifest, parse_manifest
 from regshape.libs.models.mediatype import ALL_MANIFEST_MEDIA_TYPES, OCI_IMAGE_MANIFEST
 from regshape.libs.refs import parse_artifact_ref
@@ -40,6 +49,15 @@ _DEFAULT_ACCEPT = ",".join(sorted(ALL_MANIFEST_MEDIA_TYPES))
 # Part names accepted by ``manifest get --part``
 # ---------------------------------------------------------------------------
 _PARTS = ("config", "layers", "subject", "annotations")
+
+
+class _ManifestCommandFailure(Exception):
+    """Carry an expected command diagnostic through display cleanup before exiting."""
+
+    def __init__(self, message: str, exit_code: int = 1) -> None:
+        """Retain the existing message/status without prematurely raising SystemExit."""
+        super().__init__(message)
+        self.exit_code = exit_code
 
 
 # ===========================================================================
@@ -58,6 +76,7 @@ def manifest():
 
 @manifest.command("get")
 @telemetry_options
+@click.option("--no-progress", is_flag=True, default=False, help="Disable interactive transfer progress.")
 @artifact_option(
     help_text="Artifact reference — registry must be embedded (registry/repo:tag or registry/repo@sha256:...).",
 )
@@ -91,13 +110,15 @@ def manifest():
     is_flag=True,
     default=False,
     help=(
-        "Skip model parsing and print the raw response body as-is. "
+        "Skip model parsing and print decoded response text. "
         "Cannot be combined with --part."
     ),
 )
 @click.pass_context
-@track_scenario("manifest get")
-def get(ctx, image_ref, accept, part, output, raw):
+def get(
+    ctx: click.Context, image_ref: str, accept: str | None,
+    part: str | None, output: str | None, raw: bool, no_progress: bool = False,
+) -> None:
     """Fetch the manifest for ARTIFACT.
 
     ARTIFACT must embed the registry (``registry/repo:tag`` or
@@ -106,7 +127,29 @@ def get(ctx, image_ref, accept, part, output, raw):
 
     Use ``--part`` to extract a single field from the parsed manifest
     model instead of printing the full JSON.  Use ``--raw`` to bypass
-    model parsing entirely and print the wire bytes from the registry.
+    model parsing entirely and print decoded response text with the existing
+    newline behavior. Progress is stderr-only and finishes after required output
+    and scenario diagnostics succeed.
+    """
+    try:
+        with ProgressDisplay(disabled=no_progress) as progress:
+            _get_with_progress(ctx, image_ref, accept, part, output, raw, progress)
+            flush_telemetry()
+            progress.finish_manifest()
+    except _ManifestCommandFailure as exc:
+        emit_error(image_ref, str(exc), exc.exit_code)
+
+
+@track_scenario("manifest get")
+def _get_with_progress(
+    ctx: click.Context, image_ref: str, accept: str | None,
+    part: str | None, output: str | None, raw: bool, progress: ProgressDisplay,
+) -> None:
+    """Fetch, optionally parse/extract, and write inside the display's diagnostic lifetime.
+
+    Expected failures retain their existing exit code/message for emission after
+    cleanup. Unexpected output/transport-callback exceptions propagate unchanged.
+    The outer command finalizes only after this scenario wrapper also returns.
     """
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
@@ -116,7 +159,7 @@ def get(ctx, image_ref, accept, part, output, raw):
     try:
         registry, repo, reference = parse_artifact_ref(image_ref)
     except ValueError as exc:
-        emit_error(image_ref, str(exc))
+        raise _ManifestCommandFailure(str(exc)) from exc
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
@@ -126,29 +169,35 @@ def get(ctx, image_ref, accept, part, output, raw):
             repo=repo,
             reference=reference,
             accept=accept or _DEFAULT_ACCEPT,
+            progress_callback=progress.observe,
         )
     except (AuthError, ManifestError, requests.exceptions.RequestException) as exc:
-        emit_error(image_ref, str(exc))
+        raise _ManifestCommandFailure(str(exc)) from exc
 
+    emit: Callable[[], None]
     if raw:
-        emit_text(body, output)
-        return
+        emit = partial(emit_text, body, output)
+    else:
+        progress.processing_manifest()
+        try:
+            parsed = parse_manifest(body)
+        except ManifestError as exc:
+            raise _ManifestCommandFailure(f"Failed to parse manifest: {exc}") from exc
+        if part:
+            exit_code, result = _extract_part(parsed, part)
+            if exit_code != 0:
+                raise _ManifestCommandFailure(result, exit_code)
+            emit = partial(emit_text, result, output)
+        else:
+            data = json.loads(parsed.to_json())
+            emit = partial(emit_json, data, output)
 
-    # Parse and optionally extract a specific field
-    try:
-        parsed = parse_manifest(body)
-    except ManifestError as exc:
-        emit_error(image_ref, f"Failed to parse manifest: {exc}")
-
-    if part:
-        exit_code, result = _extract_part(parsed, part)
-        if exit_code != 0:
-            emit_error(image_ref, result, exit_code)
-        emit_text(result, output)
-        return
-
-    # Full manifest output
-    emit_json(json.loads(parsed.to_json()), output)
+    progress.writing_manifest()
+    if output:
+        emit()
+    else:
+        with progress.manifest_output():
+            emit()
 
 
 # ===========================================================================
@@ -421,5 +470,3 @@ def _extract_part(
 
     # Should not reach here because Click validates the choice
     return 1, f"unknown part: {part!r}"
-
-

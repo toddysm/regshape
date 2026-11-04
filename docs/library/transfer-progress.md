@@ -262,8 +262,10 @@ Streamed request diagnostics do not capture the body: `body_preview: null`,
 preview, not a zero-byte manifest. Request timing ends at headers, while operation
 timing includes consumption. No body pre-read is added for diagnostics.
 
-This library support does not yet add manifest command rendering or
-`--no-progress` to that command; those belong to the separate command integration.
+The [manifest get command](../../specs/cli/manifest.md#manifest-get) uses these
+observations with the shared renderer and supports `--no-progress`. It delays
+final visual success until parsing/extraction/output and in-context diagnostics
+succeed; the library itself remains terminal-free.
 See the [complete manifest signature](../../specs/operations/manifests.md#get_manifest).
 
 ## Layout compatibility

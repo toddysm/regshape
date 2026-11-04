@@ -1,6 +1,6 @@
 # Manifest GET progress: functional requirements and engineering design
 
-- **Status:** Approved revision 3 and breakdown; library item #105 implementation authorized.
+- **Status:** Approved revision 3; library #105 merged, command item #104 implementation authorized.
 - **Feature:** [#90](https://github.com/toddysm/regshape/issues/90).
 - **Design item:** [#101](https://github.com/toddysm/regshape/issues/101).
 - **Target:** [0.2](https://github.com/toddysm/regshape/milestone/1); not a release commitment.
@@ -8,12 +8,13 @@
 - **Date / inspected baseline:** 2026-11-04 / `662216f3ff508e83598c9f8af2096e50c682e20c`.
 - **Authorization:** Design artifacts, hosted GitHub Actions, agent-only reviews
   and merging [design PR #106](https://github.com/toddysm/regshape/pull/106).
-  The inventory-start transition and library item #105 through an open reviewed
-  implementation PR are authorized. Its merge, command integration, final user
-  documentation delivery, release and branch/worktree cleanup are not authorized.
+  The inventory-start and library PRs are merged. Command item #104 is authorized
+  through an open reviewed implementation PR. Its merge, final user documentation
+  delivery, release and branch/worktree cleanup are not authorized.
 
 This combined product requirements document (PRD) and engineering design document
-(EDD) specifies proposed behavior, not a feature already available on main.
+(EDD) specifies approved behavior; the [capability inventory](../../docs/project-state.md)
+tracks delivered surfaces. Design approval does not mean release publication.
 Command-line interface (CLI), application programming interface (API), Open
 Container Initiative (OCI), and continuous integration (CI) are abbreviated below.
 
@@ -312,8 +313,8 @@ hosted checks and final user documentation, provide the delivery gates.
 The owner approved this complete revision and breakdown under
 [#90](https://github.com/toddysm/regshape/issues/90), including merging
 [design PR #106](https://github.com/toddysm/regshape/pull/106).
-Library item #105 is now authorized through an open reviewed implementation PR.
-Command integration and final user documentation require later authorization. Shared progress
+Library item #105 is merged; command item #104 is authorized through an open
+reviewed implementation PR. Final user documentation requires later authorization. Shared progress
 ([#72](https://github.com/toddysm/regshape/issues/72)) and artifact aliases
 ([#87](https://github.com/toddysm/regshape/issues/87)) are merged prerequisites.
 No hard dependency on #91 or #88 is introduced.
@@ -848,8 +849,8 @@ future implementation. Final user docs must be rechecked against delivered code.
 ### O. Next actions and launch gate
 
 Owner approval of revision 3 and the native breakdown is recorded in the feature
-ledger, and the design PR is merged. After the reviewed inventory-start transition,
-implement library item #105 and leave its implementation PR open for owner review.
+ledger; the design, inventory-start and library PRs are merged. Implement command
+item #104 and leave its implementation PR open for owner review.
 Other delivery work and implementation merges require later authorization. Delivery, user documentation,
 inventory close-out and eventual release are distinct gates; no partner/legal
 integration or regional launch task is introduced.
