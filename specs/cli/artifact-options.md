@@ -1,7 +1,7 @@
 # Artifact-oriented reference options: functional and engineering specification
 
-- Status: approved design, revision 1; shared support #93 and production command
-  integration #94 are merged. Final user documentation is being completed in #95.
+- Status: implemented and documented. Approved design revision 1 was delivered
+  through merged shared support #93, command integration #94 and final docs #95.
 - Feature: [#87](https://github.com/toddysm/regshape/issues/87).
 - Design work: [#92](https://github.com/toddysm/regshape/issues/92).
 - Target: 0.2; this specification does not publish or schedule a release.
@@ -607,7 +607,7 @@ paths with synthetic HTTP responses rather than accessing user registries.
 | [#92: design and inventory](https://github.com/toddysm/regshape/issues/92) | Owner approval before merge | `prd/artifact-neutral-cli-fd2ca782` | Done: #96 merged |
 | [#93: shared support](https://github.com/toddysm/regshape/issues/93) | #92 approved/merged | `feature/artifact-neutral-cli/shared-support-fd2ca782` | Done: #97 merged |
 | [#94: command integration](https://github.com/toddysm/regshape/issues/94) | #93 | `feature/artifact-neutral-cli/command-aliases-fd2ca782` | Done: #98 merged |
-| [#95: final user docs](https://github.com/toddysm/regshape/issues/95) | #93 and #94 | `feature/artifact-neutral-cli/migration-docs-fd2ca782` | In progress |
+| [#95: final user docs](https://github.com/toddysm/regshape/issues/95) | #93 and #94 | `feature/artifact-neutral-cli/migration-docs-fd2ca782` | Done: #99 merged |
 
 The feature remains open until all required children and the inventory
 close-out are merged. No external partner/legal launch is required for this
