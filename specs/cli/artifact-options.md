@@ -1,7 +1,8 @@
 # Artifact-oriented reference options: functional and engineering specification
 
-- Status: approved design, revision 1; shared support is being implemented in
-  #93. Production command integration and user documentation remain pending.
+- Status: approved design, revision 1; shared support #93 is merged.
+  Production command integration is in progress in #94; final user
+  documentation remains pending in #95.
 - Feature: [#87](https://github.com/toddysm/regshape/issues/87).
 - Design work: [#92](https://github.com/toddysm/regshape/issues/92).
 - Target: 0.2; this specification does not publish or schedule a release.
@@ -585,7 +586,8 @@ service rollout is required. The scope remains one small PR per delivery item.
    [hosted tests](../../.github/workflows/tests.yml) on every implementation PR.
    The workflow installs `.[dev]` and runs `python -m pytest -q` on
    Python 3.10/3.11/3.12. A focused `click-minimum` job also installs
-   `click==8.1.0` on Python 3.10 and runs the shared-option and reference tests,
+   `click==8.1.0` on Python 3.10 and runs shared-option, production command
+   integration, and reference tests,
    retaining the declared dependency floor. All required checks/reviews remain binding.
 7. Documentation-only validation checks relative links/anchors, help and
    signatures, examples and whitespace. No docs builder/linter is currently
@@ -594,17 +596,18 @@ service rollout is required. The scope remains one small PR per delivery item.
 All new validation can use synthetic inputs without real credentials, registry
 access or a Docker daemon. Mocked tests are not live-registry certification.
 The design experiment proved alias/conflict behavior with Click 8.3.1.
-Shared-support tests now exercise the implementation with both Click 8.1.0
-and 8.3.1 locally; the targeted hosted job covers the minimum dependency on
-Python 3.10. This foundation is not production command wiring.
+Shared-support and production command tests exercise the implementation with
+both Click 8.1.0 and 8.3.1 locally; the targeted hosted job covers the minimum
+dependency on Python 3.10. The command matrix checks real library/transport
+paths with synthetic HTTP responses rather than accessing user registries.
 
 ### O. Next actions and native work breakdown
 
 | Item | Depends on | Planned branch | Current delivery state |
 | --- | --- | --- | --- |
 | [#92: design and inventory](https://github.com/toddysm/regshape/issues/92) | Owner approval before merge | `prd/artifact-neutral-cli-fd2ca782` | Done: #96 merged |
-| [#93: shared support](https://github.com/toddysm/regshape/issues/93) | #92 approved/merged | `feature/artifact-neutral-cli/shared-support-fd2ca782` | In progress |
-| [#94: command integration](https://github.com/toddysm/regshape/issues/94) | #93 | `feature/artifact-neutral-cli/command-aliases-fd2ca782` | Blocked |
+| [#93: shared support](https://github.com/toddysm/regshape/issues/93) | #92 approved/merged | `feature/artifact-neutral-cli/shared-support-fd2ca782` | Done: #97 merged |
+| [#94: command integration](https://github.com/toddysm/regshape/issues/94) | #93 | `feature/artifact-neutral-cli/command-aliases-fd2ca782` | In progress |
 | [#95: final user docs](https://github.com/toddysm/regshape/issues/95) | #93 and #94 | `feature/artifact-neutral-cli/migration-docs-fd2ca782` | Blocked |
 
 The feature remains open until all required children and the inventory

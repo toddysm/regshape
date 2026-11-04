@@ -187,7 +187,7 @@ def export_cmd(ctx, image, output, platform, as_json):
     "--dest", "-d",
     required=True,
     metavar="REFERENCE",
-    help="Destination registry reference (registry/repo[:tag]).",
+    help="Destination artifact reference in the registry (registry/repo[:tag]).",
 )
 @click.option(
     "--platform",

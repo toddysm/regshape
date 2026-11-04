@@ -16,13 +16,14 @@ import click
 import requests
 
 from regshape.cli.formatting import emit_error, emit_json, emit_table, emit_text
+from regshape.cli.options import artifact_option
 from regshape.libs.decorators import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import AuthError, ManifestError, ReferrerError
 from regshape.libs.manifests import head_manifest
 from regshape.libs.models.mediatype import ALL_MANIFEST_MEDIA_TYPES
 from regshape.libs.referrers import list_referrers, list_referrers_all
-from regshape.libs.refs import parse_image_ref
+from regshape.libs.refs import parse_artifact_ref
 from regshape.libs.transport import RegistryClient, TransportConfig
 
 # ===========================================================================
@@ -41,13 +42,9 @@ def referrer():
 
 @referrer.command("list")
 @telemetry_options
-@click.option(
-    "--image-ref",
-    "-i",
-    required=True,
-    metavar="IMAGE_REF",
-    help=(
-        "Image reference with embedded registry and tag or digest "
+@artifact_option(
+    help_text=(
+        "Artifact reference with embedded registry and tag or digest "
         "(e.g. registry/repo:tag or registry/repo@sha256:abc...). "
         "Tags are resolved to a digest automatically."
     ),
@@ -93,9 +90,9 @@ def referrer_list(
     as_json: bool,
     output: str | None,
 ) -> None:
-    """List referrers for the manifest identified by IMAGE_REF.
+    """List referrers for the manifest identified by ARTIFACT.
 
-    IMAGE_REF must embed the registry and may use a tag or digest reference.
+    ARTIFACT must embed the registry and may use a tag or digest reference.
     Tags are resolved with a manifest HEAD request before querying referrers;
     digest references are used directly without a manifest lookup. References
     without a tag or digest resolve the ``latest`` tag. Resolution failures,
@@ -108,7 +105,7 @@ def referrer_list(
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo, reference = parse_image_ref(image_ref)
+        registry, repo, reference = parse_artifact_ref(image_ref)
     except ValueError as exc:
         emit_error(image_ref, str(exc))
 
@@ -177,4 +174,3 @@ def referrer_list(
 # ===========================================================================
 # Internal helpers — output and error
 # ===========================================================================
-
