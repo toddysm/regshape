@@ -749,8 +749,8 @@ def _format_size(size: int) -> str:
 @click.option(
     "--dest", "-d", "dest",
     required=True,
-    metavar="IMAGE_REF",
-    help="Destination image reference (registry/repo or registry/repo:tag).",
+    metavar="ARTIFACT",
+    help="Destination artifact reference (registry/repo or registry/repo:tag).",
 )
 @click.option(
     "--force", is_flag=True, default=False,

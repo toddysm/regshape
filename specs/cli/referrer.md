@@ -25,12 +25,20 @@ regshape referrer list [OPTIONS]
 
 ---
 
-## Image Reference Format
+## Artifact Reference Format
 
-The `referrer list` subcommand accepts `--image-ref` / `-i` using the standard
-container image reference syntax with the registry always embedded. Tags are
+The `referrer list` subcommand prefers `--artifact` / `-a` using the existing
+reference syntax with the registry always embedded. Tags are
 resolved to a digest with a manifest `HEAD` request before querying the referrers
 API. Digest references are used directly, with no manifest lookup.
+
+This interface targets release 0.2. Legacy `--image-ref` / `-i` remains supported
+with the help/documentation notice **Deprecated in 0.2; use --artifact / -a.
+Retained for compatibility.** No runtime warning is emitted and no removal
+version is scheduled. Existing legacy examples remain valid. Identical repeats
+select one target; differing values cause usage exit 2 before credential/network
+access. `--artifact-type` remains an independent filter. See the
+[artifact option design](artifact-options.md).
 
 | Subcommand | Accepted formats | Notes |
 |---|---|---|
@@ -49,13 +57,13 @@ API. Digest references are used directly, with no manifest lookup.
 
 ### `referrer list`
 
-List referrers for the manifest identified by tag or digest in IMAGE_REF.
+List referrers for the manifest identified by tag or digest in ARTIFACT.
 
 #### Options
 
 | Option | Short | Type | Default | Description |
 |---|---|---|---|---|
-| `--image-ref` | `-i` | string | required | Image reference with embedded registry and tag or digest (e.g., `registry/repo:v1.0` or `registry/repo@sha256:abc...`) |
+| `--artifact` | `-a` | string | required | Artifact reference with embedded registry and tag or digest; legacy aliases documented above |
 | `--artifact-type` | `-t` | string | none | Filter referrers to this artifact type (e.g., `application/vnd.example.sbom.v1`) |
 | `--all` | | flag | false | Follow pagination and return all referrers (default: single page only) |
 | `--json` | | flag | false | Output the full `ReferrerList` JSON object instead of one referrer per line |

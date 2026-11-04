@@ -16,10 +16,11 @@ import click
 import requests
 
 from regshape.cli.formatting import emit_error, emit_json, emit_list
+from regshape.cli.options import artifact_option
 from regshape.libs.decorators import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import AuthError, TagError
-from regshape.libs.refs import format_ref, parse_image_ref
+from regshape.libs.refs import format_ref, parse_artifact_ref
 from regshape.libs.tags import delete_tag, list_tags, list_tags_all
 from regshape.libs.transport import RegistryClient, TransportConfig
 
@@ -29,7 +30,7 @@ from regshape.libs.transport import RegistryClient, TransportConfig
 
 @click.group()
 def tag():
-    """Manage OCI image tags (list, delete)."""
+    """Manage OCI artifact tags (list, delete)."""
     pass
 
 
@@ -39,12 +40,9 @@ def tag():
 
 @tag.command("list")
 @telemetry_options
-@click.option(
-    "--image-ref",
-    "-i",
-    required=True,
-    metavar="IMAGE_REF",
-    help=(
+@artifact_option(
+    metavar="REPOSITORY",
+    help_text=(
         "Repository reference — registry must be embedded "
         "(e.g. registry/repo or registry/repo:tag). "
         "Any tag or digest suffix is ignored for list operations."
@@ -99,9 +97,9 @@ def tag_list(
     as_json: bool,
     output: str | None,
 ) -> None:
-    """List tags for the repository identified by IMAGE_REF.
+    """List tags for REPOSITORY.
 
-    IMAGE_REF must embed the registry (``registry/repo`` or
+    REPOSITORY must embed the registry (``registry/repo`` or
     ``registry/repo:tag``). Any tag or digest suffix is ignored — only the
     registry and repository namespace are used.  Credentials are resolved
     automatically from the credential store populated by ``auth login``.
@@ -118,7 +116,7 @@ def tag_list(
         raise click.BadParameter("must be positive with --all", param_hint="--n")
 
     try:
-        registry, repo, _ = parse_image_ref(image_ref)
+        registry, repo, _ = parse_artifact_ref(image_ref)
     except ValueError as exc:
         emit_error(image_ref, str(exc))
 
@@ -147,22 +145,18 @@ def tag_list(
 
 @tag.command("delete")
 @telemetry_options
-@click.option(
-    "--image-ref",
-    "-i",
-    required=True,
-    metavar="IMAGE_REF",
-    help=(
-        "Image reference with embedded registry and tag "
+@artifact_option(
+    help_text=(
+        "Artifact reference with embedded registry and tag "
         "(e.g. registry/repo:tag). Digest references are rejected."
     ),
 )
 @click.pass_context
 @track_scenario("tag delete")
 def delete(ctx, image_ref):
-    """Delete a tag from the repository identified by IMAGE_REF.
+    """Delete the tag identified by ARTIFACT.
 
-    IMAGE_REF must be a tag reference (``registry/repo:tag``). Digest
+    ARTIFACT must be a tag reference (``registry/repo:tag``). Digest
     references are rejected with exit code 2 — to delete a manifest by
     digest use ``manifest delete``.  Deleting a tag does **not** delete the
     underlying manifest, which remains addressable by digest.  Credentials
@@ -172,7 +166,7 @@ def delete(ctx, image_ref):
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo, reference = parse_image_ref(image_ref)
+        registry, repo, reference = parse_artifact_ref(image_ref)
     except ValueError as exc:
         emit_error(image_ref, str(exc))
 

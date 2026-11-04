@@ -39,4 +39,5 @@ jobs:
         run: >-
           python -m pytest -q
           src/regshape/tests/test_artifact_options.py
+          src/regshape/tests/test_artifact_cli.py
           src/regshape/tests/test_refs.py

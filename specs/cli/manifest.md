@@ -2,7 +2,8 @@
 
 ## Overview
 
-The `manifest` command group manages OCI image manifests. It provides five
+The `manifest` command group manages OCI manifests and indexes for supported
+images and artifacts. It provides five
 subcommands that map to the OCI Distribution Spec endpoints:
 `get`, `info`, `descriptor`, `put`, and `delete`.
 
@@ -11,10 +12,8 @@ model (`config`, `layers`, `subject`, `annotations`) using the `--part`
 option, which is useful for scripting and for verifying individual fields
 without having to `jq`-parse the raw JSON.
 
-> **Note:** Until `libs/transport/` is implemented, all commands issue HTTP
-> requests directly via the `requests` library using the existing
-> `libs/auth/` helpers. Migration to `RegistryClient` is tracked as a
-> follow-up task.
+All requests use the shared `RegistryClient` transport and its authentication
+and telemetry support.
 
 ## Usage
 
@@ -28,16 +27,25 @@ regshape manifest delete     [OPTIONS]
 
 ---
 
-## Image Reference Format
+## Artifact Reference Format
 
-The `--image-ref` / `-i` option accepts the standard container image reference syntax:
+The preferred `--artifact` / `-a` option accepts the existing registry
+reference syntax. This interface targets release 0.2; check installed command
+help before using it with an older package.
+
+`--image-ref` / `-i` remains supported with this help/documentation notice:
+**Deprecated in 0.2; use --artifact / -a. Retained for compatibility.**
+No runtime warning is emitted and no removal version is scheduled. Legacy
+examples below remain valid. Identical repeated values select one target;
+differing values fail with usage exit 2 before credential lookup or requests.
+See [artifact option design](artifact-options.md).
 
 | Format | Example |
 |---|---|
 | `registry/repo:tag` | `acr.io/myrepo/myimage:v1` |
 | `registry/repo@digest` | `acr.io/myrepo/myimage@sha256:abc...` |
 
-The registry must always be embedded in the `--image-ref` value. If no registry
+The registry must always be embedded in the `--artifact` value. If no registry
 is present, the command exits with an error.
 
 > **Authentication:** Run `regshape auth login` before using manifest commands
@@ -51,13 +59,13 @@ is present, the command exits with an error.
 
 ### `manifest get`
 
-Fetch the manifest for a given image reference.
+Fetch the manifest for a given artifact reference.
 
 #### Options
 
 | Option | Short | Type | Default | Description |
 |---|---|---|---|---|
-| `--image-ref` | `-i` | string | required | Image reference with embedded registry (e.g., `registry/repo:tag`, `registry/repo@sha256:...`) |
+| `--artifact` | `-a` | string | required | Artifact reference with embedded registry (e.g., `registry/repo:tag`, `registry/repo@sha256:...`); legacy aliases documented above |
 | `--accept` | | string | all OCI+Docker types | Set a specific `Accept` header (overrides the default multi-type header) |
 | `--part` | | choice | none | Extract a single field from the parsed model: `config`, `layers`, `subject`, or `annotations` |
 | `--output` | `-o` | path | stdout | Write manifest (or extracted part) to this file instead of stdout |
@@ -187,7 +195,7 @@ without downloading the manifest body.
 
 | Option | Short | Type | Default | Description |
 |---|---|---|---|---|
-| `--image-ref` | `-i` | string | required | Image reference with embedded registry (e.g., `registry/repo:tag`, `registry/repo@sha256:...`) |
+| `--artifact` | `-a` | string | required | Artifact reference with embedded registry (e.g., `registry/repo:tag`, `registry/repo@sha256:...`); legacy aliases documented above |
 | `--accept` | | string | all OCI+Docker types | Set a specific `Accept` header |
 | `--time-methods` | | flag | false | Print execution time for individual method calls |
 | `--time-scenarios` | | flag | false | Print execution time for multi-step workflows |
@@ -239,7 +247,7 @@ Return the OCI Descriptor for a given image reference as JSON.
 
 | Option | Short | Type | Default | Description |
 |---|---|---|---|---|
-| `--image-ref` | `-i` | string | required | Image reference with embedded registry (e.g., `registry/repo:tag`, `registry/repo@sha256:...`) |
+| `--artifact` | `-a` | string | required | Artifact reference with embedded registry (e.g., `registry/repo:tag`, `registry/repo@sha256:...`); legacy aliases documented above |
 | `--accept` | | string | all OCI+Docker types | Set a specific `Accept` header |
 | `--time-methods` | | flag | false | Print execution time for individual method calls |
 | `--time-scenarios` | | flag | false | Print execution time for multi-step workflows |
@@ -298,7 +306,7 @@ Push a manifest to the registry.
 
 | Option | Short | Type | Default | Description |
 |---|---|---|---|---|
-| `--image-ref` | `-i` | string | required | Image reference with embedded registry (e.g., `registry/repo:tag`, `registry/repo@sha256:...`) |
+| `--artifact` | `-a` | string | required | Artifact reference with embedded registry (e.g., `registry/repo:tag`, `registry/repo@sha256:...`); legacy aliases documented above |
 | `--file` | `-f` | path | none | Read manifest JSON from this file (mutually exclusive with `--stdin`) |
 | `--stdin` | | flag | false | Read manifest JSON from stdin (mutually exclusive with `--file`) |
 | `--content-type` | | string | inferred | Override the `Content-Type` header (useful for break mode testing) |
@@ -361,7 +369,7 @@ not accepted by most registries for delete operations).
 
 | Option | Short | Type | Default | Description |
 |---|---|---|---|---|
-| `--image-ref` | `-i` | string | required | Image reference with embedded registry — must be a digest reference (`registry/repo@sha256:...`) |
+| `--artifact` | `-a` | string | required | Artifact reference with embedded registry; must be a digest reference (`registry/repo@sha256:...`); legacy aliases documented above |
 | `--time-methods` | | flag | false | Print execution time for individual method calls |
 | `--time-scenarios` | | flag | false | Print execution time for multi-step workflows |
 | `--debug-calls` | | flag | false | Print request/response headers for each HTTP call |

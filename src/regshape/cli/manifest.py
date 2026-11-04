@@ -7,7 +7,7 @@
 .. module:: regshape.cli.manifest
    :platform: Unix, Windows
    :synopsis: Click command group providing ``get``, ``info``, ``descriptor``,
-              ``put``, and ``delete`` subcommands for OCI image manifest
+              ``put``, and ``delete`` subcommands for OCI artifact manifest
               operations.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
@@ -20,13 +20,14 @@ import click
 import requests
 
 from regshape.cli.formatting import emit_error, emit_json, emit_text, format_key_value
+from regshape.cli.options import artifact_option
 from regshape.libs.decorators import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import AuthError, ManifestError
 from regshape.libs.manifests import delete_manifest, get_manifest, head_manifest, push_manifest
 from regshape.libs.models.manifest import ImageIndex, ImageManifest, parse_manifest
 from regshape.libs.models.mediatype import ALL_MANIFEST_MEDIA_TYPES, OCI_IMAGE_MANIFEST
-from regshape.libs.refs import parse_image_ref
+from regshape.libs.refs import parse_artifact_ref
 from regshape.libs.transport import RegistryClient, TransportConfig
 
 # ---------------------------------------------------------------------------
@@ -47,7 +48,7 @@ _PARTS = ("config", "layers", "subject", "annotations")
 
 @click.group()
 def manifest():
-    """Manage OCI image manifests (get, info, descriptor, put, delete)."""
+    """Manage OCI manifests (get, info, descriptor, put, delete)."""
     pass
 
 
@@ -57,12 +58,8 @@ def manifest():
 
 @manifest.command("get")
 @telemetry_options
-@click.option(
-    "--image-ref",
-    "-i",
-    required=True,
-    metavar="IMAGE_REF",
-    help="Image reference — registry must be embedded (registry/repo:tag or registry/repo@sha256:...).",
+@artifact_option(
+    help_text="Artifact reference — registry must be embedded (registry/repo:tag or registry/repo@sha256:...).",
 )
 @click.option(
     "--accept",
@@ -101,9 +98,9 @@ def manifest():
 @click.pass_context
 @track_scenario("manifest get")
 def get(ctx, image_ref, accept, part, output, raw):
-    """Fetch the manifest for IMAGE_REF.
+    """Fetch the manifest for ARTIFACT.
 
-    IMAGE_REF must embed the registry (``registry/repo:tag`` or
+    ARTIFACT must embed the registry (``registry/repo:tag`` or
     ``registry/repo@sha256:...``).  Credentials are resolved
     automatically from the credential store populated by ``auth login``.
 
@@ -117,7 +114,7 @@ def get(ctx, image_ref, accept, part, output, raw):
         raise click.UsageError("--raw and --part are mutually exclusive")
 
     try:
-        registry, repo, reference = parse_image_ref(image_ref)
+        registry, repo, reference = parse_artifact_ref(image_ref)
     except ValueError as exc:
         emit_error(image_ref, str(exc))
 
@@ -160,12 +157,8 @@ def get(ctx, image_ref, accept, part, output, raw):
 
 @manifest.command("info")
 @telemetry_options
-@click.option(
-    "--image-ref",
-    "-i",
-    required=True,
-    metavar="IMAGE_REF",
-    help="Image reference — registry must be embedded (registry/repo:tag or registry/repo@sha256:...).",
+@artifact_option(
+    help_text="Artifact reference — registry must be embedded (registry/repo:tag or registry/repo@sha256:...).",
 )
 @click.option(
     "--accept",
@@ -176,7 +169,7 @@ def get(ctx, image_ref, accept, part, output, raw):
 @click.pass_context
 @track_scenario("manifest info")
 def info(ctx, image_ref, accept):
-    """Print metadata for IMAGE_REF without downloading the manifest body.
+    """Print metadata for ARTIFACT without downloading the manifest body.
 
     Issues a HEAD request and returns the digest, media type, and size
     from response headers.  Credentials are resolved automatically from
@@ -185,7 +178,7 @@ def info(ctx, image_ref, accept):
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo, reference = parse_image_ref(image_ref)
+        registry, repo, reference = parse_artifact_ref(image_ref)
     except ValueError as exc:
         emit_error(image_ref, str(exc))
 
@@ -214,12 +207,8 @@ def info(ctx, image_ref, accept):
 
 @manifest.command("descriptor")
 @telemetry_options
-@click.option(
-    "--image-ref",
-    "-i",
-    required=True,
-    metavar="IMAGE_REF",
-    help="Image reference — registry must be embedded (registry/repo:tag or registry/repo@sha256:...).",
+@artifact_option(
+    help_text="Artifact reference — registry must be embedded (registry/repo:tag or registry/repo@sha256:...).",
 )
 @click.option(
     "--accept",
@@ -230,7 +219,7 @@ def info(ctx, image_ref, accept):
 @click.pass_context
 @track_scenario("manifest descriptor")
 def descriptor(ctx, image_ref, accept):
-    """Return the OCI Descriptor for IMAGE_REF as JSON.
+    """Return the OCI Descriptor for ARTIFACT as JSON.
 
     Issues a HEAD request and returns a JSON object with the
     ``mediaType``, ``digest``, and ``size`` fields, matching the OCI
@@ -241,7 +230,7 @@ def descriptor(ctx, image_ref, accept):
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo, reference = parse_image_ref(image_ref)
+        registry, repo, reference = parse_artifact_ref(image_ref)
     except ValueError as exc:
         emit_error(image_ref, str(exc))
 
@@ -270,12 +259,8 @@ def descriptor(ctx, image_ref, accept):
 
 @manifest.command("put")
 @telemetry_options
-@click.option(
-    "--image-ref",
-    "-i",
-    required=True,
-    metavar="IMAGE_REF",
-    help="Image reference — registry must be embedded (registry/repo:tag or registry/repo@sha256:...).",
+@artifact_option(
+    help_text="Artifact reference — registry must be embedded (registry/repo:tag or registry/repo@sha256:...).",
 )
 @click.option(
     "--file",
@@ -305,7 +290,7 @@ def descriptor(ctx, image_ref, accept):
 @click.pass_context
 @track_scenario("manifest put")
 def put(ctx, image_ref, manifest_file, from_stdin, content_type):
-    """Push a manifest to the registry as IMAGE_REF.
+    """Push a manifest to the registry as ARTIFACT.
 
     Provide the manifest JSON via ``--file`` or ``--stdin`` (exactly one
     is required).  Credentials are resolved automatically from the
@@ -319,7 +304,7 @@ def put(ctx, image_ref, manifest_file, from_stdin, content_type):
         raise click.UsageError("One of --file or --stdin is required")
 
     try:
-        registry, repo, reference = parse_image_ref(image_ref)
+        registry, repo, reference = parse_artifact_ref(image_ref)
     except ValueError as exc:
         emit_error(image_ref, str(exc))
 
@@ -360,19 +345,15 @@ def put(ctx, image_ref, manifest_file, from_stdin, content_type):
 
 @manifest.command("delete")
 @telemetry_options
-@click.option(
-    "--image-ref",
-    "-i",
-    required=True,
-    metavar="IMAGE_REF",
-    help="Image reference — must be a digest reference with registry embedded (registry/repo@sha256:...).",
+@artifact_option(
+    help_text="Artifact reference — must be a digest reference with registry embedded (registry/repo@sha256:...).",
 )
 @click.pass_context
 @track_scenario("manifest delete")
 def delete(ctx, image_ref):
-    """Delete the manifest identified by IMAGE_REF.
+    """Delete the manifest identified by ARTIFACT.
 
-    IMAGE_REF must be a digest reference (``registry/repo@sha256:...``).
+    ARTIFACT must be a digest reference (``registry/repo@sha256:...``).
     The OCI Distribution Spec requires deletion by digest; tag references
     are rejected with exit code 2.  Credentials are resolved automatically
     from the credential store populated by ``auth login``.
@@ -380,7 +361,7 @@ def delete(ctx, image_ref):
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo, reference = parse_image_ref(image_ref)
+        registry, repo, reference = parse_artifact_ref(image_ref)
     except ValueError as exc:
         emit_error(image_ref, str(exc))
 
@@ -440,6 +421,5 @@ def _extract_part(
 
     # Should not reach here because Click validates the choice
     return 1, f"unknown part: {part!r}"
-
 
 

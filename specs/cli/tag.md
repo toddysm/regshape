@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `tag` command group manages OCI image tags. It provides two subcommands
+The `tag` command group manages OCI artifact tags. It provides two subcommands
 that map to the OCI Distribution Spec endpoints:
 
 | Subcommand | Method | Endpoint |
@@ -27,14 +27,22 @@ regshape tag delete [OPTIONS]
 
 ---
 
-## Image Reference Format
+## Artifact Reference Format
 
-Both subcommands accept `--image-ref` / `-i` using the standard container
-image reference syntax with the registry always embedded:
+Both subcommands prefer `--artifact` / `-a` using the existing reference syntax
+with the registry always embedded. The interface targets 0.2; check installed
+command help before using it with older packages.
+
+Legacy `--image-ref` / `-i` remains supported, with the help/documentation
+notice **Deprecated in 0.2; use --artifact / -a. Retained for compatibility.**
+There is no runtime warning or scheduled removal. Older examples below remain
+valid. Identical repeats select one target; different values fail with usage
+exit 2 before credentials or network access. See the
+[artifact option design](artifact-options.md).
 
 | Subcommand | Accepted formats | Notes |
 |---|---|---|
-| `list` | `registry/repo` or `registry/repo:tag` | Tag is ignored for list operations |
+| `list` | `registry/repo`, `registry/repo:tag` or `registry/repo@digest` | Tag/digest suffix is ignored for list operations |
 | `delete` | `registry/repo:tag` | Tag name is required; digest references are rejected |
 
 > **Authentication:** Run `regshape auth login` before using tag commands
@@ -54,7 +62,7 @@ List one page of tags, or opt into automatic traversal of all remaining pages.
 
 | Option | Short | Type | Default | Description |
 |---|---|---|---|---|
-| `--image-ref` | `-i` | string | required | Repository reference with embedded registry (e.g., `registry/repo`, `registry/repo:tag`) |
+| `--artifact` | `-a` | string | required | Repository reference with embedded registry; legacy aliases documented above |
 | `--n` | | integer | none; 100 with `--all` | Tags requested per page; must be positive with `--all` |
 | `--last` | | string | none | Return tags lexicographically after this value (pagination cursor) |
 | `--all` | | flag | false | Retrieve and aggregate every remaining page after the optional cursor |
@@ -194,7 +202,7 @@ Delete a tag from a repository.
 
 | Option | Short | Type | Default | Description |
 |---|---|---|---|---|
-| `--image-ref` | `-i` | string | required | Image reference with embedded registry and tag (e.g., `registry/repo:tag`) |
+| `--artifact` | `-a` | string | required | Artifact reference with embedded registry and tag (e.g., `registry/repo:tag`); legacy aliases documented above |
 | `--time-methods` | | flag | false | Print execution time for individual method calls |
 | `--time-scenarios` | | flag | false | Print execution time for multi-step workflows |
 | `--debug-calls` | | flag | false | Print request/response headers for each HTTP call |
