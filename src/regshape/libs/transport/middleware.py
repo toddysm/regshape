@@ -15,13 +15,18 @@
 
 from abc import ABC
 from collections.abc import Mapping
-from typing import Protocol, Callable
+from typing import Callable, Protocol
 
+from regshape.libs._http import close_response
 from regshape.libs.auth import registryauth
 from regshape.libs.errors import AuthError
 from regshape.libs.transport.body import _UploadBody
 from regshape.libs.transport.models import RegistryRequest, RegistryResponse
-from regshape.libs.transport.urls import MAX_REDIRECTS, REDIRECT_STATUSES, resolve_registry_url
+from regshape.libs.transport.urls import (
+    MAX_REDIRECTS,
+    REDIRECT_STATUSES,
+    resolve_registry_url,
+)
 
 
 class Middleware(Protocol):
@@ -72,7 +77,7 @@ class BaseMiddleware(ABC):
         request: RegistryRequest, 
         next_handler: Callable[[RegistryRequest], RegistryResponse]
     ) -> RegistryResponse:
-        """Main middleware entry point."""
+        """Run hooks, closing an unbuffered response if postprocessing prevents handoff."""
         processed_request = request
         try:
             # Allow subclasses to modify the request
@@ -82,7 +87,7 @@ class BaseMiddleware(ABC):
             response = next_handler(processed_request)
             
             # Allow subclasses to modify the response  
-            processed_response = self.process_response(processed_request, response)
+            processed_response = self._process_response(processed_request, response)
             
             return processed_response
             
@@ -90,6 +95,17 @@ class BaseMiddleware(ABC):
             # Allow subclasses to handle errors
             return self.handle_error(processed_request, exc)
     
+    def _process_response(
+        self, request: RegistryRequest, response: RegistryResponse,
+    ) -> RegistryResponse:
+        """Guard response-hook ownership; secondary close failures preserve the hook error."""
+        try:
+            return self.process_response(request, response)
+        except BaseException as error:
+            if response.body is None:
+                close_response(response.raw_response, primary_error=error)
+            raise
+
     def process_request(self, request: RegistryRequest) -> RegistryRequest:
         """Hook for request preprocessing.
         
@@ -246,13 +262,12 @@ class MiddlewarePipeline:
 # ===================================
 
 
-import time
 import logging
-from typing import Optional, Dict, Any
+import time
 from dataclasses import dataclass, field
+from typing import Any, Dict, Optional
 
 import requests.exceptions
-
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -375,7 +390,7 @@ class AuthMiddleware(BaseMiddleware):
         request: RegistryRequest,
         next_handler: Callable[[RegistryRequest], RegistryResponse],
     ) -> RegistryResponse:
-        """Handle 401 challenges while retaining the request's redirect policy."""
+        """Handle challenges and close discarded streams before auth/probe failures can occur."""
         processed_request = request
         try:
             processed_request = self.process_request(request)
@@ -388,6 +403,8 @@ class AuthMiddleware(BaseMiddleware):
 
         # ---- 401 handling ------------------------------------------------
         www_auth = _get_header_ci(response.headers, "WWW-Authenticate")
+        if response.body is None:
+            close_response(response.raw_response)
         if not www_auth:
             # Some registries (e.g. ACR) only return WWW-Authenticate on
             # the /v2/ endpoint.  Fall back to a /v2/ probe to obtain the
@@ -590,11 +607,16 @@ class RetryMiddleware(BaseMiddleware):
         self.config = config or RetryConfig()
     
     def __call__(self, request: RegistryRequest, next_handler: NextHandler) -> RegistryResponse:
-        """Execute request with retry logic."""
+        """Retry with configured policy, closing discarded streams before backoff.
+
+        A sole cleanup failure propagates rather than becoming another retry.
+        The final successful/exhausted response remains owned by the caller.
+        """
         last_exception = None
         processed_request = request
         
         for attempt in range(self.config.max_retries + 1):
+            closing_for_retry = False
             try:
                 # Process request through parent hooks
                 processed_request = self.process_request(request)
@@ -604,13 +626,19 @@ class RetryMiddleware(BaseMiddleware):
                 
                 # Check if we should retry based on status code
                 if response.status_code in self.config.status_codes and attempt < self.config.max_retries:
+                    if response.body is None:
+                        closing_for_retry = True
+                        close_response(response.raw_response)
+                        closing_for_retry = False
                     self._wait_backoff(attempt)
                     continue
                 
                 # Process response and return
-                return self.process_response(processed_request, response)
+                return self._process_response(processed_request, response)
                 
             except self.config.exceptions as exc:
+                if closing_for_retry:
+                    raise
                 if isinstance(processed_request.body, _UploadBody):
                     processed_request.body.raise_if_failed()
                 last_exception = exc
@@ -635,7 +663,7 @@ class RetryMiddleware(BaseMiddleware):
 
 
 class CachingMiddleware(BaseMiddleware):
-    """Middleware that caches GET responses for immutable content.
+    """Middleware that caches buffered GET responses for immutable content.
     
     Caches responses based on URL, Accept header, query parameters, and
     redirect policy.
@@ -646,6 +674,8 @@ class CachingMiddleware(BaseMiddleware):
     older than *ttl* seconds are treated as stale and transparently
     re-fetched.  When *ttl* is ``None`` (the default) entries never
     expire — appropriate for content-addressed registry objects.
+    Streamed requests bypass cache reads and writes; unbuffered responses are
+    never inserted because their live iterators cannot safely be replayed.
     
     :param max_size: Maximum number of cached responses.
     :param ttl: Time-to-live in seconds for cached entries.  ``None``
@@ -664,9 +694,9 @@ class CachingMiddleware(BaseMiddleware):
         self.ttl = ttl
     
     def __call__(self, request: RegistryRequest, next_handler: NextHandler) -> RegistryResponse:
-        """Execute request with caching logic."""
+        """Reuse buffered responses only; streamed requests keep independent ownership."""
         # Only cache GET requests
-        if request.method != "GET":
+        if request.method != "GET" or request.stream:
             return super().__call__(request, next_handler)
         
         cache_key = self._get_cache_key(request)
@@ -682,7 +712,7 @@ class CachingMiddleware(BaseMiddleware):
         # Execute request
         processed_request = self.process_request(request)
         response = next_handler(processed_request)
-        processed_response = self.process_response(request, response)
+        processed_response = self._process_response(request, response)
         
         # Cache successful responses for immutable content
         if self._should_cache(processed_response):
@@ -720,7 +750,9 @@ class CachingMiddleware(BaseMiddleware):
         return f"{method}:{url}:accept={accept}:params={params_component}:redirects={redirects}"
     
     def _should_cache(self, response: RegistryResponse) -> bool:
-        """Determine if response should be cached."""
+        """Reject live/unbuffered responses before applying existing cacheability rules."""
+        if response.body is None:
+            return False
         # Cache successful responses
         if not response.ok:
             return False

@@ -6,7 +6,7 @@
 
 .. module:: regshape.libs.manifests
    :platform: Unix, Windows
-   :synopsis: Library-level functions for OCI manifest operations.
+   :synopsis: OCI manifest operations and optional immutable receive observations.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
@@ -17,8 +17,18 @@ from regshape.libs.manifests.operations import (
     head_manifest,
     push_manifest,
 )
+from regshape.libs.progress import (
+    ManifestKind,
+    ManifestPhase,
+    ManifestProgress,
+    ManifestProgressCallback,
+)
 
 __all__ = [
+    "ManifestKind",
+    "ManifestPhase",
+    "ManifestProgress",
+    "ManifestProgressCallback",
     "delete_manifest",
     "get_manifest",
     "head_manifest",

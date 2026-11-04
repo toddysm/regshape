@@ -20,18 +20,24 @@
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Optional, List
+from typing import Any, List, Optional
 
 import requests
 
+from regshape.libs._http import close_response
 from regshape.libs.auth import registryauth
 from regshape.libs.auth.credentials import resolve_credentials
 from regshape.libs.decorators.call_details import http_request
 from regshape.libs.errors import AuthError
 from regshape.libs.transport.body import _UploadBody
 from regshape.libs.transport.middleware import (
-    MiddlewarePipeline, Middleware, AuthMiddleware, LoggingMiddleware,
-    RetryMiddleware, CachingMiddleware, RetryConfig,
+    AuthMiddleware,
+    CachingMiddleware,
+    LoggingMiddleware,
+    Middleware,
+    MiddlewarePipeline,
+    RetryConfig,
+    RetryMiddleware,
     _normalize_www_authenticate,
 )
 from regshape.libs.transport.models import RegistryRequest, RegistryResponse
@@ -73,8 +79,8 @@ class TransportConfig:
         pipeline. Defaults to False.
     :param enable_retries: When True, adds retry middleware with exponential
         backoff. Defaults to False.
-    :param enable_caching: When True, adds caching middleware for GET
-        requests. Defaults to False.
+    :param enable_caching: When True, caches buffered GET responses. Streamed
+        requests bypass the cache to avoid exhausted-response reuse. Defaults to False.
     :param retry_config: Configuration for retry middleware. Only used when
         enable_retries is True.
     :param cache_size: Maximum number of cached responses. Only used when
@@ -247,7 +253,7 @@ class RegistryClient:
         timeout: int, 
         **kwargs
     ) -> requests.Response:
-        """Handle legacy authentication, retaining redirect policy on probes/retries."""
+        """Handle legacy auth and discard an initial streamed 401 before probing/retrying."""
         response = _send_http_request(url, method, headers=req_headers, timeout=timeout, **kwargs)
         self.last_response = response
 
@@ -256,6 +262,8 @@ class RegistryClient:
 
         # -- 401 handling --------------------------------------------------------
         www_auth = response.headers.get("WWW-Authenticate", "")
+        if kwargs.get("stream"):
+            close_response(response)
         if not www_auth:
             # Some registries (e.g. ACR) only return WWW-Authenticate on
             # the /v2/ endpoint.  Fall back to a /v2/ probe.

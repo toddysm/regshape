@@ -41,6 +41,8 @@ def get_manifest(
     repo: str,
     reference: str,
     accept: str,
+    *,
+    progress_callback: ManifestProgressCallback | None = None,
 ) -> tuple[str, str, str]:
 ```
 
@@ -52,17 +54,43 @@ Fetches the manifest body for a repository reference.
 | `repo` | `str` | required | Repository name (e.g. `"myrepo/myimage"`) |
 | `reference` | `str` | required | Tag or digest (e.g. `"latest"` or `"sha256:abc..."`) |
 | `accept` | `str` | required | Value for the `Accept` header |
+| `progress_callback` | `ManifestProgressCallback \| None` | `None` | Keyword-only synchronous byte observer; enables streamed response consumption |
 
-**Returns:** `(body_str, content_type, digest)` — the raw manifest JSON
-string, the `Content-Type` response header value, and the
-`Docker-Content-Digest` response header value.
+**Returns:** `(body_str, content_type, digest)` — the response decoded using
+Requests' text semantics, the `Content-Type` response header value, and the
+`Docker-Content-Digest` response header value (empty strings for absent headers).
+Fetching does not parse the model or verify the reported digest.
 
 **Behaviour:**
 
 1. Build path `"/v2/{repo}/manifests/{reference}"`.
-2. Call `client.get(path, headers={"Accept": accept})`.
+2. Call `client.get(path, headers={"Accept": accept})`; with an observer, add
+   `stream=True` and observe nonempty chunks requested in 64 KiB reads.
 3. Pass response to `_raise_for_manifest_error`.
-4. Return `(response.text, Content-Type header, Docker-Content-Digest header)`.
+4. Decode the complete payload with unchanged Requests charset/detection/fallback
+   behavior. Even observed calls retain O(payload size) memory.
+5. Close the owned response before emitting `RECEIVED` and returning the tuple.
+
+The additive frozen `ManifestProgress` event uses opaque invocation identity,
+advertised manifest/index/unknown kind, receive phase, absolute consumed payload
+bytes and an optional advisory total. It has no digest or verification claim.
+All event types and `ManifestProgressCallback` are exported from the manifest
+package and [shared progress module](../../src/regshape/libs/progress.py).
+See [manifest callback details](../../docs/library/transfer-progress.md#manifest-receive-observations)
+for fields, error/cleanup semantics and examples.
+
+No callback preserves buffered request behavior and emits no observations.
+Observed calls bypass the optional response cache; buffered cache reuse is
+unchanged. No additional HEAD or probe is performed solely for progress.
+Existing authentication/retry behavior is retained, with discarded streamed
+responses closed before authentication exchange or retry backoff. Post-response
+diagnostic failures close an acquired stream before it can be handed to the
+operation, preserving the original exception if cleanup also fails.
+
+Streamed request debug retains its existing schema: absent body preview and
+`body_size: 0` mean no body captured at that layer, not an empty payload.
+Request timing ends at headers; operation timing includes consumption.
+Library observations alone do not add a manifest command progress display.
 
 **Decorator:** `@track_time`
 
