@@ -186,30 +186,46 @@ and do not resolve the [separate telemetry gaps](../guides/live-transfer-progres
 
 ## Manifest receive observations
 
+This optional observation surface targets the 0.2 development interface; an older
+installed library may not accept `progress_callback`.
+
 The manifest fetch adds a keyword-only callback while preserving its existing
 four positional arguments and three-string result:
 
 ```python
 from regshape.libs.manifests import (
-    ManifestKind,
-    ManifestPhase,
     ManifestProgress,
-    ManifestProgressCallback,
     get_manifest,
 )
+from regshape.libs.transport import RegistryClient, TransportConfig
 
-events: list[ManifestProgress] = []
+manifest_latest: dict[str, ManifestProgress] = {}
+
+def remember_manifest(event: ManifestProgress) -> None:
+    """Keep the latest receipt state for an invocation, not a fabricated digest."""
+    manifest_latest[event.transfer_id] = event
+
+manifest_client = RegistryClient(
+    TransportConfig(registry="registry.example.com"),
+)
 body, content_type, reported_digest = get_manifest(
-    client, "team/example", "v1",
+    manifest_client, "team/example", "v1",
     accept="application/vnd.oci.image.manifest.v1+json",
-    progress_callback=events.append,
+    progress_callback=remember_manifest,
 )
 ```
 
-`client` is a configured `RegistryClient` as in the earlier example. These four
-observation names are also available from `regshape.libs.progress`.
+Replace the example registry/repository/tag with an accessible target and
+authenticate separately if needed. This example does not depend on `blob.bin`
+or a previously created client. It retains state without printing per-event
+lines; parsing/storage/output remain the caller's responsibility.
+
+`ManifestProgress`, `ManifestKind`, `ManifestPhase` and
+`ManifestProgressCallback` are exported by `regshape.libs.manifests` and
+`regshape.libs.progress`.
 `ManifestProgressCallback` is `Callable[[ManifestProgress], None]`.
 Omitting the callback keeps buffered requests and emits no observations.
+An invalid non-callable callback raises `TypeError` before the GET request.
 
 | Frozen event field | Contract |
 | --- | --- |
@@ -244,6 +260,9 @@ bounded-memory API. Callers must still handle parsing/storage/output failures.
 
 Observers run synchronously. An observer exception propagates unchanged and
 disables further notifications, including when it fails on `RECEIVED`.
+Preparation-observer failure aborts before the GET; a `RECEIVED` observer can
+fail after the response has already closed. Do not expect a further failure
+notification after the observer itself raises.
 Transport/HTTP failures close the owned response and emit `FAILED`;
 interruptions emit `CANCELLED`. Secondary cleanup or failure-observer errors are
 logged without replacing the primary error. If logging itself fails, those
@@ -256,6 +275,9 @@ ownership, not an extra probe. Retry-discarded streams close before backoff; the
 final response remains owned by the fetch. Diagnostics that fail after acquiring
 a stream but before handoff close it at that boundary, including in legacy
 transport mode.
+The command always supplies an observer, including with `--no-progress`; animation
+choice does not switch it back to buffered/cache-hit semantics. No new retry
+policy or partial-body resumption is enabled.
 
 Streamed request diagnostics do not capture the body: `body_preview: null`,
 `body_size: 0`, and the existing text `(empty)` placeholder describe no captured
@@ -267,6 +289,8 @@ observations with the shared renderer and supports `--no-progress`. It delays
 final visual success until parsing/extraction/output and in-context diagnostics
 succeed; the library itself remains terminal-free.
 See the [complete manifest signature](../../specs/operations/manifests.md#get_manifest).
+For runnable command variants, row snapshots and recovery, see
+[Download a manifest or index](../guides/live-transfer-progress.md#download-a-manifest-or-index).
 
 ## Layout compatibility
 

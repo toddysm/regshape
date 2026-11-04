@@ -1,5 +1,7 @@
 # Operations: Manifests
 
+<!-- doc-type: reference -->
+
 ## Overview
 
 This spec documents the domain operations layer for OCI manifest interactions
@@ -47,6 +49,8 @@ def get_manifest(
 ```
 
 Fetches the manifest body for a repository reference.
+The optional observations described here target the 0.2 development interface;
+older installed libraries may not accept `progress_callback`.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -89,11 +93,22 @@ operation, preserving the original exception if cleanup also fails.
 Non-2xx bodies are read before tolerant OCI error parsing, so framing/read
 failures propagate unchanged rather than being swallowed as malformed error JSON.
 
+**Failures and ownership:** A non-callable observer raises `TypeError` before the
+GET. Observer errors propagate unchanged and disable further notifications.
+Transport/domain errors and interruption retain their existing exceptions;
+secondary cleanup/observer errors do not replace the primary failure. The fetch
+owns and closes its response, not the caller's client. `RECEIVED` means the body
+was consumed, decoded and closed; parsing, digest validation, storage and output
+are not performed by this operation. A `RECEIVED` callback can still raise, in
+which case no tuple is returned.
+
 Streamed request debug retains its existing schema: absent body preview and
 `body_size: 0` mean no body captured at that layer, not an empty payload.
 Request timing ends at headers; operation timing includes consumption.
 The library remains terminal-free; [manifest command rendering](../cli/manifest.md#manifest-get)
 is a separate caller of this observation contract.
+See the [manifest workflow](../../docs/guides/live-transfer-progress.md#download-a-manifest-or-index)
+for command examples, progress snapshots and troubleshooting.
 
 **Decorator:** `@track_time`
 
