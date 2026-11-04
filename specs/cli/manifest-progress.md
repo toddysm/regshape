@@ -1,13 +1,14 @@
 # Manifest GET progress: functional requirements and engineering design
 
-- **Status:** Proposed revision 3; awaiting approval of this complete design and breakdown.
+- **Status:** Approved revision 3 and breakdown; runtime implementation not yet authorized.
 - **Feature:** [#90](https://github.com/toddysm/regshape/issues/90).
 - **Design item:** [#101](https://github.com/toddysm/regshape/issues/101).
 - **Target:** [0.2](https://github.com/toddysm/regshape/milestone/1); not a release commitment.
 - **Author:** RegShape owner requirements, developed with the coding assistant.
 - **Date / inspected baseline:** 2026-11-04 / `662216f3ff508e83598c9f8af2096e50c682e20c`.
-- **Authorization:** Design artifacts, hosted GitHub Actions and agent-only reviews.
-  Runtime implementation, design merge, release and cleanup are not authorized.
+- **Authorization:** Design artifacts, hosted GitHub Actions, agent-only reviews
+  and merging [design PR #106](https://github.com/toddysm/regshape/pull/106).
+  Runtime implementation, release and branch/worktree cleanup are not authorized.
 
 This combined product requirements document (PRD) and engineering design document
 (EDD) specifies proposed behavior, not a feature already available on main.
@@ -306,9 +307,10 @@ hosted checks and final user documentation, provide the delivery gates.
 
 ### B. Prerequisites and approval
 
-The owner approved the approach in [#90](https://github.com/toddysm/regshape/issues/90)
-and creation of this full design/breakdown. Approval of this complete revision
-and implementation is still required. Shared progress
+The owner approved this complete revision and breakdown under
+[#90](https://github.com/toddysm/regshape/issues/90), including merging
+[design PR #106](https://github.com/toddysm/regshape/pull/106).
+Runtime implementation still requires separate authorization. Shared progress
 ([#72](https://github.com/toddysm/regshape/issues/72)) and artifact aliases
 ([#87](https://github.com/toddysm/regshape/issues/87)) are merged prerequisites.
 No hard dependency on #91 or #88 is introduced.
@@ -842,9 +844,10 @@ future implementation. Final user docs must be rechecked against delivered code.
 
 ### O. Next actions and launch gate
 
-Obtain hosted checks and agent review, then request explicit owner approval of
-this complete revision and the native breakdown. Keep the design PR unmerged
-and implementation blocked until authorized. Delivery, user documentation,
+Owner approval of revision 3 and the native breakdown is recorded in the feature
+ledger. Merge the authorized design PR only after current-head hosted checks and
+agent review pass; keep runtime implementation blocked until separately
+authorized. Delivery, user documentation,
 inventory close-out and eventual release are distinct gates; no partner/legal
 integration or regional launch task is introduced.
 
