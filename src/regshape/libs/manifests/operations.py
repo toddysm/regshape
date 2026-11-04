@@ -121,7 +121,9 @@ def get_manifest(
                         chunks.append(chunk)
                         progress.advance(len(chunk))
                 progress.finish_body()
-                body = _BufferedManifestText(b"".join(chunks), response.encoding).text
+                payload = b"".join(chunks)
+                chunks.clear()
+                body = _BufferedManifestText(payload, response.encoding).text
         progress.emit(ManifestPhase.RECEIVED)
         return body, content_type, digest
 
