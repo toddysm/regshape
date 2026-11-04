@@ -21,7 +21,7 @@ responsibility.
 
 import requests
 
-from regshape.libs._http import closing_response, download_total
+from regshape.libs._http import ClosingResponse, download_total
 from regshape.libs.decorators.timing import track_time
 from regshape.libs.errors import AuthError, ManifestError
 from regshape.libs.models.error import OciErrorResponse
@@ -105,7 +105,7 @@ def get_manifest(
     path = f"/v2/{repo}/manifests/{reference}"
     with _ManifestProgress(progress_callback) as progress:
         stream_options = {"stream": True} if progress_callback is not None else {}
-        with closing_response(client.get(path, headers={"Accept": accept}, **stream_options)) as response:
+        with ClosingResponse(client.get(path, headers={"Accept": accept}, **stream_options)) as response:
             _raise_for_manifest_error(response, client.config.registry, repo, reference)
             content_type = response.headers.get("Content-Type", "")
             digest = response.headers.get("Docker-Content-Digest", "")

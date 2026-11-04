@@ -5,8 +5,9 @@ Keeping them outside the transport package avoids decorator/client import cycles
 """
 
 import logging
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
+from types import TracebackType
+from typing import Literal
 
 import requests
 
@@ -35,8 +36,8 @@ def report_secondary_failure(
 ) -> None:
     """Log a secondary failure without replacing the active primary exception.
 
-    Only exception types are logged. If logging itself fails, retain those
-    failures as exception context without altering the primary identity/cause.
+    Only exception types are logged. If logging itself fails, re-raise the
+    primary and let Python retain secondary context without replacing its cause.
     """
     try:
         logger.error(
@@ -44,19 +45,8 @@ def report_secondary_failure(
             context,
             type(secondary).__name__,
         )
-    except BaseException as diagnostic_error:  # noqa: BLE001 - preserve the primary failure
-        if secondary is not primary:
-            secondary.__context__ = None
-        if diagnostic_error is primary:
-            if secondary is not primary:
-                primary.__context__ = secondary
-        else:
-            diagnostic_error.__context__ = (
-                secondary
-                if secondary is not primary and secondary is not diagnostic_error
-                else None
-            )
-            primary.__context__ = diagnostic_error
+    except BaseException:  # noqa: BLE001 - preserve the active primary error and its cause
+        raise primary
 
 
 def close_response(
@@ -73,13 +63,27 @@ def close_response(
         report_secondary_failure(primary_error, error, "Response cleanup")
 
 
-@contextmanager
-def closing_response(response: requests.Response) -> Iterator[requests.Response]:
-    """Own a response until scope exit, preserving an operation error during cleanup."""
-    try:
-        yield response
-    except BaseException as error:
-        close_response(response, primary_error=error)
-        raise
-    else:
-        close_response(response)
+class ClosingResponse:
+    """Own a response without assigning attributes on caller exceptions.
+
+    A class-based exit also supports immutable exceptions: generator context
+    managers restore their traceback with a Python attribute assignment.
+    """
+
+    def __init__(self, response: requests.Response) -> None:
+        """Take ownership of an acquired response; do not read its body."""
+        self.response = response
+
+    def __enter__(self) -> requests.Response:
+        """Expose the owned response for bounded-scope consumption."""
+        return self.response
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> Literal[False]:
+        """Close on every exit and preserve an active operation/cancellation error."""
+        close_response(self.response, primary_error=exc)
+        return False

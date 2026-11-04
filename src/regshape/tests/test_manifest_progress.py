@@ -5,7 +5,7 @@ import hashlib
 import io
 import json
 from collections.abc import Iterator
-from dataclasses import FrozenInstanceError, asdict, replace
+from dataclasses import FrozenInstanceError, asdict, dataclass, replace
 from unittest.mock import Mock, patch
 
 import pytest
@@ -894,3 +894,29 @@ def test_real_framing_failure_is_not_an_advisory_size_success() -> None:
     assert response.close_calls == 1
     assert events[-1].phase == ManifestPhase.FAILED
     assert all(event.phase != ManifestPhase.RECEIVED for event in events)
+
+
+def test_immutable_primary_survives_cleanup_and_logging_failure() -> None:
+    """Exception preservation must not require writable attributes on a caller's error."""
+
+    @dataclass(frozen=True)
+    class ImmutableFailure(Exception):
+        """Caller-owned exception whose Python attribute assignments are prohibited."""
+
+        detail: str
+
+    primary = ImmutableFailure("primary")
+    cause = ValueError("original cause")
+    with pytest.raises(ImmutableFailure):
+        raise primary from cause
+    response = StreamResponse()
+    with (
+        patch("requests.request", return_value=response),
+        patch.object(response, "iter_content", side_effect=primary),
+        patch.object(response, "close", side_effect=OSError("cleanup")),
+        patch("regshape.libs._http.logger.error", side_effect=RuntimeError("logging")),
+        pytest.raises(ImmutableFailure) as caught,
+    ):
+        get_manifest(client(), REPO, "v1", ACCEPT, progress_callback=lambda event: None)
+    assert caught.value is primary and primary.__cause__ is cause
+    response.close()
