@@ -12,6 +12,12 @@ This inventory distinguishes implemented behavior from partial capabilities,
 unmerged proposals, and planned work. It is a dated snapshot, not an assertion
 that every registry or platform has been tested.
 
+Planning update on **2026-11-04**: artifact-oriented option naming is in design
+for 0.2 under [#87](https://github.com/toddysm/regshape/issues/87), with its
+[functional/engineering specification](../specs/cli/artifact-options.md).
+The naming direction is selected; the complete design and breakdown await
+approval. No new artifact flags are implemented by this planning update.
+
 Tracking is **issues-only** because Project access is unavailable in this
 workspace. The linked issues and pull requests remain authoritative for newer
 changes. Live-progress design revision 2 remains in its feature issue, not a
@@ -55,6 +61,7 @@ the first version of every operation in that row.
 | Homebrew distribution and release-driven formula updates | Partial | [Tracker #63](https://github.com/toddysm/regshape/issues/63), [remaining documentation fix #62](https://github.com/toddysm/regshape/issues/62) | - | - | [How-to: Homebrew installation](guides/homebrew-install.md) | - |
 | OCI image-specification guidance for the development skill | In progress | [#66](https://github.com/toddysm/regshape/issues/66), [open #67](https://github.com/toddysm/regshape/pull/67) | [Issue requirements: #66](https://github.com/toddysm/regshape/issues/66) | [Current development skill](../.github/skills/regshape-dev/SKILL.md) | - | - |
 | Live progress for blob get/upload and layout/Docker push | Implemented | [Feature #72](https://github.com/toddysm/regshape/issues/72), merged [#80](https://github.com/toddysm/regshape/pull/80), [#81](https://github.com/toddysm/regshape/pull/81), [#82](https://github.com/toddysm/regshape/pull/82), [#83](https://github.com/toddysm/regshape/pull/83), [#84](https://github.com/toddysm/regshape/pull/84) | [Lightweight design: #72, revision 2](https://github.com/toddysm/regshape/issues/72) | [Developer reference: transfer callbacks](library/transfer-progress.md), [API reference: blobs](../specs/operations/blobs.md) | [How-to: live transfer progress](guides/live-transfer-progress.md) | 2026-11-03 |
+| Artifact-oriented CLI options with compatible legacy aliases | In progress | [Feature #87](https://github.com/toddysm/regshape/issues/87), [design #92](https://github.com/toddysm/regshape/issues/92), [support #93](https://github.com/toddysm/regshape/issues/93), [commands #94](https://github.com/toddysm/regshape/issues/94), [docs #95](https://github.com/toddysm/regshape/issues/95) | [Functional requirements: artifact options](../specs/cli/artifact-options.md#part-i-functional-requirements) | [Engineering design: artifact options](../specs/cli/artifact-options.md#part-ii-engineering-design) | - | - |
 
 ## Evidence and important boundaries
 
