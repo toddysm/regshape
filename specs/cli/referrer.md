@@ -35,10 +35,11 @@ API. Digest references are used directly, with no manifest lookup.
 This interface targets release 0.2. Legacy `--image-ref` / `-i` remains supported
 with the help/documentation notice **Deprecated in 0.2; use --artifact / -a.
 Retained for compatibility.** No runtime warning is emitted and no removal
-version is scheduled. Existing legacy examples remain valid. Identical repeats
+version is scheduled. Legacy spellings remain valid; examples below prefer the new option. Identical repeats
 select one target; differing values cause usage exit 2 before credential/network
 access. `--artifact-type` remains an independent filter. See the
-[artifact option design](artifact-options.md).
+[artifact option design](artifact-options.md) and
+[migration guide](../../docs/guides/artifact-options.md).
 
 | Subcommand | Accepted formats | Notes |
 |---|---|---|
@@ -74,7 +75,7 @@ List referrers for the manifest identified by tag or digest in ARTIFACT.
 
 #### Behavior
 
-1. Parse `--image-ref` to extract registry, repository, and reference. Explicit
+1. Parse `--artifact` (or a legacy alias) to extract registry, repository, and reference. Explicit
    digest references must use `sha256` or `sha512`; unsupported digest algorithms
    are rejected with exit code 2.
 2. Resolve credentials from the Docker credential store for the extracted
@@ -114,30 +115,30 @@ List referrers for the manifest identified by tag or digest in ARTIFACT.
 regshape auth login -r acr.io -u alice
 
 # List referrers by tag (automatically resolved to a digest)
-regshape referrer list -i acr.io/myrepo/myimage:v1.0
+regshape referrer list -a acr.io/myrepo/myimage:v1.0
 
 # Resolve a tag, fetch all pages, filter, and save JSON
-regshape referrer list -i acr.io/myrepo/myimage:v1.0 --all \
+regshape referrer list -a acr.io/myrepo/myimage:v1.0 --all \
     --artifact-type application/vnd.example.sbom.v1 --json -o referrers.json
 
 # List all referrers for a manifest by digest (single page)
-regshape referrer list -i acr.io/myrepo/myimage@sha256:abc123...
+regshape referrer list -a acr.io/myrepo/myimage@sha256:abc123...
 
 # List all referrers across all pages
-regshape referrer list -i acr.io/myrepo/myimage@sha256:abc123... --all
+regshape referrer list -a acr.io/myrepo/myimage@sha256:abc123... --all
 
 # Filter referrers by artifact type (only SBOMs)
-regshape referrer list -i acr.io/myrepo/myimage@sha256:abc123... \
+regshape referrer list -a acr.io/myrepo/myimage@sha256:abc123... \
     --artifact-type application/vnd.example.sbom.v1
 
 # Output as JSON
-regshape referrer list -i acr.io/myrepo/myimage@sha256:abc123... --json
+regshape referrer list -a acr.io/myrepo/myimage@sha256:abc123... --json
 
 # Save referrer list to a file
-regshape referrer list -i acr.io/myrepo/myimage@sha256:abc123... -o referrers.txt
+regshape referrer list -a acr.io/myrepo/myimage@sha256:abc123... -o referrers.txt
 
 # Combine with tools — count signatures
-regshape referrer list -i acr.io/myrepo/myimage@sha256:abc123... \
+regshape referrer list -a acr.io/myrepo/myimage@sha256:abc123... \
     --artifact-type application/vnd.cncf.notary.signature | wc -l
 ```
 

@@ -36,9 +36,10 @@ help before using it with an older package.
 `--image-ref` / `-i` remains supported with this help/documentation notice:
 **Deprecated in 0.2; use --artifact / -a. Retained for compatibility.**
 No runtime warning is emitted and no removal version is scheduled. Legacy
-examples below remain valid. Identical repeated values select one target;
+spellings remain valid; examples below prefer the new option. Identical repeated values select one target;
 differing values fail with usage exit 2 before credential lookup or requests.
-See [artifact option design](artifact-options.md).
+See the [migration guide](../../docs/guides/artifact-options.md) and
+[artifact option design](artifact-options.md).
 
 | Format | Example |
 |---|---|
@@ -76,7 +77,7 @@ Fetch the manifest for a given artifact reference.
 
 #### Behavior
 
-1. Parse `--image-ref` to extract registry, repository, and tag or digest.
+1. Parse `--artifact` (or a legacy alias) to extract registry, repository, and tag or digest.
 2. Resolve credentials from the Docker credential store for the extracted registry.
 3. Issue `GET /v2/<repo>/manifests/<reference>` with an `Accept` header that
    covers all known OCI and Docker manifest media types (or the single type
@@ -116,20 +117,20 @@ application/vnd.docker.distribution.manifest.list.v2+json
 regshape auth login -r acr.io -u alice
 
 # Print the full manifest for a tag
-regshape manifest get -i acr.io/myrepo/myimage:latest
+regshape manifest get -a acr.io/myrepo/myimage:latest
 
 # Print just the layers
-regshape manifest get -i acr.io/myrepo/myimage:latest --part layers
+regshape manifest get -a acr.io/myrepo/myimage:latest --part layers
 
 # Save raw manifest JSON to a file
-regshape manifest get -i acr.io/myrepo/myimage@sha256:abc... -o manifest.json
+regshape manifest get -a acr.io/myrepo/myimage@sha256:abc... -o manifest.json
 
 # Force a specific Accept header (useful for break mode testing)
-regshape manifest get -i acr.io/myrepo/myimage:latest \
+regshape manifest get -a acr.io/myrepo/myimage:latest \
   --accept application/vnd.oci.image.manifest.v1+json
 
 # Print raw response body without parsing (break mode verification)
-regshape --break manifest get -i acr.io/myrepo/myimage:latest --raw
+regshape --break manifest get -a acr.io/myrepo/myimage:latest --raw
 ```
 
 #### Output Format
@@ -203,7 +204,7 @@ without downloading the manifest body.
 
 #### Behavior
 
-1. Parse `--image-ref` to extract registry, repository, and tag or digest.
+1. Parse `--artifact` (or a legacy alias) to extract registry, repository, and tag or digest.
 2. Resolve credentials from the Docker credential store for the extracted registry.
 3. Issue `HEAD /v2/<repo>/manifests/<reference>` with the `Accept` header.
 4. On success, read `Docker-Content-Digest`, `Content-Type`, and
@@ -224,7 +225,7 @@ without downloading the manifest body.
 regshape auth login -r acr.io -u alice
 
 # Check if a manifest exists
-regshape manifest info -i acr.io/myrepo/myimage:latest
+regshape manifest info -a acr.io/myrepo/myimage:latest
 ```
 
 #### Output Format
@@ -241,7 +242,7 @@ Size:         1234
 
 ### `manifest descriptor`
 
-Return the OCI Descriptor for a given image reference as JSON.
+Return the OCI Descriptor for a given artifact reference as JSON.
 
 #### Options
 
@@ -255,7 +256,7 @@ Return the OCI Descriptor for a given image reference as JSON.
 
 #### Behavior
 
-1. Parse `--image-ref` to extract registry, repository, and tag or digest.
+1. Parse `--artifact` (or a legacy alias) to extract registry, repository, and tag or digest.
 2. Resolve credentials from the Docker credential store for the extracted registry.
 3. Issue `HEAD /v2/<repo>/manifests/<reference>` with the `Accept` header.
 4. On success, read `Docker-Content-Digest`, `Content-Type`, and `Content-Length`
@@ -280,10 +281,10 @@ another manifest (e.g. as the `subject` field or an entry in `manifests`).
 regshape auth login -r acr.io -u alice
 
 # Get the descriptor for a tag
-regshape manifest descriptor -i acr.io/myrepo/myimage:latest
+regshape manifest descriptor -a acr.io/myrepo/myimage:latest
 
 # Get the descriptor for a specific digest
-regshape manifest descriptor -i acr.io/myrepo/myimage@sha256:abc...
+regshape manifest descriptor -a acr.io/myrepo/myimage@sha256:abc...
 ```
 
 #### Output Format
@@ -318,7 +319,7 @@ Exactly one of `--file` or `--stdin` must be given.
 
 #### Behavior
 
-1. Parse `--image-ref` to extract registry, repository, and tag or digest.
+1. Parse `--artifact` (or a legacy alias) to extract registry, repository, and tag or digest.
 2. Resolve credentials from the Docker credential store for the extracted registry.
 3. Read the manifest body from `--file` or stdin.
 4. Infer `Content-Type` from the `mediaType` field in the JSON, unless
@@ -340,13 +341,13 @@ Exactly one of `--file` or `--stdin` must be given.
 regshape auth login -r acr.io -u alice
 
 # Push a manifest from a file
-regshape manifest put -i acr.io/myrepo/myimage:v2 --file manifest.json
+regshape manifest put -a acr.io/myrepo/myimage:v2 --file manifest.json
 
 # Push a manifest from stdin
-cat manifest.json | regshape manifest put -i acr.io/myrepo/myimage:v2 --stdin
+cat manifest.json | regshape manifest put -a acr.io/myrepo/myimage:v2 --stdin
 
 # Push with overridden Content-Type (break mode: wrong content type)
-regshape --break manifest put -i acr.io/myrepo/myimage:v2 \
+regshape --break manifest put -a acr.io/myrepo/myimage:v2 \
   --file manifest.json --content-type application/octet-stream
 ```
 
@@ -376,7 +377,7 @@ not accepted by most registries for delete operations).
 
 #### Behavior
 
-1. Parse `--image-ref` — must contain a digest reference (`@sha256:...`).
+1. Parse `--artifact` (or a legacy alias) — must contain a digest reference (`@sha256:...`).
    If a tag is given, exit with an error advising the user to use a digest.
 2. Resolve credentials from the Docker credential store for the extracted registry.
 3. Issue `DELETE /v2/<repo>/manifests/<digest>`.
@@ -388,7 +389,7 @@ not accepted by most registries for delete operations).
 |---|---|
 | 0 | Manifest deleted |
 | 1 | HTTP error, auth failure, or connection error |
-| 2 | `--image-ref` value is a tag reference, not a digest |
+| 2 | The target value is a tag reference, not a digest |
 
 #### Examples
 
@@ -397,7 +398,7 @@ not accepted by most registries for delete operations).
 regshape auth login -r acr.io -u alice
 
 # Delete by digest
-regshape manifest delete -i acr.io/myrepo/myimage@sha256:abc...
+regshape manifest delete -a acr.io/myrepo/myimage@sha256:abc...
 ```
 
 #### Output Format

@@ -30,4 +30,5 @@ to build your own tools. The CLI tool is built on top of the libraries and uses
 - [Docker Desktop integration](guides/docker-desktop-integration.md)
 - [Monitor live transfer progress](guides/live-transfer-progress.md)
 - [Library transfer callbacks](library/transfer-progress.md)
+- [Artifact options and legacy-flag migration](guides/artifact-options.md)
 - [Implemented capabilities and remaining work](project-state.md)

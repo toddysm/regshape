@@ -35,10 +35,11 @@ command help before using it with older packages.
 
 Legacy `--image-ref` / `-i` remains supported, with the help/documentation
 notice **Deprecated in 0.2; use --artifact / -a. Retained for compatibility.**
-There is no runtime warning or scheduled removal. Older examples below remain
-valid. Identical repeats select one target; different values fail with usage
+There is no runtime warning or scheduled removal. Older spellings remain
+valid; examples below prefer the new option. Identical repeats select one target; different values fail with usage
 exit 2 before credentials or network access. See the
-[artifact option design](artifact-options.md).
+[artifact option design](artifact-options.md) and
+[migration guide](../../docs/guides/artifact-options.md).
 
 | Subcommand | Accepted formats | Notes |
 |---|---|---|
@@ -74,7 +75,7 @@ List one page of tags, or opt into automatic traversal of all remaining pages.
 
 #### Behavior
 
-1. Parse `--image-ref` to extract registry and repository (tag or digest is
+1. Parse `--artifact` (or a legacy alias) to extract registry and repository (tag or digest is
    ignored if present).
 2. Resolve credentials from the Docker credential store for the extracted
    registry.
@@ -132,28 +133,28 @@ output or cursor encoding. See the library reference above for the exact grammar
 regshape auth login -r acr.io -u alice
 
 # List one page using registry defaults
-regshape tag list -i acr.io/myrepo/myimage
+regshape tag list -a acr.io/myrepo/myimage
 
 # Retrieve every tag (100 requested per page by default)
-regshape tag list -i acr.io/myrepo/myimage --all
+regshape tag list -a acr.io/myrepo/myimage --all
 
 # Retrieve all remaining tags after v1.5, requesting 10 per page
-regshape tag list -i acr.io/myrepo/myimage --all --n 10 --last v1.5
+regshape tag list -a acr.io/myrepo/myimage --all --n 10 --last v1.5
 
 # List with pagination (first 10 tags)
-regshape tag list -i acr.io/myrepo/myimage --n 10
+regshape tag list -a acr.io/myrepo/myimage --n 10
 
 # List tags after v1.5 (pagination cursor)
-regshape tag list -i acr.io/myrepo/myimage --n 10 --last v1.5
+regshape tag list -a acr.io/myrepo/myimage --n 10 --last v1.5
 
 # Output as JSON
-regshape tag list -i acr.io/myrepo/myimage --json
+regshape tag list -a acr.io/myrepo/myimage --json
 
 # Save tag list to a file
-regshape tag list -i acr.io/myrepo/myimage -o tags.txt
+regshape tag list -a acr.io/myrepo/myimage -o tags.txt
 
 # Save the complete aggregated response
-regshape tag list -i acr.io/myrepo/myimage --all --json -o tags.json
+regshape tag list -a acr.io/myrepo/myimage --all --json -o tags.json
 ```
 
 #### Output Format
@@ -209,7 +210,7 @@ Delete a tag from a repository.
 
 #### Behavior
 
-1. Parse `--image-ref` to extract registry, repository, and tag.
+1. Parse `--artifact` (or a legacy alias) to extract registry, repository, and tag.
 2. Reject digest references (`@sha256:...`) with exit code 2 — deleting by
    digest targets the manifest, not the tag.
 3. Resolve credentials from the Docker credential store for the extracted
@@ -223,7 +224,7 @@ Delete a tag from a repository.
 |---|---|
 | 0 | Tag deleted |
 | 1 | HTTP error (tag not found, auth failure, connection error) |
-| 2 | `--image-ref` is a digest reference (use `manifest delete` instead) |
+| 2 | The target is a digest reference (use `manifest delete` instead) |
 
 #### Examples
 
@@ -232,7 +233,7 @@ Delete a tag from a repository.
 regshape auth login -r acr.io -u alice
 
 # Delete a tag
-regshape tag delete -i acr.io/myrepo/myimage:v1.0
+regshape tag delete -a acr.io/myrepo/myimage:v1.0
 ```
 
 #### Output Format
