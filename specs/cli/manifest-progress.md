@@ -1,6 +1,6 @@
 # Manifest GET progress: functional requirements and engineering design
 
-- **Status:** Proposed revision 1; awaiting approval of this complete design and breakdown.
+- **Status:** Proposed revision 2; awaiting approval of this complete design and breakdown.
 - **Feature:** [#90](https://github.com/toddysm/regshape/issues/90).
 - **Design item:** [#101](https://github.com/toddysm/regshape/issues/101).
 - **Target:** [0.2](https://github.com/toddysm/regshape/milestone/1); not a release commitment.
@@ -82,13 +82,14 @@ extra network probes or corrupted result data.
 | R5 | Must | Existing options, aliases, output formatting, decoding, errors and auth behavior remain compatible. |
 | R6 | Must | Totals, percentage, rate and estimated remaining time are honest; no progress-only network requests. |
 | R7 | Must | Existing suppression, redraw limits, terminal sizing and diagnostic coordination are reused. |
-| R8 | Must | Response ownership, cancellation and primary-exception preservation are tested. |
+| R8 | Must | Response ownership, streamed cache/retry safety, cancellation and primary-exception preservation are tested. |
 | R9 | Must | Deterministic library, command and visible-frame tests protect new and existing progress. |
 | R10 | Must | Final user/API documentation and capability inventory accurately describe availability. |
 | R11 | Should | The event/display path can be reused by sequential full-artifact orchestration without a second renderer. |
 
-In scope: manifest GET observations, the shared display extension, command wiring
-and documentation. Not in scope: graph traversal or blob fetching
+In scope: manifest GET observations, the shared display extension, command wiring,
+narrow stream-safety fixes to optional transport caching/retries, and documentation.
+Not in scope: graph traversal or blob fetching
 ([#91](https://github.com/toddysm/regshape/issues/91)); new reference grammar
 ([#88](https://github.com/toddysm/regshape/issues/88)); credential-setup documentation
 ([#86](https://github.com/toddysm/regshape/issues/86)); automatic credential
@@ -209,6 +210,9 @@ not proof that the payload is a valid manifest or matches a digest.
 These are deterministic acceptance thresholds, not measured production adoption.
 There is no background usage collection. The owner can validate the experience
 against the examples before release; no release date or adoption target is known.
+The no-extra-probe guardrail is per logical fetch, not a promise of identical
+cache-hit counts: observed fetches bypass the optional live-response cache as
+specified in D3.1.
 
 ### 9. Pricing
 
@@ -341,6 +345,7 @@ existing command result/error handling; no progress on stdout
 | --- | --- | --- |
 | Additive manifest event types | [Shared library progress module](../../src/regshape/libs/progress.py) | R1, R2, R8: independent manifest contract and callback type |
 | Observed fetch / private text adapter | [Manifest operations](../../src/regshape/libs/manifests/operations.py) and [exports](../../src/regshape/libs/manifests/__init__.py) | R1, R5, R6, R8: streamed consumption, decoding, cleanup |
+| Stream-safe cache and retry ownership | [Transport middleware](../../src/regshape/libs/transport/middleware.py) | R6, R8: bypass live-stream caching, close discarded retry responses |
 | Display normalization / deferred finalization | [Shared CLI progress](../../src/regshape/cli/progress.py) | R2-R4, R7, R11: row identity and lifecycle |
 | Command orchestration | [Manifest CLI](../../src/regshape/cli/manifest.py) | R3-R5, R7, R8: parse/extract/write inside display lifetime |
 | Regression evidence | [Tests](../../src/regshape/tests/) | R9: library, frame and command-to-library coverage |
@@ -349,8 +354,9 @@ existing command result/error handling; no progress on stdout
 Reuse shared length/cleanup logic where semantics match. If extraction is needed,
 keep helpers private and domain-neutral; do not import a blob operation's private
 implementation into manifests or change blob error types. Audit intermediate
-streamed auth/redirect response ownership in the transport; any necessary cleanup
-fix must be narrowly scoped and regression-tested, not a new auth policy.
+streamed auth/redirect/retry response ownership in the transport; the cache and
+retry fixes in D3.1 belong to the library delivery item. Keep all transport
+changes narrowly scoped and regression-tested, not a new auth or retry policy.
 
 #### D2. Public Python contract
 
@@ -426,8 +432,36 @@ an observer exists and no fabricated event for command preflight validation.
 
 Close owned responses on success, HTTP error, stream/decode error, cancellation
 and callback failure. The operation owns the response returned to it; intermediate
-auth/redirect responses remain the client's responsibility. Buffered no-observer
-responses also receive explicit cleanup without changing their result data.
+auth/redirect/retry responses remain the client's responsibility. Buffered
+no-observer responses also receive explicit cleanup without changing their
+result data.
+
+#### D3.1. Stream-safe middleware
+
+The current optional cache stores a live `RegistryResponse`, including an unread
+stream. Consuming and closing that response makes a later cached fetch unsafe.
+For `request.stream=True`, bypass **both cache reads and writes**; do not
+prebuffer the stream merely to cache it. Never insert an unbuffered response
+(`body is None`) into this replayable-response cache. Preserve buffered GET cache
+keys, expiration and reuse. Two observed fetches are two logical network fetches
+with independent identities/responses, even if a buffered cache entry already
+exists. This is an intentional compatibility difference when caching is enabled,
+not an extra request solely for animation.
+
+For configured status-code retries, the retry middleware owns each streamed
+response it discards. Close it **before backoff or the next attempt**, without
+draining its error body. The final successful or exhausted response remains owned
+by the manifest operation. A close failure must not be hidden by retry handling;
+preserve an already-active primary exception, otherwise surface the cleanup
+failure instead of continuing silently. Preserve configured retry counts, status
+codes, backoff and exception policy; do not add partial-body resumption.
+Interruption during backoff must not leave the discarded response open.
+
+Read-only synthetic probes of the baseline reproduced both hazards: a repeated
+cached streamed GET raises `StreamConsumedError`, and a discarded streamed 503
+remains open before a successful retry. These are design evidence, not implemented
+fixes. Add repeated/mixed-mode fetch and retry-cleanup regressions in the library
+item, including other streaming callers affected by the shared middleware guard.
 
 #### D4. Byte and text semantics
 
@@ -507,11 +541,13 @@ The command still parses nonraw results and rejects unsupported/missing parts
 with its existing behavior. Output is still UTF-8 text with the existing newline
 rules; no atomic file replacement or stdout rollback is added.
 
-Keep content negotiation, middleware, credentials, request path, redirects and
-timeouts under the existing client. The only intentional request change is
-streamed consumption for observers, with the diagnostic implications in section
-11. Disabled rendering still observes the stream; omitted library callbacks do
-not. Existing blob/layout/Docker commands must retain their current behavior.
+Keep content negotiation, credentials, request path, redirects and timeouts under
+the existing client. Intentional transport changes are streamed consumption for
+observers, the optional-cache bypass and discarded-response cleanup in D3.1,
+with the diagnostic implications in section 11. Disabled rendering still observes
+the stream; omitted library callbacks do not. Existing blob/layout/Docker
+progress/output contracts remain unchanged; the shared stream-safety guard also
+applies to their optional caching/retry paths and must be regression-tested.
 
 Future #91 can observe each manifest fetch, perform its own required validation
 and storage, and explicitly complete that row. This does not yet implement graph
@@ -526,7 +562,7 @@ deduplication, descriptor verification, aggregate object counts or concurrency.
 | R5 / S1-S4 | D2, D4, D6 | Library/command items; tuple, decoding, aliases, result and exit-code comparisons |
 | R6 / S1, S2 | D3-D4 | Library/command items; length, rate and request-count assertions |
 | R7 / S2, S3 | D5, section 11 | Command item; suppression, diagnostics, throttling and width tests |
-| R8 / S3, S4 | D3, D5 | Both implementation items; callback/cancellation/cleanup fault injection |
+| R8 / S3, S4 | D3, D3.1, D5 | Library cache/retry regressions and both implementation items' callback/cancellation/cleanup fault injection |
 | R9 / all | PM-7 | Both implementation items plus required hosted regression gates |
 | R10 / all | Sections 7, 11, 14 and PM-6 | Final documentation item and later inventory close-out |
 | R11 / S4 | D2, D5-D6 | Stable identities and sequential reuse tests; #91 owns orchestration |
@@ -578,6 +614,8 @@ outside events and row labels; progress does not refresh expired credentials.
 | Invalid reference or raw+part | Existing preflight failure | Existing diagnostic/exit; no fake transfer row |
 | HTTP 401/404/other error | Existing typed error; close response | Failed row if started; existing diagnostic after cleanup |
 | Stream timeout/framing failure | Original request exception; close | Failed, never RECEIVED/Downloaded |
+| Repeated observed fetch with caching enabled | Bypass cache reads/writes; fresh owned response per logical fetch | Independent transfer row; no exhausted cached stream |
+| Retryable status discarded before another attempt | Close streamed response before backoff; preserve retry policy | Preparing until a usable response; cleanup failure/cancellation cannot leak discarded attempts |
 | Missing/compressed length | Unknown total; actual bytes | Byte-only progress; no false percentage/remaining time |
 | Inconsistent comparable length | Warning once; invalidate total, retain actual bytes | Unknown total; existing parsing/output policy decides success |
 | Empty or malformed payload | Raw/library text behavior unchanged | Nonraw parser failure stays Failed; raw may succeed |
@@ -599,7 +637,7 @@ handling, pagination, cold-start service or concurrent rendering is introduced.
 | Privacy | New data collection avoided; events omit payloads/headers; existing caller-owned logs only |
 | Dependencies | Requests decoding behavior: public-property adapter and dependency-environment tests |
 | Infrastructure/deployment | No infrastructure change; existing package pipeline only |
-| Resource lifecycle | Stream/error/observer cleanup: explicit ownership and fault-injection tests |
+| Resource lifecycle | Stream/error/observer/retry cleanup and no live-stream cache reuse: D3.1 ownership plus fault-injection/repeated-fetch tests |
 | Multi-tenancy/noisy neighbor | No hosted tenants; slow callbacks and large result memory remain caller-local |
 | Regression | Shared display/telemetry changes: all existing blob/layout/Docker regression suites |
 
@@ -613,6 +651,9 @@ output and suppressing request-layer body previews for streamed CLI fetches are
 intentional observable changes. `--no-progress` disables animation, not streaming
 or request-preview suppression. Explain these differences in final documentation.
 Library callers omit the callback to retain buffered request behavior. Existing
+buffered cache behavior is also retained. With caching enabled, observed fetches
+intentionally bypass it and can perform more network requests than buffered
+cache hits; disabling animation does not disable that safety rule. Existing
 artifact alias deprecation text is unchanged. Shared regressions gate release.
 
 ### G. Security risk management
@@ -664,7 +705,8 @@ policies are outside this sequential feature.
 Preserve blob digest validation, per-blob deduplication/counts and finalization;
 layout/Docker preparation and child propagation; stderr logging/telemetry
 coordination; failed final flush behavior; artifact option aliases and conflicts;
-manifest raw/part/file/Accept/output semantics. Tests must exercise real command
+manifest raw/part/file/Accept/output semantics; buffered cache reuse and safe
+stream bypass; discarded retry-response closure before waits. Tests must exercise real command
 orchestration with a mocked streamed transport, not only a mocked final tuple.
 Review changed source documentation alongside behavior without rewriting
 unrelated legacy declarations.
@@ -675,7 +717,8 @@ Before delivery, this document/inventory proposal can be withdrawn without runti
 effect. After delivery, callers can disable animation with `--no-progress`, but
 that does not roll back streaming; library callers can omit the callback.
 A release rollback/revert of command wiring restores buffered CLI consumption,
-subject to normal authorization and validation. Once public event exports ship,
+subject to normal authorization and validation; retain the shared stream-safety
+fixes rather than reintroducing known cache/retry hazards. Once public event exports ship,
 do not remove them in an unrelated patch. There is no stored-data migration to
 undo; already emitted stdout or partial files cannot be transactionally undone.
 
@@ -684,7 +727,7 @@ undo; already emitted stdout or partial files cannot be transactionally undone.
 | Order | Work item | Dependencies | Proposed branch | Relative effort |
 | --- | --- | --- | --- | --- |
 | 1 | [#101: design and Planned inventory](https://github.com/toddysm/regshape/issues/101) | Existing merged foundations | `prd/manifest-get-progress-fd2ca782` | Small, document review and checks |
-| 2 | [#105: library observations](https://github.com/toddysm/regshape/issues/105) | #101 merged and Build authorized | `feature/manifest-get-progress/library-observations-fd2ca782` | Medium, including decoding/lifecycle tests |
+| 2 | [#105: library observations](https://github.com/toddysm/regshape/issues/105) | #101 merged and Build authorized | `feature/manifest-get-progress/library-observations-fd2ca782` | Medium, including decoding/lifecycle and transport cache/retry tests |
 | 3 | [#104: renderer and command](https://github.com/toddysm/regshape/issues/104) | #105 | `feature/manifest-get-progress/command-renderer-fd2ca782` | Medium, highest shared-regression risk |
 | 4 | [#102: final user documentation](https://github.com/toddysm/regshape/issues/102) | #105 and #104 | `feature/manifest-get-progress/user-docs-fd2ca782` | Small, including examples/link validation |
 
@@ -712,6 +755,13 @@ Library tests cover:
   manifest/index and raw non-image payloads.
 - HTTP errors, auth retries, both transport modes, interruption and callback/
   response-close failures, with primary exception identity and closure assertions.
+- Repeated observed fetches with caching enabled, including a warm buffered
+  cache: each stream is fresh, consumable and closed, with no cached unbuffered
+  response. Repeated no-observer fetches retain buffered cache reuse.
+- Retryable 5xx then success, repeated failures through exhaustion, backoff
+  interruption and discarded-response close failure: close discarded streams
+  before waiting/retrying and leave the final response for operation cleanup.
+  Exercise shared blob-stream paths without changing retry/backoff policy.
 
 Command/display tests cover:
 
