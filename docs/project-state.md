@@ -2,21 +2,22 @@
 
 <!-- doc-type: overview -->
 
-Reconciled on **2026-11-03** against
-[main at a842f97](https://github.com/toddysm/regshape/commit/a842f971eeec2749789f2ddfa2044ec1295dd8cc).
+Reconciled on **2026-11-04** against
+[main at 8da18e3](https://github.com/toddysm/regshape/commit/8da18e32219b64c06b836bd99e7133bc3b51efee).
 The original baseline was captured on 2026-10-30 at
 [ed17d2e](https://github.com/toddysm/regshape/commit/ed17d2eef64da73528998e5c0917dff4e91820c5);
-unchanged capability evidence is retained below, while live progress and its
-required documentation are now merged.
+unchanged capability evidence is retained below, while live progress and
+artifact-oriented command options, including their required documentation,
+are merged.
 This inventory distinguishes implemented behavior from partial capabilities,
 unmerged proposals, and planned work. It is a dated snapshot, not an assertion
 that every registry or platform has been tested.
 
-Planning update on **2026-11-04**: artifact-oriented option naming is in design
-for 0.2 under [#87](https://github.com/toddysm/regshape/issues/87), with its
-[functional/engineering specification](../specs/cli/artifact-options.md).
-The naming direction is selected; the complete design and breakdown await
-approval. No new artifact flags are implemented by this planning update.
+Artifact-oriented option naming is implemented under
+[#87](https://github.com/toddysm/regshape/issues/87). The approved
+[functional/engineering specification](../specs/cli/artifact-options.md),
+shared support, eight-command integration and final user documentation have
+all merged; the four required child issues are closed and unblocked.
 
 Tracking is **issues-only** because Project access is unavailable in this
 workspace. The linked issues and pull requests remain authoritative for newer
@@ -24,7 +25,7 @@ changes. Live-progress design revision 2 remains in its feature issue, not a
 separate design document. All five required implementation/documentation items
 are closed and no longer dependency-blocked.
 
-**Implemented does not mean released.** Live progress targets the open
+**Implemented does not mean released.** Live progress and artifact options target the open
 [0.2 milestone](https://github.com/toddysm/regshape/milestone/1); this work did
 not publish a release or change the package version.
 
@@ -61,7 +62,7 @@ the first version of every operation in that row.
 | Homebrew distribution and release-driven formula updates | Partial | [Tracker #63](https://github.com/toddysm/regshape/issues/63), [remaining documentation fix #62](https://github.com/toddysm/regshape/issues/62) | - | - | [How-to: Homebrew installation](guides/homebrew-install.md) | - |
 | OCI image-specification guidance for the development skill | In progress | [#66](https://github.com/toddysm/regshape/issues/66), [open #67](https://github.com/toddysm/regshape/pull/67) | [Issue requirements: #66](https://github.com/toddysm/regshape/issues/66) | [Current development skill](../.github/skills/regshape-dev/SKILL.md) | - | - |
 | Live progress for blob get/upload and layout/Docker push | Implemented | [Feature #72](https://github.com/toddysm/regshape/issues/72), merged [#80](https://github.com/toddysm/regshape/pull/80), [#81](https://github.com/toddysm/regshape/pull/81), [#82](https://github.com/toddysm/regshape/pull/82), [#83](https://github.com/toddysm/regshape/pull/83), [#84](https://github.com/toddysm/regshape/pull/84) | [Lightweight design: #72, revision 2](https://github.com/toddysm/regshape/issues/72) | [Developer reference: transfer callbacks](library/transfer-progress.md), [API reference: blobs](../specs/operations/blobs.md) | [How-to: live transfer progress](guides/live-transfer-progress.md) | 2026-11-03 |
-| Artifact-oriented CLI options with compatible legacy aliases | In progress | [Feature #87](https://github.com/toddysm/regshape/issues/87), [design #92](https://github.com/toddysm/regshape/issues/92), [support #93](https://github.com/toddysm/regshape/issues/93), [commands #94](https://github.com/toddysm/regshape/issues/94), [docs #95](https://github.com/toddysm/regshape/issues/95) | [Functional requirements: artifact options](../specs/cli/artifact-options.md#part-i-functional-requirements) | [Engineering design: artifact options](../specs/cli/artifact-options.md#part-ii-engineering-design) | - | - |
+| Artifact-oriented CLI options with compatible legacy aliases | Implemented | [Feature #87](https://github.com/toddysm/regshape/issues/87), merged [#96](https://github.com/toddysm/regshape/pull/96), [#97](https://github.com/toddysm/regshape/pull/97), [#98](https://github.com/toddysm/regshape/pull/98), [#99](https://github.com/toddysm/regshape/pull/99) | [Functional requirements: artifact options](../specs/cli/artifact-options.md#part-i-functional-requirements) | [Engineering design: artifact options](../specs/cli/artifact-options.md#part-ii-engineering-design), [API source: reference parsers](../src/regshape/libs/refs.py) | [How-to: artifact options and migration](guides/artifact-options.md) | 2026-11-04 |
 
 ## Evidence and important boundaries
 
@@ -128,7 +129,7 @@ telemetry events to a log file:
 
 ```bash
 regshape --log-file telemetry.log tag list \
-  -i registry.example.com/team/image --json \
+  -a registry.example.com/team/image --json \
   --time-methods --time-scenarios --metrics --debug-calls \
   --telemetry-format json
 ```
@@ -164,6 +165,28 @@ documentation item [#77](https://github.com/toddysm/regshape/issues/77).
 The [user guide](guides/live-transfer-progress.md) contains single-row snapshots,
 output-channel rules, retry/error semantics, and supported command examples.
 
+### Artifact-oriented options and migration
+
+The eight manifest/tag/referrer selectors now prefer `--artifact / -a`.
+Legacy `--image-ref / -i` remains functional but is deprecated in 0.2
+help/documentation, with no runtime warning or scheduled removal date.
+Identical repeated targets execute once; different raw values fail with a
+generic usage error before credentials or registry requests.
+
+The shared [option helper](../src/regshape/cli/options.py) preserves existing
+command parameter names, result schemas and operation semantics. The additive
+`parse_artifact_ref` entry point preserves the old
+`parse_image_ref(image_ref=...)` interface and parser grammar.
+Docker's local-image `--image / -i`, layout layer `--index / -i`, destination
+option names, and blob split target flags remain unchanged.
+
+The [migration guide](guides/artifact-options.md) covers the exact command
+matrix, old/new spellings, errors and Python usage. This does not implement
+full artifact pull ([#91](https://github.com/toddysm/regshape/issues/91)),
+canonical-reference redesign ([#88](https://github.com/toddysm/regshape/issues/88)),
+or manifest GET progress ([#90](https://github.com/toddysm/regshape/issues/90)).
+Those remain separate planned work.
+
 ### Release and Homebrew state
 
 The [release workflow](../.github/workflows/publish.yml) implements publication
@@ -182,8 +205,9 @@ text in that tracker should not be read as reopening already closed work.
 ## Validation baseline and maintenance
 
 The [test workflow](../.github/workflows/tests.yml) covers Python 3.10, 3.11,
-and 3.12. The final progress-documentation head passed
-**1,601 tests per version** in [run 41583659058](https://github.com/toddysm/regshape/actions/runs/41583659058),
+and 3.12. The final artifact-documentation head passed
+**1,943 tests per version**, plus **360 minimum-Click 8.1.0 compatibility tests**
+on Python 3.10, in [run 41772830385](https://github.com/toddysm/regshape/actions/runs/41772830385),
 with successful Python/Actions CodeQL analyses and current-head agent review.
 Its signed merge has the same tree as the tested head. The existing auth-command
 Click deprecation warning remains unrelated to this feature.
