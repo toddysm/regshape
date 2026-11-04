@@ -228,12 +228,17 @@ def _raise_for_manifest_error(
     or :class:`~regshape.libs.errors.AuthError` with a descriptive message
     parsed from the OCI error JSON body.
 
+    Read error payloads before tolerant parsing so framing/read failures retain
+    their original exception instead of being mistaken for malformed error JSON.
+
     :raises AuthError: For 401.
     :raises ManifestError: For all other non-2xx status codes.
+    :raises requests.exceptions.RequestException: If the error body cannot be read.
     """
     if 200 <= response.status_code < 300:
         return
 
+    _ = response.content
     detail = (
         OciErrorResponse.from_response(response).first_detail() or response.text[:200]
     )

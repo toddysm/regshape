@@ -86,6 +86,8 @@ Existing authentication/retry behavior is retained, with discarded streamed
 responses closed before authentication exchange or retry backoff. Post-response
 diagnostic failures close an acquired stream before it can be handed to the
 operation, preserving the original exception if cleanup also fails.
+Non-2xx bodies are read before tolerant OCI error parsing, so framing/read
+failures propagate unchanged rather than being swallowed as malformed error JSON.
 
 Streamed request debug retains its existing schema: absent body preview and
 `body_size: 0` mean no body captured at that layer, not an empty payload.

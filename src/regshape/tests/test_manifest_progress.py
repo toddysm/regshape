@@ -920,3 +920,41 @@ def test_immutable_primary_survives_cleanup_and_logging_failure() -> None:
         get_manifest(client(), REPO, "v1", ACCEPT, progress_callback=lambda event: None)
     assert caught.value is primary and primary.__cause__ is cause
     response.close()
+
+
+@pytest.mark.parametrize("status", [404, 500])
+def test_truncated_error_body_preserves_original_transport_failure(status: int) -> None:
+    """Tolerant OCI error parsing must not swallow a live response framing failure."""
+    response = StreamResponse(b"", status, {"Content-Length": "100"})
+    response.raw.close()
+    response.raw = HTTPResponse(
+        body=io.BytesIO(b'{"errors":['),
+        headers={"Content-Length": "100"},
+        preload_content=False,
+        enforce_content_length=True,
+    )
+    original_iterator = response.iter_content
+    failures: list[requests.exceptions.RequestException] = []
+    events: list[ManifestProgress] = []
+
+    def chunks(chunk_size: int = 1, decode_unicode: bool = False) -> Iterator[bytes]:
+        """Retain the actual Requests exception instance from the first body read."""
+        assert not decode_unicode
+        try:
+            yield from original_iterator(chunk_size=chunk_size)
+        except requests.exceptions.RequestException as error:
+            failures.append(error)
+            raise
+
+    with (
+        patch("requests.request", return_value=response),
+        patch.object(response, "iter_content", side_effect=chunks) as iterate,
+        pytest.raises(requests.exceptions.ChunkedEncodingError) as caught,
+    ):
+        get_manifest(client(), REPO, "v1", ACCEPT, progress_callback=events.append)
+    assert len(failures) == 1 and caught.value is failures[0]
+    assert iterate.call_count == response.close_calls == 1
+    assert [event.phase for event in events] == [
+        ManifestPhase.PREPARING,
+        ManifestPhase.FAILED,
+    ]
