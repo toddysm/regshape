@@ -195,7 +195,9 @@ matrix, old/new spellings, errors and Python usage. This does not implement
 full artifact pull ([#91](https://github.com/toddysm/regshape/issues/91)),
 canonical-reference redesign ([#88](https://github.com/toddysm/regshape/issues/88)),
 or manifest GET progress ([#90](https://github.com/toddysm/regshape/issues/90)).
-Those remain separate planned work.
+Full artifact pull and canonical-reference redesign remain Planned. Manifest
+GET progress is now In progress under its separately authorized library item;
+it is not part of the completed artifact-option work.
 
 ### Release and Homebrew state
 
