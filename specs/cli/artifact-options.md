@@ -1,14 +1,15 @@
 # Artifact-oriented reference options: functional and engineering specification
 
-- Status: proposed design, revision 1; implementation has not started.
+- Status: approved design, revision 1; shared support is being implemented in
+  #93. Production command integration and user documentation remain pending.
 - Feature: [#87](https://github.com/toddysm/regshape/issues/87).
 - Design work: [#92](https://github.com/toddysm/regshape/issues/92).
 - Target: 0.2; this specification does not publish or schedule a release.
 - Updated: 2026-11-04 (UTC).
 - Source baseline: [70b060d](https://github.com/toddysm/regshape/commit/70b060d8938ea96e4915bef658725212b5ea5f9b).
 - Validation mode: hosted GitHub Actions and agent-only reviews.
-- Approval: the owner selected the naming/deprecation direction; this complete
-  design and breakdown still require approval before implementation.
+- Approval: the owner approved the complete design and breakdown;
+  [design PR #96](https://github.com/toddysm/regshape/pull/96) is merged.
 
 The repository's `specs/` tree is the home for functional and engineering
 specifications. This document combines product requirements with the technical
@@ -343,7 +344,8 @@ to introduce as a naming change.
 
 #### D1. Shared Click helper
 
-Add a small `artifact_option` decorator in proposed `src/regshape/cli/options.py`.
+The shared [artifact_option](../../src/regshape/cli/options.py) decorator has
+the signature `artifact_option(*, help_text: str, metavar: str = "ARTIFACT")`.
 It accepts operation-specific help and an optional metavar (default `ARTIFACT`;
 tag list uses `REPOSITORY`). It declares `--artifact`, `-a`, `--image-ref`, `-i`
 with the explicit destination name `image_ref`, `required=True`, text values,
@@ -582,22 +584,26 @@ service rollout is required. The scope remains one small PR per delivery item.
 6. Run targeted tests first, scoped type/lint/security checks, and existing
    [hosted tests](../../.github/workflows/tests.yml) on every implementation PR.
    The workflow installs `.[dev]` and runs `python -m pytest -q` on
-   Python 3.10/3.11/3.12. All required checks/reviews remain binding.
+   Python 3.10/3.11/3.12. A focused `click-minimum` job also installs
+   `click==8.1.0` on Python 3.10 and runs the shared-option and reference tests,
+   retaining the declared dependency floor. All required checks/reviews remain binding.
 7. Documentation-only validation checks relative links/anchors, help and
    signatures, examples and whitespace. No docs builder/linter is currently
    configured; do not claim an unavailable build was run.
 
 All new validation can use synthetic inputs without real credentials, registry
 access or a Docker daemon. Mocked tests are not live-registry certification.
-The current design experiment proved alias/conflict behavior with Click 8.3.1;
-it is not production wiring or minimum-version certification.
+The design experiment proved alias/conflict behavior with Click 8.3.1.
+Shared-support tests now exercise the implementation with both Click 8.1.0
+and 8.3.1 locally; the targeted hosted job covers the minimum dependency on
+Python 3.10. This foundation is not production command wiring.
 
 ### O. Next actions and native work breakdown
 
-| Item | Depends on | Planned branch | State at design submission |
+| Item | Depends on | Planned branch | Current delivery state |
 | --- | --- | --- | --- |
-| [#92: design and inventory](https://github.com/toddysm/regshape/issues/92) | Owner approval before merge | `prd/artifact-neutral-cli-fd2ca782` | Design PR review |
-| [#93: shared support](https://github.com/toddysm/regshape/issues/93) | #92 approved/merged | `feature/artifact-neutral-cli/shared-support-fd2ca782` | Blocked |
+| [#92: design and inventory](https://github.com/toddysm/regshape/issues/92) | Owner approval before merge | `prd/artifact-neutral-cli-fd2ca782` | Done: #96 merged |
+| [#93: shared support](https://github.com/toddysm/regshape/issues/93) | #92 approved/merged | `feature/artifact-neutral-cli/shared-support-fd2ca782` | In progress |
 | [#94: command integration](https://github.com/toddysm/regshape/issues/94) | #93 | `feature/artifact-neutral-cli/command-aliases-fd2ca782` | Blocked |
 | [#95: final user docs](https://github.com/toddysm/regshape/issues/95) | #93 and #94 | `feature/artifact-neutral-cli/migration-docs-fd2ca782` | Blocked |
 
