@@ -25,7 +25,9 @@ Manifest GET progress is **In progress** under
 and native breakdown are recorded in
 [design PR #106](https://github.com/toddysm/regshape/pull/106); runtime
 implementation of [library observations #105](https://github.com/toddysm/regshape/issues/105)
-is authorized. Command integration and final user documentation remain pending.
+is merged through [#108](https://github.com/toddysm/regshape/pull/108).
+Command integration is tracked under [#104](https://github.com/toddysm/regshape/issues/104);
+final user documentation remains required under [#102](https://github.com/toddysm/regshape/issues/102).
 This status does not extend the already-implemented blob progress claim to manifests.
 
 Tracking is **issues-only** because Project access is unavailable in this

@@ -92,7 +92,8 @@ failures propagate unchanged rather than being swallowed as malformed error JSON
 Streamed request debug retains its existing schema: absent body preview and
 `body_size: 0` mean no body captured at that layer, not an empty payload.
 Request timing ends at headers; operation timing includes consumption.
-Library observations alone do not add a manifest command progress display.
+The library remains terminal-free; [manifest command rendering](../cli/manifest.md#manifest-get)
+is a separate caller of this observation contract.
 
 **Decorator:** `@track_time`
 

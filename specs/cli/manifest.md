@@ -70,7 +70,8 @@ Fetch the manifest for a given artifact reference.
 | `--accept` | | string | all OCI+Docker types | Set a specific `Accept` header (overrides the default multi-type header) |
 | `--part` | | choice | none | Extract a single field from the parsed model: `config`, `layers`, `subject`, or `annotations` |
 | `--output` | `-o` | path | stdout | Write manifest (or extracted part) to this file instead of stdout |
-| `--raw` | | flag | false | Skip model parsing; print the raw response body as-is (useful for break mode verification) |
+| `--raw` | | flag | false | Skip model parsing; print decoded response text with the existing newline behavior (not byte-exact export) |
+| `--no-progress` | | flag | false | Disable interactive stderr progress without changing streamed consumption or telemetry |
 | `--time-methods` | | flag | false | Print execution time for individual method calls |
 | `--time-scenarios` | | flag | false | Print execution time for multi-step workflows |
 | `--debug-calls` | | flag | false | Print request/response headers for each HTTP call |
@@ -92,6 +93,28 @@ Fetch the manifest for a given artifact reference.
    - `subject` → the subject `Descriptor` as a JSON object (error if absent)
    - `annotations` → the annotations dict as a JSON object (error if absent)
 7. If `--output` is given, write to that file; otherwise write to stdout.
+
+The command observes actual response-byte consumption and updates one persistent
+`Manifest` or `Index` row on interactive stderr. Unknown/encoded lengths show
+bytes without a fabricated percentage or remaining-time estimate. Small responses
+add no artificial delay. Receipt is not command success: the same row advances
+through optional **Processing** and **Writing**, and becomes **Downloaded** only
+after required output and in-context telemetry succeed. Parsing/field/output
+failure becomes **Failed**, while interruption becomes **Cancelled**.
+
+Before stdout output, the row is cleared and suspended through stderr, then
+restored below the result. Its logical identity is unchanged even if the terminal
+position moves. Partial output is not erased or rolled back on failure. File
+output retains its UTF-8/newline semantics; progress controls never enter stdout,
+saved manifests or log files.
+
+`--no-progress`, nonterminal stderr and structured telemetry suppress animation.
+Ordinary manifest JSON on stdout does not suppress it. The command still streams
+when animation is off. Request diagnostics therefore retain streaming semantics:
+no captured body preview (`body_size: 0` is not actual payload size), and
+request timing ends at headers; operation/scenario timing includes consumption.
+No extra HEAD is issued for progress, and no new digest-validation guarantee is
+introduced. See [library observations](../../docs/library/transfer-progress.md#manifest-receive-observations).
 
 The default `Accept` header value sent when `--accept` is not set:
 

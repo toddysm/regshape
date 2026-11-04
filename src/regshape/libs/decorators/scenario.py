@@ -15,6 +15,8 @@
 import functools
 import time
 
+from regshape.libs._http import report_secondary_failure
+
 
 def track_scenario(name: str):
     """
@@ -37,8 +39,9 @@ def track_scenario(name: str):
             method  store_credentials                             0.045s
         ───────────────────────────────────────────────────────────────────
 
-    After rendering, :attr:`~TelemetryConfig.method_timings` is cleared so
-    that each scenario produces exactly one block.
+    Timings and metrics are consumed before rendering so a failed sink cannot
+    trigger duplicate emission during outer cleanup. Diagnostic failures preserve
+    an already-active workflow exception.
 
     :param name: Human-readable scenario name (e.g., ``"chunked blob upload"``)
     :type name: str
@@ -46,8 +49,10 @@ def track_scenario(name: str):
     :rtype: callable
     """
     def decorator(func):
+        """Bind one workflow to the existing scenario name and telemetry configuration."""
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
+            """Emit one summary without replacing an active workflow failure."""
             # Import here to avoid circular import at module load time
             from regshape.libs.decorators import get_telemetry_config
             from regshape.libs.decorators.output import print_telemetry_block
@@ -55,19 +60,28 @@ def track_scenario(name: str):
             if not config.time_scenarios_enabled:
                 return func(*args, **kwargs)
             start = time.perf_counter()
+            primary_error: BaseException | None = None
             try:
                 result = func(*args, **kwargs)
+            except BaseException as error:
+                primary_error = error
+                raise
             finally:
-                elapsed = time.perf_counter() - start
-                metrics = config.metrics if config.metrics_enabled else None
-                print_telemetry_block(
-                    name, elapsed, list(config.method_timings), config.output,
-                    metrics=metrics,
-                )
-                config.method_timings.clear()
-                if config.metrics_enabled:
-                    from regshape.libs.decorators.metrics import PerformanceMetrics
-                    config.metrics = PerformanceMetrics()
+                try:
+                    elapsed = time.perf_counter() - start
+                    metrics = config.metrics if config.metrics_enabled else None
+                    timings = list(config.method_timings)
+                    config.method_timings.clear()
+                    if config.metrics_enabled:
+                        from regshape.libs.decorators.metrics import PerformanceMetrics
+                        config.metrics = PerformanceMetrics()
+                    print_telemetry_block(
+                        name, elapsed, timings, config.output, metrics=metrics,
+                    )
+                except BaseException as diagnostic_error:
+                    if primary_error is None:
+                        raise
+                    report_secondary_failure(primary_error, diagnostic_error, "Scenario telemetry")
             return result
         return wrapper
     return decorator
