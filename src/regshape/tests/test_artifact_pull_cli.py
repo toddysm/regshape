@@ -17,6 +17,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
+from urllib.parse import urlsplit
 
 import pytest
 import requests
@@ -128,6 +129,12 @@ def _invoke(
 def _rows(console: ArtifactConsole) -> list[str]:
     """Select retained object rows, excluding diagnostics, local phases and the result summary."""
     return [row for row in console.terminal.rows if row.startswith(("Index ", "Manifest ", "Blob "))]
+
+
+def _origin(url: str | None) -> tuple[str, str | None, int | None]:
+    """Compare synthetic request origins by parsed scheme/host/port, never URL prefixes."""
+    parsed = urlsplit(url or "")
+    return parsed.scheme, parsed.hostname, parsed.port
 
 
 def _observation(
@@ -762,9 +769,9 @@ def test_registry_external_token_realm_and_foreign_challenge_guard(
     ):
         result = runner.invoke(regshape, ["artifact", "pull", "-a", _SOURCE, "-o", str(output)])
     assert result.exit_code == int(foreign), result.exception
-    assert len([item for item in wire.sent if (item.url or "").startswith(TOKEN_ORIGIN)]) == 1
-    assert all("Authorization" not in item.headers for item in wire.sent if (item.url or "").startswith(CDN))
-    assert not any((item.url or "").startswith("https://foreign.example") for item in wire.sent)
+    assert len([item for item in wire.sent if _origin(item.url) == _origin(TOKEN_ORIGIN)]) == 1
+    assert all("Authorization" not in item.headers for item in wire.sent if _origin(item.url) == _origin(CDN))
+    assert all(_origin(item.url) != _origin("https://foreign.example") for item in wire.sent)
     assert "synthetic-pass" not in console.err.text + console.out.text
     if foreign:
         assert "response origin" in console.err.text and not list(tmp_path.iterdir())
@@ -903,7 +910,7 @@ def test_alias_and_sha512_insecure_command_contract(
         ])
     assert result.exit_code == 0, result.exception
     assert json.loads(result.stdout)["root"]["digest"] == address(root, "sha512")
-    assert all(call.args[1].startswith("http://registry.example/") for call in send.call_args_list)
+    assert all(_origin(call.args[1]) == _origin("http://registry.example") for call in send.call_args_list)
 
 
 def test_conflicting_aliases_do_not_construct_a_client(runner: CliRunner, tmp_path: Path) -> None:
