@@ -44,7 +44,7 @@ from regshape.libs.errors import ArtifactError
 from regshape.libs.manifests import download_manifest
 from regshape.libs.manifests.download import _validate_inputs
 from regshape.libs.models.descriptor import Descriptor
-from regshape.libs.progress import ManifestProgress, TransferProgress
+from regshape.libs.progress import ManifestKind, ManifestProgress, TransferProgress
 from regshape.libs.transport import RegistryClient
 
 _TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
@@ -118,8 +118,9 @@ class _Observation:
                 self.owner.failed = True
 
     def manifest(self, event: ManifestProgress) -> None:
-        """Adapt byte receipt without allocating another identity for discovered root metadata."""
-        self.kind = event.kind.value
+        """Retain a descriptor-known kind when receipt has no recognized type, without changing identity."""
+        if event.kind != ManifestKind.UNKNOWN:
+            self.kind = event.kind.value
         self.count, self.total = event.bytes_completed, event.total_bytes
         self.emit(event.phase.value)
 

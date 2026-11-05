@@ -99,6 +99,31 @@ def test_subject_first_nested_shared_and_moving_tag(tmp_path: Path) -> None:
     validate_layout(tmp_path / "out", recursive=True)
 
 
+@pytest.mark.parametrize("header", [None, "application/json", "application/octet-stream"])
+def test_child_progress_preserves_descriptor_kind(tmp_path: Path, header: str | None) -> None:
+    """Preparing/transfer/receipt retain known child index/manifest types when HTTP types are generic."""
+    config = b"config"
+    manifest = document(config=edge(config))
+    child_index = document(children=[edge(manifest, OCI_MANIFEST)])
+    root = document(children=[edge(child_index, OCI_INDEX)])
+    registry = Registry(root, {address(raw): raw for raw in (config, manifest, child_index)})
+    if header is not None:
+        for raw in (manifest, child_index):
+            registry.headers_by_reference[address(raw)] = {"Content-Type": header}
+    events = []
+    pull_artifact(
+        registry, "repo", "moving", tmp_path / "out", progress_callback=events.append,
+    )
+    for raw, kind in ((manifest, "manifest"), (child_index, "index")):
+        observations = [event for event in events if event.digest == address(raw)]
+        assert {event.kind for event in observations} == {kind}
+        assert {event.phase for event in observations} >= {
+            "preparing", "transferring", "received", "verifying", "stored",
+        }
+        assert len({event.transfer_id for event in observations}) == 1
+    assert events[0].digest is None and events[0].kind == "unknown"
+
+
 @pytest.mark.parametrize("index_root", [True, False])
 def test_nested_subject_manifests_before_referring_content(tmp_path: Path, index_root: bool) -> None:
     """Manifest and index roots copy nested subject documents before their own config/layers."""
