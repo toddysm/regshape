@@ -2,8 +2,8 @@
 
 <!-- doc-type: overview -->
 
-Reconciled on **2026-11-04** against
-[main at 8e6032c](https://github.com/toddysm/regshape/commit/8e6032c09519e1f46d3df73e25f27645bdb264d4).
+Manifest progress reconciled on **2026-11-05 (UTC)** against
+[main at 79b3c25](https://github.com/toddysm/regshape/commit/79b3c2537cbcf1c19f862c7a9ca3f5d710f2b2b1).
 The original baseline was captured on 2026-10-30 at
 [ed17d2e](https://github.com/toddysm/regshape/commit/ed17d2eef64da73528998e5c0917dff4e91820c5);
 unchanged capability evidence is retained below, while live progress and
@@ -19,7 +19,7 @@ Artifact-oriented option naming is implemented under
 shared support, eight-command integration and final user documentation have
 all merged; the four required child issues are closed and unblocked.
 
-Manifest GET progress is **In progress** under
+Manifest GET progress is **Implemented** under
 [#90](https://github.com/toddysm/regshape/issues/90). Its
 [approved functional/engineering design](../specs/cli/manifest-progress.md)
 and native breakdown are recorded in
@@ -28,14 +28,14 @@ implementation of [library observations #105](https://github.com/toddysm/regshap
 is merged through [#108](https://github.com/toddysm/regshape/pull/108).
 Command integration [#104](https://github.com/toddysm/regshape/issues/104) is merged
 through [#109](https://github.com/toddysm/regshape/pull/109). Final user documentation
-is delivered for review under [#102](https://github.com/toddysm/regshape/issues/102).
-The feature remains In progress until that documentation and a separately
-authorized inventory close-out merge. Runtime manifest progress is present, but
-its final delivery is not yet complete; no release is implied.
+[#102](https://github.com/toddysm/regshape/issues/102) is merged through
+[#110](https://github.com/toddysm/regshape/pull/110). All four required design,
+implementation and documentation children are closed and unblocked. This
+inventory close-out records the delivered capability; no release is implied.
 
 Tracking is **issues-only** because Project access is unavailable in this
 workspace. The linked issues and pull requests remain authoritative for newer
-changes. Live-progress design revision 2 remains in its feature issue, not a
+changes. Blob/image live-progress design revision 2 remains in its feature issue, not a
 separate design document. All five required implementation/documentation items
 are closed and no longer dependency-blocked.
 
@@ -77,7 +77,7 @@ the first version of every operation in that row.
 | OCI image-specification guidance for the development skill | In progress | [#66](https://github.com/toddysm/regshape/issues/66), [open #67](https://github.com/toddysm/regshape/pull/67) | [Issue requirements: #66](https://github.com/toddysm/regshape/issues/66) | [Current development skill](../.github/skills/regshape-dev/SKILL.md) | - | - |
 | Live progress for blob get/upload and layout/Docker push | Implemented | [Feature #72](https://github.com/toddysm/regshape/issues/72), merged [#80](https://github.com/toddysm/regshape/pull/80), [#81](https://github.com/toddysm/regshape/pull/81), [#82](https://github.com/toddysm/regshape/pull/82), [#83](https://github.com/toddysm/regshape/pull/83), [#84](https://github.com/toddysm/regshape/pull/84) | [Lightweight design: #72, revision 2](https://github.com/toddysm/regshape/issues/72) | [Developer reference: transfer callbacks](library/transfer-progress.md), [API reference: blobs](../specs/operations/blobs.md) | [How-to: live transfer progress](guides/live-transfer-progress.md) | 2026-11-03 |
 | Artifact-oriented CLI options with compatible legacy aliases | Implemented | [Feature #87](https://github.com/toddysm/regshape/issues/87), merged [#96](https://github.com/toddysm/regshape/pull/96), [#97](https://github.com/toddysm/regshape/pull/97), [#98](https://github.com/toddysm/regshape/pull/98), [#99](https://github.com/toddysm/regshape/pull/99) | [Functional requirements: artifact options](../specs/cli/artifact-options.md#part-i-functional-requirements) | [Engineering design: artifact options](../specs/cli/artifact-options.md#part-ii-engineering-design), [API source: reference parsers](../src/regshape/libs/refs.py) | [How-to: artifact options and migration](guides/artifact-options.md) | 2026-11-04 |
-| Live progress for manifest/index GET | In progress | [Feature #90](https://github.com/toddysm/regshape/issues/90), merged [library #108](https://github.com/toddysm/regshape/pull/108) and [command #109](https://github.com/toddysm/regshape/pull/109), [required docs #102](https://github.com/toddysm/regshape/issues/102) | [Approved functional requirements](../specs/cli/manifest-progress.md#part-i-functional-requirements) | [Approved engineering design](../specs/cli/manifest-progress.md#part-ii-engineering-design), [Callback reference](library/transfer-progress.md#manifest-receive-observations) | [How-to: manifest/index download](guides/live-transfer-progress.md#download-a-manifest-or-index), [Command reference](../specs/cli/manifest.md#manifest-get); final delivery tracked in #102 | - |
+| Live progress for manifest/index GET | Implemented | [Feature #90](https://github.com/toddysm/regshape/issues/90), merged [library #108](https://github.com/toddysm/regshape/pull/108), [command #109](https://github.com/toddysm/regshape/pull/109) and [final docs #110](https://github.com/toddysm/regshape/pull/110) | [Approved functional requirements](../specs/cli/manifest-progress.md#part-i-functional-requirements) | [Approved engineering design](../specs/cli/manifest-progress.md#part-ii-engineering-design), [Callback reference](library/transfer-progress.md#manifest-receive-observations), [API reference](../specs/operations/manifests.md#get_manifest) | [How-to: manifest/index download](guides/live-transfer-progress.md#download-a-manifest-or-index), [Command reference](../specs/cli/manifest.md#manifest-get) | 2026-11-05 |
 
 ## Evidence and important boundaries
 
@@ -151,7 +151,7 @@ regshape --log-file telemetry.log tag list \
 
 ### Live transfer progress
 
-The shared [renderer](../src/regshape/cli/progress.py) now serves `blob get`,
+For blob/image transfers, the shared [renderer](../src/regshape/cli/progress.py) serves `blob get`,
 both modes of `blob upload`, `layout push`, and `docker push`. It retains one
 row per unique blob and overwrites that row for byte updates, retry,
 verification/commit, and final state. Image pushes show indeterminate
@@ -180,6 +180,31 @@ documentation item [#77](https://github.com/toddysm/regshape/issues/77).
 The [user guide](guides/live-transfer-progress.md) contains single-row snapshots,
 output-channel rules, retry/error semantics, and supported command examples.
 
+### Manifest/index GET progress
+
+`manifest get` uses the same renderer for one persistent logical manifest/index
+row, including byte progress, unknown totals, processing, writing, failure and
+cancellation. Final `Downloaded` follows required output and in-context diagnostics,
+not merely body receipt. Progress uses interactive stderr; `--no-progress`,
+noninteractive stderr and structured telemetry suppress animation. Ordinary
+manifest JSON on stdout does not suppress it. The row is temporarily suspended
+around stdout output and restored below the result without erasing partial output.
+
+The optional [library observations](library/transfer-progress.md#manifest-receive-observations)
+preserve the existing decoded-text tuple and identify each invocation without
+requiring a known digest. Observed requests consume actual bytes, close owned
+responses, preserve primary failures, and bypass optional response caching.
+Buffered calls without an observer retain cache reuse. Request debug previews
+remain absent and request timing ends at headers; operation timing includes
+consumption. This does not add digest verification, partial-body resume,
+credential refresh, or progress-only network probes.
+
+The [manifest workflow](guides/live-transfer-progress.md#download-a-manifest-or-index)
+documents tag/digest, raw, part and file variants, exact row snapshots and
+recovery. Raw output is decoded text, not byte-exact export. Fetching a manifest
+or index does not recursively download its referenced content; full-artifact
+download remains separate [#91](https://github.com/toddysm/regshape/issues/91) work.
+
 ### Artifact-oriented options and migration
 
 The eight manifest/tag/referrer selectors now prefer `--artifact / -a`.
@@ -201,8 +226,8 @@ full artifact pull ([#91](https://github.com/toddysm/regshape/issues/91)),
 canonical-reference redesign ([#88](https://github.com/toddysm/regshape/issues/88)),
 or manifest GET progress ([#90](https://github.com/toddysm/regshape/issues/90)).
 Full artifact pull and canonical-reference redesign remain Planned. Manifest
-GET progress is now In progress under its separately authorized library item;
-it is not part of the completed artifact-option work.
+GET progress is now separately Implemented under #90; it was not part of the
+artifact-option work.
 
 ### Release and Homebrew state
 
@@ -222,9 +247,10 @@ text in that tracker should not be read as reopening already closed work.
 ## Validation baseline and maintenance
 
 The [test workflow](../.github/workflows/tests.yml) covers Python 3.10, 3.11,
-and 3.12. The final artifact-documentation head passed
-**1,943 tests per version**, plus **360 minimum-Click 8.1.0 compatibility tests**
-on Python 3.10, in [run 41772830385](https://github.com/toddysm/regshape/actions/runs/41772830385),
+and 3.12. The final manifest-documentation head
+`690720ee0244e492cd6dd60d05909912a14a90d8` passed
+**2,122 tests per version**, plus **455 minimum-Click 8.1.0 compatibility tests**
+on Python 3.10, in [run 41936151901](https://github.com/toddysm/regshape/actions/runs/41936151901),
 with successful Python/Actions CodeQL analyses and current-head agent review.
 Its signed merge has the same tree as the tested head. The existing auth-command
 Click deprecation warning remains unrelated to this feature.
@@ -232,7 +258,10 @@ Click deprecation warning remains unrelated to this feature.
 Focused production type checks and lint/security baseline comparisons found no
 new findings. Documentation validation checked links, command help, callback
 signatures, exact display snapshots, and executable examples with mocked
-transport. No documentation builder or Markdown linter is configured. The tests
+transport. Final manifest documentation verified 146 local links/anchors,
+11 mocked command examples, one standalone observer example and nine exact
+progress/error/cancellation snapshots; 321 targeted local tests also passed.
+No documentation builder or Markdown linter is configured. The tests
 mock registry and Docker boundaries; they do not certify every live registry
 or daemon.
 
