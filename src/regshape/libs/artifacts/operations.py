@@ -178,20 +178,17 @@ class _Observers:
 def _publish(
     parent: SafeDirectory, staging: SafeDirectory, name: str, wrapper: bytes,
 ) -> None:
-    """Reserve exclusively, publish through owned handles, and remove the marker last.
+    """Prepare metadata privately, install the held tree exclusively, then remove its marker.
 
     The complete output is retained after commit even if later handle cleanup or
     caller diagnostics fail. No atomic whole-directory visibility is promised.
     """
-    with parent.mkdir(name) as destination:
-        destination.write_bytes(INCOMPLETE, b"Artifact publication incomplete\n")
-        staging.move_child("blobs", destination)
-        destination.write_bytes("oci-layout", b'{"imageLayoutVersion":"1.0.0"}')
-        destination.write_bytes(".index-pending", wrapper)
-        destination.move_file(".index-pending", destination, "index.json")
-        staging.verify()
-        destination.verify()
-        destination.complete(INCOMPLETE)
+    staging.write_bytes(INCOMPLETE, b"Artifact publication incomplete\n")
+    staging.write_bytes("oci-layout", b'{"imageLayoutVersion":"1.0.0"}')
+    staging.write_bytes(".index-pending", wrapper)
+    staging.move_file(".index-pending", staging, "index.json")
+    parent.install(staging, name)
+    staging.complete(INCOMPLETE)
 
 
 def pull_artifact(
@@ -216,6 +213,10 @@ def pull_artifact(
     Auth/manifest/blob/transport errors retain their taxonomy. Filesystem errors
     propagate as OSError. Owned partial output is cleaned where identity permits;
     cleanup failures report retained staging without masking the primary failure.
+    Publication requires a trusted root/effective-user-owned bootstrap path and
+    Linux/Darwin native no-replace operations. Callers must exclude hostile
+    same-user/privileged access to the private namespace for its entire lifetime;
+    permissions cannot establish that caller-controlled trust precondition.
     """
     policy = limits if limits is not None else ArtifactLimits()
     if not isinstance(policy, ArtifactLimits):
@@ -236,7 +237,7 @@ def pull_artifact(
         with SafeDirectory.open(output.parent) as parent:
             if parent.exists(output.name):
                 raise ArtifactError("Artifact destination already exists")
-            with parent.temporary() as staging:
+            with SafeDirectory.private_namespace(parent) as namespace, namespace.temporary() as staging:
                 store = ContentStore(staging, writable=True)
                 root_file = "root-" + uuid4().hex
                 received = download_manifest(
@@ -323,6 +324,9 @@ class DirectorySnapshot:
     Enter reads source metadata once and copies only reachable regular files.
     The source is closed before returning; consumers must read store, never
     reopen source paths. Exit removes the private copy and closes handles.
+    Private namespace creation has the same exclusive-control, ownership/ACL
+    and native-backend requirements as pull_artifact; the mutable source itself
+    need not be trusted.
     """
 
     def __init__(self, path: str | Path, *, limits: ArtifactLimits | None = None) -> None:
@@ -332,6 +336,7 @@ class DirectorySnapshot:
         if not isinstance(self.limits, ArtifactLimits):
             raise ValueError("limits must be ArtifactLimits")  # noqa: TRY004 - public input contract
         self.parent: SafeDirectory | None = None
+        self.namespace: SafeDirectory | None = None
         self.directory: SafeDirectory | None = None
         self.store: ContentStore
         self.graph: VerifiedGraph
@@ -344,7 +349,8 @@ class DirectorySnapshot:
             with SafeDirectory.open(self.path) as source:
                 self.wrapper_bytes, roots = layout_roots(source, self.limits)
                 self.parent = SafeDirectory.open(Path(tempfile.gettempdir()).resolve())
-                self.directory = self.parent.temporary()
+                self.namespace = SafeDirectory.private_namespace(self.parent)
+                self.directory = self.namespace.temporary()
                 self.store = ContentStore(self.directory, writable=True)
                 source_store = ContentStore(source)
 
@@ -371,8 +377,8 @@ class DirectorySnapshot:
         """Remove only owned snapshot entries, preserving a consumer's primary failure."""
         primary = exc
         try:
-            if self.directory is not None:
-                self.directory.__exit__(exc_type, exc, traceback)
+            if self.namespace is not None:
+                self.namespace.__exit__(exc_type, exc, traceback)
         except BaseException as error:
             primary = error
             raise

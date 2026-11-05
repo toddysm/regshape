@@ -99,28 +99,38 @@ def test_renamed_parent_or_reservation_never_redirects_writes(tmp_path: Path, wh
     other = tmp_path / "other"
     other.mkdir()
     (other / "sentinel").write_bytes(b"untouched")
-    original = SafeDirectory.write_bytes
+    original_write = SafeDirectory.write_bytes
+    original_install = SafeDirectory.install
     replaced = False
 
-    def replace_before_commit(directory: SafeDirectory, name: str, data: bytes) -> None:
-        """Replace one owning path after reservation; subsequent writes must use/check handles."""
+    def replace_stage(directory: SafeDirectory, name: str, data: bytes) -> None:
+        """Inject a private-namespace breach after acquisition; observed replacement must still abort."""
         nonlocal replaced
-        original(directory, name, data)
-        if name != INCOMPLETE or replaced:
+        original_write(directory, name, data)
+        if name != INCOMPLETE or replaced or which != "staging":
+            return
+        replaced = True
+        staging = next(base.glob(".regshape-private-*/.regshape-staging-*"))
+        staging.rename(base / "moved-stage")
+        staging.symlink_to(other, target_is_directory=True)
+
+    def replace_after_install(parent: SafeDirectory, child: SafeDirectory, name: str) -> None:
+        """Replace the installed public entry/ancestor before marker removal, never acquiring it again."""
+        nonlocal replaced
+        original_install(parent, child, name)
+        if name != "out" or replaced or which == "staging":
             return
         replaced = True
         if which == "destination":
             (base / "out").rename(base / "moved")
             (base / "out").symlink_to(other, target_is_directory=True)
-        elif which == "staging":
-            staging = next(base.glob(".regshape-staging-*"))
-            staging.rename(base / "moved-stage")
-            staging.symlink_to(other, target_is_directory=True)
         else:
             base.rename(tmp_path / "moved-base")
             base.symlink_to(other, target_is_directory=True)
 
-    with patch.object(SafeDirectory, "write_bytes", replace_before_commit), pytest.raises(
+    with patch.object(SafeDirectory, "write_bytes", replace_stage), patch.object(
+        SafeDirectory, "install", replace_after_install,
+    ), pytest.raises(
         ArtifactError, match="identity changed",
     ):
         pull_artifact(Registry(document(children=[])), "repo", "moving", base / "out")
@@ -141,18 +151,28 @@ def test_publication_order_and_marker_visibility(tmp_path: Path) -> None:
     output = tmp_path / "out"
     names = []
     original = SafeDirectory.write_bytes
+    original_install = SafeDirectory.install
 
     def record(directory: SafeDirectory, name: str, content: bytes) -> None:
-        """Inspect intermediate public states without claiming atomic whole-directory visibility."""
-        if directory.name == "out":
+        """Require private metadata writes before the output name becomes visible."""
+        if name in (INCOMPLETE, "oci-layout", ".index-pending"):
             names.append(name)
+            assert not output.exists()
             if name != INCOMPLETE:
-                assert (output / INCOMPLETE).exists()
-                with pytest.raises(ArtifactError, match="Incomplete"):
-                    validate_layout(output, recursive=True)
+                assert directory.exists(INCOMPLETE)
         original(directory, name, content)
 
-    with patch.object(SafeDirectory, "write_bytes", record):
+    def inspect_installed(parent: SafeDirectory, child: SafeDirectory, name: str) -> None:
+        """The installed graph remains rejected while its completion marker is still present."""
+        original_install(parent, child, name)
+        if name == "out":
+            assert (output / "index.json").exists()
+            with pytest.raises(ArtifactError, match="Incomplete"):
+                validate_layout(output, recursive=True)
+
+    with patch.object(SafeDirectory, "write_bytes", record), patch.object(
+        SafeDirectory, "install", inspect_installed,
+    ):
         pull_artifact(Registry(document(children=[])), "repo", "moving", output)
     assert names == [INCOMPLETE, "oci-layout", ".index-pending"]
     assert (output / "index.json").exists() and not (output / INCOMPLETE).exists()
@@ -278,7 +298,7 @@ def test_secondary_cleanup_and_logging_cannot_replace_immutable_error(tmp_path: 
         pull_artifact(Registry(document(children=[])), "repo", "moving", tmp_path / "out", progress_callback=observer)
     assert caught.value is primary
     assert not (tmp_path / "out").exists()
-    assert list(tmp_path.glob(".regshape-staging-*"))
+    assert list(tmp_path.glob(".regshape-private-*/.regshape-staging-*"))
 
 
 def test_failure_observer_cannot_replace_primary(tmp_path: Path) -> None:

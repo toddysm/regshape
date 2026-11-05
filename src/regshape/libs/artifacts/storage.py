@@ -1,8 +1,10 @@
 """Handle-relative artifact storage, ownership-aware cleanup and bounded copying.
 
-No operation follows a symlink component or recursively deletes an unrecognized
-path. Unsupported platforms fail before creation. Open handles prevent redirected
-writes; this is not isolation from a same-privilege process editing file contents.
+New directories are acquired only inside an access-policy-checked private
+namespace and installed with a native atomic no-replace rename. Public names are
+never reopened to acquire ownership. The caller must exclusively control the
+effective user identity and privileged actors during the namespace lifetime:
+ordinary permissions do not isolate hostile same-identity processes.
 """
 
 import hashlib
@@ -15,6 +17,7 @@ from uuid import uuid4
 
 from regshape.libs._http import report_secondary_failure
 from regshape.libs.artifacts.models import digest_parts
+from regshape.libs.artifacts.native import NativeFilesystem
 from regshape.libs.errors import ArtifactError
 
 INCOMPLETE = ".regshape-incomplete"
@@ -103,6 +106,8 @@ class SafeDirectory:
         self.children: dict[str, SafeDirectory] = {}
         self.closed = False
         self.publication_marker: str | None = None
+        self.namespace: SafeDirectory | None = None
+        self.native: NativeFilesystem | None = None
 
     @classmethod
     def open(cls, path: str | Path) -> "SafeDirectory":
@@ -127,7 +132,7 @@ class SafeDirectory:
         return self
 
     def verify(self) -> None:
-        """Require that every retained parent entry still identifies its opened directory."""
+        """Check associations and recheck the private root's access policy throughout its lifetime."""
         if self.closed:
             raise ArtifactError("Artifact directory handle is closed")
         if self.parent is not None:
@@ -135,6 +140,86 @@ class SafeDirectory:
             current = os.stat(self.name, dir_fd=self.parent.fd, follow_symlinks=False)
             if not stat.S_ISDIR(current.st_mode) or not os.path.samestat(current, self.identity):
                 raise ArtifactError("Artifact directory identity changed; owned output retained")
+        if self.namespace is self:
+            if self.native is None or self.parent is None:
+                raise ArtifactError("Private namespace lacks its native backend or bootstrap parent")
+            identity = os.fstat(self.fd)
+            if identity.st_uid != os.geteuid() or stat.S_IMODE(identity.st_mode) != 0o700:
+                raise ArtifactError("Private namespace ownership or permissions changed")
+            self.native.check_acl(self.fd)
+            self.parent.require_trusted_anchor(self.native)
+        elif self.namespace is not None and not self._inside_namespace():
+            self.namespace.verify()
+
+    def require_trusted_anchor(self, native: NativeFilesystem) -> None:
+        """Require a root/effective-user-owned, nondelegated bootstrap path.
+
+        Group/other writes are forbidden except sticky directories owned by root
+        or this user, whose sticky rule protects this user's new entries. All
+        ancestors and ACLs are inspected through retained handles. This enforces
+        access against other unprivileged identities, NOT hostile same-user or
+        privileged mutation; callers must exclude those actors.
+        """
+        self.verify()
+        current: SafeDirectory | None = self
+        while current is not None:
+            identity = os.fstat(current.fd)
+            if identity.st_uid not in (0, os.geteuid()):
+                raise ArtifactError("Namespace bootstrap ancestor has an untrusted owner")
+            if identity.st_mode & 0o022 and not identity.st_mode & stat.S_ISVTX:
+                raise ArtifactError("Namespace bootstrap ancestor permits untrusted writes")
+            native.check_acl(current.fd)
+            current = current.parent
+
+    @classmethod
+    def private_namespace(cls, parent: "SafeDirectory") -> "SafeDirectory":
+        """Create an invocation-private 0700 root under a checked trusted bootstrap parent.
+
+        The parent path's access policy and native backend are checked before
+        creation. The caller's exclusive-control precondition covers the initial
+        mkdir/open sequence here; permission checks cannot detect a hostile
+        same-user process. No caller-selected staging/output name is acquired
+        that way. A private probe verifies filesystem no-replace behavior before
+        registry access. Keep this context alive through installation/cleanup.
+        """
+        native = NativeFilesystem()
+        parent.require_trusted_anchor(native)
+        root = parent._mkdir_owned(".regshape-private-" + uuid4().hex)
+        root.namespace = root
+        root.native = native
+        try:
+            root.verify()
+            root._probe_installation()
+            return root
+        except BaseException as primary:
+            root.__exit__(type(primary), primary, primary.__traceback__)
+            raise
+
+    def _inside_namespace(self) -> bool:
+        """Return whether this handle still has its private root as an actual retained ancestor."""
+        if self.namespace is None:
+            return False
+        current: SafeDirectory | None = self
+        while current is not None:
+            if current is self.namespace:
+                return True
+            current = current.parent
+        return False
+
+    def _probe_installation(self) -> None:
+        """Verify no-replace collision and successful installation using only owned scratch entries."""
+        if self.native is None:
+            raise ArtifactError("Private namespace has no native installation backend")
+        with self.mkdir("probe-source") as source, self.mkdir("probe-occupied") as occupied:
+            try:
+                self.native.move(self.fd, source.name, self.fd, occupied.name)
+            except FileExistsError:
+                pass  # The primitive must reject this controlled collision.
+            else:
+                raise ArtifactError("Native filesystem probe did not enforce no-replace")
+            source.verify()
+            occupied.verify()
+            self.install(source, "probe-installed")
 
     def description(self) -> str:
         """Return a bounded escaped original location for retained-output diagnostics, not reopening."""
@@ -159,10 +244,22 @@ class SafeDirectory:
         _component(name)
         self.verify()
         fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=self.fd)
-        return SafeDirectory(fd, name, self)
+        child = SafeDirectory(fd, name, self)
+        child.namespace, child.native = self.namespace, self.native
+        return child
 
     def mkdir(self, name: str) -> "SafeDirectory":
-        """Exclusively create and own a private child; never adopt an existing entry."""
+        """Create a child only within the still-live invocation-private namespace.
+
+        Public/output parents cannot acquire ownership by mkdir followed by
+        pathname inspection. Use install() on an already held private child.
+        """
+        if not self._inside_namespace():
+            raise ArtifactError("Owned directory creation requires a trusted private namespace")
+        return self._mkdir_owned(name)
+
+    def _mkdir_owned(self, name: str) -> "SafeDirectory":
+        """Acquire a new child in a trusted bootstrap/private namespace, never an exposed output."""
         _component(name)
         self.verify()
         os.mkdir(name, 0o700, dir_fd=self.fd)
@@ -171,12 +268,15 @@ class SafeDirectory:
         if not os.path.samestat(created, child.identity):
             child.close()
             raise ArtifactError("New artifact directory was replaced; retained without cleanup")
+        if child.identity.st_uid != os.geteuid() or stat.S_IMODE(child.identity.st_mode) != 0o700:
+            child.close()
+            raise ArtifactError("New private directory has unexpected ownership/permissions; retained")
         child.owned = True
         self.children[name] = child
         return child
 
     def temporary(self) -> "SafeDirectory":
-        """Create a randomly named private sibling directory without replacing leftovers."""
+        """Create an owned staging child inside the private root, not in the public output parent."""
         return self.mkdir(".regshape-staging-" + uuid4().hex)
 
     def register(self, name: str) -> None:
@@ -247,29 +347,87 @@ class SafeDirectory:
         del self.files[name]
 
     def move_file(self, name: str, destination: "SafeDirectory", new_name: str) -> None:
-        """Move a registered file between opened owned directories without path reopening."""
+        """Promote a registered file using native no-replace semantics, without pathname reopening."""
         _component(new_name)
         self.verify()
         destination.verify()
         expected = self.files[name]
         if not os.path.samestat(os.stat(name, dir_fd=self.fd, follow_symlinks=False), expected):
             raise ArtifactError("Artifact file identity changed before promotion")
-        if destination.exists(new_name):
-            raise ArtifactError("Artifact promotion destination already exists")
-        os.rename(name, new_name, src_dir_fd=self.fd, dst_dir_fd=destination.fd)
+        if not self._inside_namespace() or not destination._inside_namespace():
+            raise ArtifactError("File promotion requires private namespace handles")
+        if self.native is None:
+            raise ArtifactError("File promotion has no native installation backend")
+        self.native.move(self.fd, name, destination.fd, new_name)
+        if not os.path.samestat(
+            os.stat(new_name, dir_fd=destination.fd, follow_symlinks=False), expected,
+        ):
+            raise ArtifactError("Promoted file identity changed; replacement retained")
         destination.files[new_name] = self.files.pop(name)
 
     def move_child(self, name: str, destination: "SafeDirectory") -> None:
-        """Transfer an owned subtree and its live handles into an exclusively reserved output."""
-        child = self.children[name]
+        """Transfer an owned subtree using the same no-replace installation and identity protocol."""
+        destination.install(self.children[name], name)
+
+    def install(self, child: "SafeDirectory", name: str) -> None:
+        """Expose a pre-opened private child without replacing or acquiring any public entry.
+
+        The source namespace must remain alive. The same held inode is checked
+        after the native operation before changing ownership bookkeeping; an
+        unexpected target is never adopted, written into, or deleted.
+        Transfers between distinct private namespaces are rejected: the source
+        root must retain authority/lifetime until the installed child is closed.
+        """
+        _component(name)
+        if not child.owned or not child._inside_namespace() or child.namespace is child:
+            raise ArtifactError("Installation requires an owned private child")
+        if self._inside_namespace() and self.namespace is not child.namespace:
+            raise ArtifactError("Cross-namespace directory installation is unsupported")
         child.verify()
-        destination.verify()
-        if destination.exists(name):
-            raise ArtifactError("Artifact subtree destination already exists")
-        os.rename(name, name, src_dir_fd=self.fd, dst_dir_fd=destination.fd)
-        del self.children[name]
-        destination.children[name] = child
-        child.parent = destination
+        self.verify()
+        if child.parent is None or child.native is None:
+            raise ArtifactError("Installation source lacks private ownership context")
+        if not self._inside_namespace():
+            self.require_trusted_anchor(child.native)
+        previous, previous_name = child.parent, child.name
+        child.native.move(previous.fd, previous_name, self.fd, name)
+        current = os.stat(name, dir_fd=self.fd, follow_symlinks=False)
+        if not os.path.samestat(current, child.identity):
+            raise ArtifactError("Installed directory identity changed; replacement retained")
+        del previous.children[previous_name]
+        self.children[name] = child
+        child.parent, child.name = self, name
+        child.verify()
+
+    def _reclaim(self) -> None:
+        """Quarantine an installed entry before deletion; never delete a raced replacement.
+
+        If the atomic move captured a replacement, restore it with no-replace
+        semantics when possible. A competing name blocks restoration, so report
+        the retained private location without deleting either object.
+        """
+        self.verify()
+        if self.namespace is None or self.native is None or self.parent is None:
+            raise ArtifactError("Cleanup lacks its retained private ownership context")
+        root, previous, previous_name = self.namespace, self.parent, self.name
+        root.verify()
+        quarantine = "cleanup-" + uuid4().hex
+        self.native.move(previous.fd, previous_name, root.fd, quarantine)
+        current = os.stat(quarantine, dir_fd=root.fd, follow_symlinks=False)
+        if not os.path.samestat(current, self.identity):
+            primary = ArtifactError("Cleanup captured a replacement; no content deleted")
+            try:
+                self.native.move(root.fd, quarantine, previous.fd, previous_name)
+            except BaseException as secondary:  # noqa: BLE001 - restoration must preserve the cleanup failure
+                report_secondary_failure(
+                    primary, secondary,
+                    "Replacement restoration; retained at " + root.description() + "/" + quarantine,
+                )
+            raise primary
+        del previous.children[previous_name]
+        root.children[quarantine] = self
+        self.parent, self.name = root, quarantine
+        self.verify()
 
     def retain(self) -> None:
         """Transfer a complete owned tree to the caller; closing no longer removes it."""
@@ -288,8 +446,10 @@ class SafeDirectory:
         self.retain()
 
     def cleanup(self) -> None:
-        """Remove registered entries only; unknown/replaced/moved trees remain explicit errors."""
+        """Reclaim exposed owned trees before deleting registered entries in the private namespace."""
         self.verify()
+        if self.owned and self.namespace is not None and not self._inside_namespace():
+            self._reclaim()
         for child in list(self.children.values()):
             if child.owned:
                 child.cleanup()

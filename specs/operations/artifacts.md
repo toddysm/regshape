@@ -106,17 +106,55 @@ operations; callers must handle the explicit unsupported-platform error.
 Parent (`..`) components are rejected before normalization rather than letting
 a preceding symlink disappear from the no-follow walk.
 
-Private sibling staging owns an explicit file/directory identity ledger.
-Publication exclusively reserves the destination, creates `.regshape-incomplete`,
-moves verified content through retained handles, writes `index.json` last, and
-removes the marker only after commit checks. There is no atomic whole-directory
-visibility guarantee: concurrent readers must validate and reject the marker.
+Revision 4 uses a `.regshape-private-*` namespace on the output filesystem, with
+staging **inside** that private root. Bootstrap checks retained ancestor handles:
+owners must be root or the effective user; group/other writes are forbidden
+except root/effective-user-owned sticky ancestors. Linux extended access/default
+access-control lists (ACLs) and Darwin allow ACL entries are rejected; Darwin
+deny-only ACLs are permitted. Unknown ACL policy fails closed. The private root
+must remain owned by the effective user with mode `0700`. Its identity, access
+policy and ancestor policy are rechecked throughout its lifetime.
 
-Replaced or renamed parents/reservations cannot redirect writes. Cleanup removes
-only recognized owned objects; unknown/replaced paths are retained with a
-diagnostic rather than recursively deleted. Cleanup cannot replace the primary
-failure. After durable publication, a close or caller-output failure leaves the
-complete artifact intact and still reports failure.
+**Caller trust precondition:** the caller must exclusively control access by
+same-user and privileged principals to the private namespace and its bootstrap
+parent for the full lifetime. Permission/ACL checks do **not** isolate hostile
+same-user processes and cannot detect their presence. If that precondition is
+unavailable, use an isolated identity/environment or do not invoke these writing
+operations. Random names and mode `0700` are not advertised as a same-user sandbox.
+
+The [native backend](../../src/regshape/libs/artifacts/native.py) uses Linux
+`renameat2(RENAME_NOREPLACE)` or Darwin `renameatx_np(RENAME_EXCL)`. Missing
+bindings/platform support fail before creation; an owned private collision/
+success probe checks filesystem support before registry access. There is no
+ordinary-rename, replace, copy or check-then-open fallback. Cross-device or
+unsupported filesystem operations fail explicitly.
+
+Prepare exact graph bytes and metadata privately with `.regshape-incomplete`
+present and `index.json` written last. Install the already held directory inode
+atomically at the final name without replacing any existing target, and check
+the installed identity against that held handle. The public name is **never**
+opened to acquire ownership. Remove the marker only after commit checks; its
+removal is irreversible even if cancellation arrives immediately afterward.
+There is no atomic whole-directory visibility guarantee: concurrent readers
+must validate and reject the marker.
+
+Within the stated trust boundary, replacements cannot redirect writes or be
+adopted for deletion. Failed installed trees are atomically reclaimed into a
+private quarantine name and identity-checked before any content is deleted.
+If cleanup captured a replacement, it is restored without overwriting a new
+winner. If restoration collides, its exact private location is retained and
+reported. Unknown/moved paths are retained rather than recursively deleted.
+Cleanup cannot replace the primary failure. After complete publication, a close
+or caller-output failure leaves the artifact intact and still reports failure.
+
+For later storage consumers, compose `SafeDirectory.open(parent)` with
+`SafeDirectory.private_namespace(parent_handle)`, then
+`namespace.temporary()`. Keep the namespace context alive until every child is
+closed, including after installation or failed cleanup. `parent.install(child,
+name)` accepts only a pre-opened owned private child. Public `mkdir` acquisition
+and transfer between distinct private namespaces are rejected. File promotion
+likewise requires private handles and native no-replace movement. Do not retain
+these handles beyond their owning contexts.
 
 `with DirectorySnapshot(path, limits=...) as snapshot:` reads wrapper metadata
 once, verifies/copies reachable regular files into private storage, and closes
@@ -127,6 +165,9 @@ Directory extras, including authoring staging files, are ignored. Consumers
 must use the snapshot, never reopen original mutable paths or hard-link them.
 Snapshot exit removes owned content. These primitives are reusable boundaries,
 not implementations of archive packing/import or registry publication.
+Snapshots apply the same namespace trust/native requirements to their system
+temporary parent; the mutable source itself need not satisfy the writing trust
+policy. Read-only recursive validation does not create a private namespace.
 
 ## Layout validation
 
