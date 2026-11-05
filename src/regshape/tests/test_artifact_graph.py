@@ -12,7 +12,6 @@ from click.testing import CliRunner
 from regshape.cli.main import regshape
 from regshape.libs.artifacts import (
     ArtifactError,
-    ArtifactFormat,
     ArtifactLimits,
     ArtifactProgress,
     pull_artifact,
@@ -482,9 +481,9 @@ def test_registry_authority_preflight(tmp_path: Path, authority: str) -> None:
     assert not registry.calls and not list(tmp_path.iterdir())
 
 
-def test_archive_is_explicitly_out_of_scope(tmp_path: Path) -> None:
-    """Reserved archive format fails before effects rather than emitting a mislabeled directory."""
+def test_unknown_output_format_rejected_before_effects(tmp_path: Path) -> None:
+    """Unsupported formats fail before effects rather than emitting a mislabeled directory/archive."""
     registry = Registry(document(children=[]))
-    with pytest.raises(ArtifactError, match="Only OCI"):
-        pull_artifact(registry, "repo", "moving", tmp_path / "out", output_format=ArtifactFormat.OCI_TAR_GZIP)
+    with pytest.raises(ArtifactError, match="Unsupported artifact output format"):
+        pull_artifact(registry, "repo", "moving", tmp_path / "out", output_format="zip")
     assert not registry.calls and not list(tmp_path.iterdir())

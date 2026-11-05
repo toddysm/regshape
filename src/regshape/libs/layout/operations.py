@@ -25,8 +25,8 @@ from pathlib import Path
 from typing import BinaryIO, Union
 from uuid import uuid4
 
-from regshape.libs.artifacts.graph import validate_directory
 from regshape.libs.artifacts.models import ArtifactLimits
+from regshape.libs.artifacts.operations import snapshot_layout
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import BlobError, LayoutError
 from regshape.libs.models.descriptor import Descriptor
@@ -401,9 +401,9 @@ def validate_layout(
     blob that is a parseable OCI manifest, all config/layer blobs it
     references also exist and their digests match.
 
-    :param layout_path: Path to the layout root to validate.
+    :param layout_path: Layout directory, or gzip-tar file in recursive mode.
     :param recursive: Verify the complete subject/index/config/layer closure with
-        strict JSON, size/digest checks and safe no-follow directory reads.
+        strict JSON, size/digest checks and a private directory/archive snapshot.
     :param limits: Strict-mode policy; supplying limits without recursive=True
         raises ValueError rather than silently ignoring them.
     :raises ArtifactError: For strict graph, metadata or resource-budget failures.
@@ -414,7 +414,8 @@ def validate_layout(
         policy = limits if limits is not None else ArtifactLimits()
         if not isinstance(policy, ArtifactLimits):
             raise ValueError("limits must be ArtifactLimits")
-        validate_directory(str(layout_path), policy)
+        with snapshot_layout(layout_path, limits=policy):
+            pass
         return
     if limits is not None:
         raise ValueError("limits require recursive=True")

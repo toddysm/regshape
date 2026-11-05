@@ -1,7 +1,7 @@
 """Terminal-free artifact policy, observations and completed-pull results.
 
 Limits are independent positive integer budgets, not estimates of available
-resources. Archive policy fields are reserved for the subsequent archive layer.
+resources. Archive input, header, expanded-stream and metadata caps are separate.
 """
 
 import re
@@ -23,7 +23,7 @@ def digest_parts(digest: str) -> tuple[str, str]:
 
 
 class ArtifactFormat(str, Enum):
-    """Requested storage format; gzip-tar is reserved and not yet implemented."""
+    """Requested complete-closure output: OCI directory or single-member gzip/POSIX tar."""
 
     OCI = "oci"
     OCI_TAR_GZIP = "oci-tar-gzip"

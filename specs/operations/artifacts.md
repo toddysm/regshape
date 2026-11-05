@@ -1,15 +1,16 @@
-# Complete artifact directory downloads and verification
+# Complete artifact directory/archive downloads and verification
 
 This reference covers the graph/directory implementation of
-[#115](https://github.com/toddysm/regshape/issues/115), under the
+[#115](https://github.com/toddysm/regshape/issues/115) and archive delivery
+[#116](https://github.com/toddysm/regshape/issues/116), under the
 [approved artifact design](../cli/artifact-pull.md). It does not claim delivery
-of archive output, recursive push, or the artifact command-line interface.
+of recursive push or the artifact command-line interface.
 
 ## Python application programming interface
 
 Import `ArtifactError`, `ArtifactFormat`, `ArtifactLimits`, `ArtifactProgress`,
 `ArtifactProgressCallback`, `ArtifactPullResult`, `pull_artifact` and
-`DirectorySnapshot` from `regshape.libs.artifacts`.
+`DirectorySnapshot`, `ArchiveSnapshot`, and `snapshot_layout` from `regshape.libs.artifacts`.
 
 ```python
 result = pull_artifact(
@@ -24,8 +25,24 @@ authority validation happens before network or filesystem writes. The output
 parent must exist. Existing destinations, including empty directories and
 symlinks, are never adopted or overwritten.
 
-`ArtifactFormat.OCI` is currently the only implemented format.
-`ArtifactFormat.OCI_TAR_GZIP` is reserved and fails before side effects.
+`ArtifactFormat.OCI` writes a directory. `ArtifactFormat.OCI_TAR_GZIP` writes
+a single gzip member containing a POSIX (Portable Operating System Interface)
+tar archive of exactly the same verified closure at its root:
+
+```python
+result = pull_artifact(
+    client, "team/package", "stable", "/existing/parent/new-layout.tar.gz",
+    output_format=ArtifactFormat.OCI_TAR_GZIP,
+)
+```
+
+The archive contains `oci-layout`, `index.json`, then digest paths in lexical
+order; no enclosing directory, payload extraction, credentials or staging files.
+Owner/group names and identifiers, modification times, and gzip timestamp are
+zero/empty; regular-file mode is `0644` in tar. The published file itself remains
+private (`0600`). SHA-512 paths and sizes above 8 GiB use bounded per-file POSIX
+`path`/`size` records. Repeated output is deterministic on the same runtime;
+byte-identical compression across Python/zlib versions is not promised.
 
 ### Identity and graph
 
@@ -68,8 +85,12 @@ integer. Defaults:
 | `max_archive_entries` | 200,010 |
 | `max_archive_metadata_bytes` | 64 KiB |
 
-Archive fields are policy reserved for the subsequent archive layer, not a claim
-that archive handling is implemented. Roots have depth zero. Root descriptors
+Archive limits apply independently: input bytes include gzip header/trailer;
+expanded bytes include every tar header/padding/end byte; entries include raw
+directory and extension headers. Gzip headers include all optional fields and
+their delimiters/checksum. POSIX extension bodies are capped individually and
+at 64 MiB in aggregate. Raising one cap never raises another.
+Roots have depth zero. Root descriptors
 count as edges, but the generated wrapper is not a content object. Total bytes
 count distinct addresses, excluding generated metadata. Descriptor sizes reserve
 the remaining total before downloads; actual receives check budgets before writes.
@@ -96,7 +117,7 @@ existing mutable `Descriptor` value type. Counts are unique addresses except
 reused references. Byte counts exclude generated metadata and unsuccessful
 attempts; downloaded bytes also exclude embedded data.
 
-## Safe storage and later consumers
+## Safe storage and snapshot consumers
 
 The [storage primitives](../../src/regshape/libs/artifacts/storage.py) require
 no-follow, handle-relative filesystem operations. Unsupported platforms fail
@@ -147,6 +168,64 @@ reported. Unknown/moved paths are retained rather than recursively deleted.
 Cleanup cannot replace the primary failure. After complete publication, a close
 or caller-output failure leaves the artifact intact and still reports failure.
 
+Archive publication instead uses a handle-relative, no-follow **exclusive hard
+link** of an already closed/verified private regular file, followed by unlinking
+its staging name. This requires local filesystem hard-link support; unsupported,
+cross-device, permission or disk-full errors have no copy/overwrite fallback.
+The successful link is irreversible even if cancellation arrives immediately
+after it. Neither later unlink/diagnostic failure nor a replacement at the
+public path authorizes deleting that public entry. Archive creation peaks at
+unique content U plus compressed output C and bounded metadata, not U+C plus
+another tar/snapshot. Objects are rehashed while packing.
+
+### Archive reader and reusable source selection
+
+```python
+with snapshot_layout("/safe/source/layout-or-archive", limits=ArtifactLimits()) as snapshot:
+    graph = snapshot.graph
+    wrapper_bytes = snapshot.wrapper_bytes
+    for item in graph.objects:
+        # Consume only the private store inside this lifetime.
+        snapshot.store.verify(item.digest, item.size)
+```
+
+`snapshot_layout(path, *, limits=None)` selects a directory or regular archive
+without relying on its extension. `ArchiveSnapshot(path, *, limits=None)` is a
+single-use context; `DirectorySnapshot` remains available for known directory
+inputs. Source symlinks, special files and unsafe ancestors are rejected through
+no-follow handles; archive reads check opened-file identity/size/mutation metadata.
+Consumers **must not** reopen original source paths or hard-link mutable source
+files. `store`, `graph`, and `wrapper_bytes` belong to the entered context.
+After exit the private files/handles are unavailable.
+
+`graph.objects` is dependency-first and deduplicated by content address.
+`graph.roots` contains normalized graph edges, **not** complete original root
+descriptor metadata. Consumers needing platform/annotation/tag/unknown fields
+must interpret the bounded original `wrapper_bytes`, not reconstruct them from
+normalized edges. This is the source contract for the subsequent push delivery.
+
+Import first spools one gzip member with bounded compressed reads and bounded
+deflate output. It verifies the optional header checksum, trailer cyclic
+redundancy check (CRC) and modulo-32-bit size. It rejects every extra member or
+trailing byte, including empty gzip members and zero padding. Raw 512-byte tar
+headers are then preflighted before extension allocation: checksum, numeric
+profile, effective offsets/sizes, metadata/entry budgets, padding and end markers.
+Only regular `oci-layout`, `index.json`, strict SHA-256/SHA-512 blob paths and
+optional `blobs`/algorithm directories are accepted. Duplicate paths, unsafe
+components, links, sparse/special files, global/GNU extensions, and unknown POSIX
+attributes fail explicitly. Only local `path`, `size`, and finite decimal `mtime`
+attributes are supported. Data is manually copied with bounded reads, never
+general extraction. Strict recursive graph verification rejects missing/corrupt
+objects and **unreferenced archive content** before a consumer can perform
+registry effects.
+
+Peak import disk is expanded tar T plus copied content U and bounded metadata.
+The tar spool is removed before context entry returns; only the private verified
+snapshot remains. Directory snapshots need U, ignore unrelated authoring files,
+and still verify required files. Metadata caps include whitespace before JSON
+decoding. Disk exhaustion, cancellation and cleanup errors propagate; cleanup
+preserves the primary failure and reports retained private storage when needed.
+
 For later storage consumers, compose `SafeDirectory.open(parent)` with
 `SafeDirectory.private_namespace(parent_handle)`, then
 `namespace.temporary()`. Keep the namespace context alive until every child is
@@ -164,27 +243,29 @@ are in dependency-first order and retain ordered child digest occurrences.
 Directory extras, including authoring staging files, are ignored. Consumers
 must use the snapshot, never reopen original mutable paths or hard-link them.
 Snapshot exit removes owned content. These primitives are reusable boundaries,
-not implementations of archive packing/import or registry publication.
+not implementations of registry publication.
 Snapshots apply the same namespace trust/native requirements to their system
 temporary parent; the mutable source itself need not satisfy the writing trust
-policy. Read-only recursive validation does not create a private namespace.
+policy. Recursive validation also uses a temporary private verified snapshot;
+it never writes to the original source.
 
 ## Layout validation
 
 `validate_layout(path, *, recursive=False, limits=None)` retains the existing
 shallow default. Explicit limits without recursive mode raise `ValueError`.
-Recursive directory validation uses the same graph rules, safe opens and marker
-cap, and supports both digest algorithms. Missing inline-content files still
+Recursive directory/archive validation uses the same graph rules, safe opens and
+marker cap, and supports both digest algorithms. Missing inline-content files still
 fail local validation: a successful local layout must contain its whole closure.
 
 ```console
 regshape layout validate --path ./layout --recursive --max-depth 64
+regshape layout validate --path ./layout.tar.gz --recursive --max-archive-input-bytes 1073741824
 ```
 
 Available limits are `--max-manifest-bytes`, `--max-objects`, `--max-depth`,
 `--max-total-bytes`, `--max-archive-bytes` and `--max-archive-input-bytes`.
-Without `--recursive`, supplying any limit is a usage error. Archive input is
-not yet supported, even in recursive mode.
+Without `--recursive`, supplying any limit is a usage error and archive input is
+rejected. The artifact pull command and recursive push are separate deliveries.
 
 ## Additive receive hooks
 
