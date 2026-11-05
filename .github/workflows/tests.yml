@@ -45,6 +45,7 @@ jobs:
           src/regshape/tests/test_manifest_progress.py
           src/regshape/tests/test_transport_client.py
           src/regshape/tests/test_client_middleware_integration.py
+          src/regshape/tests/test_auth_challenge_origin.py
           src/regshape/tests/test_tag_pagination.py
           src/regshape/tests/test_artifact_graph.py
           src/regshape/tests/test_artifact_storage.py

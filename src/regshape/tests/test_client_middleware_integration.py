@@ -25,9 +25,10 @@ from regshape.libs.errors import AuthError
 
 
 def _create_mock_response(status_code: int, headers: dict, content: bytes) -> requests.Response:
-    """Helper to create mock requests.Response."""
+    """Model a completed response from the configured synthetic registry, including its issuer URL."""
     mock_response = Mock(spec=requests.Response)
     mock_response.status_code = status_code
+    mock_response.url = "https://registry.example.com/v2/"
     mock_response.headers = headers
     mock_response.content = content
     mock_response.text = content.decode('utf-8') if content else ""
@@ -173,6 +174,7 @@ class TestRegistryClientRequestWithMiddleware:
         # First response: 401 with WWW-Authenticate challenge
         auth_response = Mock(spec=requests.Response)
         auth_response.status_code = 401
+        auth_response.url = "https://registry.example.com/v2/"
         auth_response.headers = {"WWW-Authenticate": 'Bearer realm="https://auth.example.com/token",service="registry"'}
         auth_response.content = b"Unauthorized"
         auth_response.text = "Unauthorized"
@@ -439,6 +441,7 @@ class TestAuthV2Fallback:
         # 1st call: original request → 401 *without* WWW-Authenticate
         no_challenge = Mock(spec=requests.Response)
         no_challenge.status_code = 401
+        no_challenge.url = "https://registry.example.com/v2/"
         no_challenge.headers = {}
         no_challenge.content = b"Unauthorized"
         no_challenge.text = "Unauthorized"
@@ -446,6 +449,7 @@ class TestAuthV2Fallback:
         # 2nd call: /v2/ probe → 401 *with* WWW-Authenticate
         v2_challenge = Mock(spec=requests.Response)
         v2_challenge.status_code = 401
+        v2_challenge.url = "https://registry.example.com/v2/"
         v2_challenge.headers = {
             "WWW-Authenticate": 'Bearer realm="https://auth.example.com/token",service="registry"',
         }
@@ -498,6 +502,7 @@ class TestAuthV2Fallback:
         # 1st call: original → 401 without WWW-Authenticate
         no_challenge = Mock(spec=requests.Response)
         no_challenge.status_code = 401
+        no_challenge.url = "https://registry.example.com/v2/"
         no_challenge.headers = {}
         no_challenge.content = b"Unauthorized"
         no_challenge.text = "Unauthorized"
@@ -505,6 +510,7 @@ class TestAuthV2Fallback:
         # 2nd call: /v2/ probe → also 401 without WWW-Authenticate
         v2_no_challenge = Mock(spec=requests.Response)
         v2_no_challenge.status_code = 401
+        v2_no_challenge.url = "https://registry.example.com/v2/"
         v2_no_challenge.headers = {}
         v2_no_challenge.content = b"Unauthorized"
         v2_no_challenge.text = "Unauthorized"
@@ -527,6 +533,7 @@ class TestAuthV2Fallback:
 
         no_challenge = Mock(spec=requests.Response)
         no_challenge.status_code = 401
+        no_challenge.url = "https://registry.example.com/v2/"
         no_challenge.headers = {}
         no_challenge.content = b"Unauthorized"
         no_challenge.text = "Unauthorized"
@@ -556,6 +563,7 @@ class TestAuthV2Fallback:
 
         challenge_401 = Mock(spec=requests.Response)
         challenge_401.status_code = 401
+        challenge_401.url = "https://registry.example.com/v2/"
         challenge_401.headers = {
             "WWW-Authenticate": 'Bearer realm="https://auth.example.com/token",service="reg"',
         }
@@ -692,6 +700,7 @@ class TestAuthV2Fallback:
         # ACR returns the header as "Www-Authenticate", not "WWW-Authenticate"
         challenge_401 = Mock(spec=requests.Response)
         challenge_401.status_code = 401
+        challenge_401.url = "https://registry.example.com/v2/"
         challenge_401.headers = {
             "Www-Authenticate": 'Bearer realm="https://acr.example.com/oauth2/token",service="acr"',
         }
@@ -730,6 +739,7 @@ class TestAuthV2Fallback:
         # 1st: original → 401 with empty headers
         no_challenge = Mock(spec=requests.Response)
         no_challenge.status_code = 401
+        no_challenge.url = "https://registry.example.com/v2/"
         no_challenge.headers = {}
         no_challenge.content = b"Unauthorized"
         no_challenge.text = "Unauthorized"
@@ -737,6 +747,7 @@ class TestAuthV2Fallback:
         # 2nd: /v2/ probe → 401 with ACR-style title-case header
         v2_challenge = Mock(spec=requests.Response)
         v2_challenge.status_code = 401
+        v2_challenge.url = "https://registry.example.com/v2/"
         v2_challenge.headers = {
             "Www-Authenticate": 'Bearer realm="https://acr.example.com/oauth2/token",service="acr"',
         }

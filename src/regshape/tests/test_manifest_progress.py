@@ -55,9 +55,10 @@ class StreamResponse(requests.Response):
         encoding: str | None = "utf-8",
         raw_headers: dict[str, str] | None = None,
     ) -> None:
-        """Separate advertised metadata from raw framing to exercise advisory mismatches."""
+        """Model the registry issuer while separating advertised metadata from raw framing."""
         super().__init__()
         self.status_code = status
+        self.url = f"https://{REGISTRY}/v2/"
         self.headers.update(headers or {})
         self.encoding = encoding
         self.raw = HTTPResponse(

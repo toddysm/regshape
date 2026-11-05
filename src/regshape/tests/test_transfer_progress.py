@@ -31,9 +31,10 @@ UPLOAD = f"/v2/{REPO}/blobs/uploads/session?_state=opaque"
 def _response(
     data: bytes = b"", status: int = 200, headers: dict[str, str] | None = None,
 ) -> requests.Response:
-    """Provide real response semantics with deterministic, already buffered content."""
+    """Provide a known registry issuer and deterministic, already buffered response content."""
     response = requests.Response()
     response.status_code = status
+    response.url = f"https://{REGISTRY}/v2/"
     response._content = data
     response._content_consumed = True
     response.headers.update(headers or {})

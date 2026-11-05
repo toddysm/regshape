@@ -22,9 +22,10 @@ LOCATION = "/v2/repo/blobs/uploads/session?_state=opaque"
 
 
 def _response(status: int, headers: dict[str, str] | None = None) -> requests.Response:
-    """Make buffered HTTP responses without real network access."""
+    """Make buffered registry-origin responses without network or unknown auth-issuer metadata."""
     response = requests.Response()
     response.status_code = status
+    response.url = "https://registry.example.invalid/v2/"
     response.headers.update(headers or {})
     response._content = b""
     response._content_consumed = True

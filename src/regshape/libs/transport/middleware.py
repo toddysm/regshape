@@ -8,7 +8,8 @@
    :platform: Unix, Windows
    :synopsis: Defines the middleware protocol for the transport pipeline.
               Middleware components can inspect and modify both requests
-              and responses as they flow through the pipeline.
+              and responses as they flow through the pipeline. Authentication
+              validates the actual 401 issuer before negotiating credentials.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
@@ -17,7 +18,7 @@ from abc import ABC
 from collections.abc import Mapping
 from typing import Callable, Protocol
 
-from regshape.libs._http import close_response
+from regshape.libs._http import ClosingResponse, close_response
 from regshape.libs.auth import registryauth
 from regshape.libs.errors import AuthError
 from regshape.libs.transport.body import _UploadBody
@@ -25,6 +26,7 @@ from regshape.libs.transport.models import RegistryRequest, RegistryResponse
 from regshape.libs.transport.urls import (
     MAX_REDIRECTS,
     REDIRECT_STATUSES,
+    require_authentication_origin,
     resolve_registry_url,
 )
 
@@ -352,7 +354,8 @@ class AuthMiddleware(BaseMiddleware):
     replies with **401 Unauthorized** and a ``WWW-Authenticate`` header,
     the middleware:
 
-    1. Parses and normalises the challenge via
+    1. Requires the actual 401 response to originate at the configured registry,
+       then parses and normalises the challenge via
        :func:`_normalize_www_authenticate`.
     2. Calls :func:`registryauth.authenticate` to perform the actual
        token / credential exchange (Basic base64 encoding *or* Bearer
@@ -366,8 +369,9 @@ class AuthMiddleware(BaseMiddleware):
     :param username: Username for authentication, or ``None``.
     :param password: Password for authentication, or ``None``.
     :param registry: Registry hostname, used only in error messages.
-    :param base_url: Configured registry origin for validating probe redirects.
-        When omitted, an absolute original request URL can supply the origin.
+    :param base_url: Configured registry origin for validating 401 issuers and
+        probe redirects. When omitted, an absolute original request URL can
+        supply the origin; relative requests cannot establish a trusted origin.
     """
 
     def __init__(
@@ -377,7 +381,7 @@ class AuthMiddleware(BaseMiddleware):
         registry: str = "<unknown>",
         base_url: Optional[str] = None,
     ) -> None:
-        """Configure credentials and the origin used for challenge discovery."""
+        """Configure credentials and the trusted origin used for negotiation and challenge discovery."""
         self._username = username
         self._password = password
         self._registry = registry
@@ -390,7 +394,12 @@ class AuthMiddleware(BaseMiddleware):
         request: RegistryRequest,
         next_handler: Callable[[RegistryRequest], RegistryResponse],
     ) -> RegistryResponse:
-        """Handle challenges and close discarded streams before auth/probe failures can occur."""
+        """Verify challenge origin before credentials/fallback, closing discarded responses.
+
+        Off-origin successes still pass through. Every 401, including an auth
+        retry or redirected probe, requires the configured issuer; a registry-
+        issued external token realm remains valid. Rejected responses are closed.
+        """
         processed_request = request
         try:
             processed_request = self.process_request(request)
@@ -402,9 +411,10 @@ class AuthMiddleware(BaseMiddleware):
             return response
 
         # ---- 401 handling ------------------------------------------------
-        www_auth = _get_header_ci(response.headers, "WWW-Authenticate")
-        if response.body is None:
-            close_response(response.raw_response)
+        origin = self._base_url or processed_request.url
+        require_authentication_origin(response.raw_response, origin)
+        with ClosingResponse(response.raw_response):
+            www_auth = _get_header_ci(response.headers, "WWW-Authenticate")
         if not www_auth:
             # Some registries (e.g. ACR) only return WWW-Authenticate on
             # the /v2/ endpoint.  Fall back to a /v2/ probe to obtain the
@@ -452,7 +462,10 @@ class AuthMiddleware(BaseMiddleware):
             response_hook=processed_request.response_hook,
         )
 
-        return next_handler(retry_request)
+        retried = next_handler(retry_request)
+        if retried.status_code == 401:
+            require_authentication_origin(retried.raw_response, origin)
+        return retried
 
     # -- Private helpers ---------------------------------------------------
 
@@ -468,7 +481,9 @@ class AuthMiddleware(BaseMiddleware):
         base endpoint rather than on every 401 response.  This helper
         sends a lightweight probe so that the caller can still negotiate
         authentication. The probe inherits the original redirect policy so
-        an unvalidated redirect cannot introduce a foreign challenge. When
+        an unvalidated redirect cannot introduce a foreign challenge. Every 401
+        issuer is checked against the trusted origin, including when Requests
+        followed redirects automatically; probes are always closed. When
         automatic redirects are disabled, follow only validated same-origin
         targets, with cycle detection and a 30-hop limit. Optional response hooks
         are retained on probes, whose bodies then remain streamed and are closed
@@ -487,17 +502,16 @@ class AuthMiddleware(BaseMiddleware):
             response_hook=original_request.response_hook,
             stream=original_request.response_hook is not None,
         )
+        origin = base_url or original_request.url
         if original_request.allow_redirects:
             probe_response = next_handler(probe)
-            try:
+            if probe_response.status_code == 401:
+                require_authentication_origin(probe_response.raw_response, origin)
+            with ClosingResponse(probe_response.raw_response):
                 if probe_response.status_code == 401:
                     return _get_header_ci(probe_response.headers, "WWW-Authenticate")
                 return ""
-            finally:
-                if probe.stream:
-                    close_response(probe_response.raw_response)
 
-        origin = base_url or original_request.url
         try:
             current_url = resolve_registry_url(origin, "/v2/", origin)
         except ValueError:
@@ -509,27 +523,28 @@ class AuthMiddleware(BaseMiddleware):
                 raise AuthError("Authentication probe redirect cycle detected")
             visited.add(current_url)
             probe_response = next_handler(probe)
-            if probe.stream:
-                close_response(probe_response.raw_response)
-            try:
-                response_url = resolve_registry_url(
-                    origin, probe_response.raw_response.url or current_url, current_url,
-                )
-            except ValueError:
-                raise AuthError("Unsafe authentication probe response origin") from None
-            if probe_response.status_code not in REDIRECT_STATUSES:
-                if probe_response.status_code == 401:
-                    return _get_header_ci(probe_response.headers, "WWW-Authenticate")
-                return ""
-            if redirects >= MAX_REDIRECTS:
-                raise AuthError("Authentication probe redirect limit exceeded")
-            location = _get_header_ci(probe_response.headers, "Location")
-            if not location:
-                raise AuthError("Authentication probe redirect is missing Location")
-            try:
-                current_url = resolve_registry_url(origin, location, response_url)
-            except ValueError:
-                raise AuthError("Unsafe authentication probe redirect") from None
+            if probe_response.status_code == 401:
+                require_authentication_origin(probe_response.raw_response, origin)
+            with ClosingResponse(probe_response.raw_response):
+                try:
+                    response_url = resolve_registry_url(
+                        origin, probe_response.raw_response.url or current_url, current_url,
+                    )
+                except ValueError:
+                    raise AuthError("Unsafe authentication probe response origin") from None
+                if probe_response.status_code not in REDIRECT_STATUSES:
+                    if probe_response.status_code == 401:
+                        return _get_header_ci(probe_response.headers, "WWW-Authenticate")
+                    return ""
+                if redirects >= MAX_REDIRECTS:
+                    raise AuthError("Authentication probe redirect limit exceeded")
+                location = _get_header_ci(probe_response.headers, "Location")
+                if not location:
+                    raise AuthError("Authentication probe redirect is missing Location")
+                try:
+                    current_url = resolve_registry_url(origin, location, response_url)
+                except ValueError:
+                    raise AuthError("Unsafe authentication probe redirect") from None
             probe = RegistryRequest(
                 method="GET", url=current_url, headers={},
                 timeout=original_request.timeout, allow_redirects=False,

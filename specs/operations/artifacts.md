@@ -203,3 +203,12 @@ before Requests can consume them eagerly. Response/file closure precedes
 successful receipt. Transport, authentication, manifest, blob and caller
 exceptions keep their existing taxonomy; graph/storage-policy failures use
 `ArtifactError`, while filesystem failures may propagate as `OSError`.
+
+Both transport modes require a 401 response's **actual issuer origin** (scheme,
+host and effective port) to match the configured registry before interpreting
+its challenge or attempting a no-challenge `/v2/` fallback. Redirected probes
+and authentication retries have the same check; missing/invalid origin metadata
+fails closed, and rejected responses are closed without masking the auth error.
+Successful signed content-delivery-network downloads remain supported.
+This does not restrict token-realm origin: a challenge actually issued by the
+trusted registry may legitimately delegate token issuance to an external realm.
