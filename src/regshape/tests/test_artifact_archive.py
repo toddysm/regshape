@@ -56,7 +56,7 @@ ZERO = bytes(512)
 @pytest.fixture(autouse=True)
 def supported_archive(request: pytest.FixtureRequest) -> None:
     """Run platform-independent parser/guard cases everywhere and skip native work where unavailable."""
-    if "unsupported_platform" in request.node.name or "raw_" in request.node.name:
+    if "unsupported_platform" in request.node.name or request.node.name.startswith("test_raw_"):
         return
     try:
         require_safe_filesystem()
