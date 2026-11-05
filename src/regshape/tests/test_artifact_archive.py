@@ -793,9 +793,17 @@ def test_unsupported_platform_archive_guards_before_effects(tmp_path: Path) -> N
 
 
 def test_unsupported_platform_hardlink_guard(tmp_path: Path) -> None:
-    """Even a supported directory backend cannot pretend exclusive archive publication without links."""
+    """Isolate the hard-link guard on supported storage; other platforms still reject before effects."""
     registry = Registry(document(children=[]))
-    with patch.object(os, "supports_follow_symlinks", set()), pytest.raises(ArtifactError, match="unsupported"):
+    try:
+        require_safe_filesystem()
+    except ArtifactError:
+        expected = "Safe handle-relative"
+    else:
+        expected = "Exclusive hard-link archive publication"
+    with patch.object(
+        os, "supports_follow_symlinks", os.supports_follow_symlinks - {os.link},
+    ), pytest.raises(ArtifactError, match=expected):
         pull_artifact(
             registry, "repo", "moving", tmp_path / "out",
             output_format=ArtifactFormat.OCI_TAR_GZIP,
