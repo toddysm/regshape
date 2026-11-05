@@ -1,17 +1,27 @@
 # Complete artifact download and round-trip: requirements and engineering design
 
-- **Status:** Approved revision 3; design merged, raw-manifest item #114 implementation authorized.
+- **Status:** Revision 4 publication refinement approved; revised text/implementation under pull-request review.
 - **Feature:** [#91](https://github.com/toddysm/regshape/issues/91).
 - **Design item:** [#113](https://github.com/toddysm/regshape/issues/113).
 - **Related, separate capability:** [#112](https://github.com/toddysm/regshape/issues/112), config/layer-position downloads.
 - **Target:** [0.2](https://github.com/toddysm/regshape/milestone/1); not a release commitment.
 - **Date / inspected baseline:** 2026-11-05 UTC / `d0e2540a24e77b92949e8b3371c1485185e75a6a`.
 - **Owner evidence:** [recorded requirements clarification](https://github.com/toddysm/regshape/issues/91#issuecomment-6646891148).
-- **Authorization:** owner approved revision 3 and merging
-  [design PR #120](https://github.com/toddysm/regshape/pull/120). The In progress
-  inventory transition and item #114 through an open reviewed implementation PR
-  are authorized, using hosted checks and agent-only reviews. Its runtime merge,
-  later delivery items, release and worktree cleanup remain separate gates.
+- **Historical approval:** owner approved revision 3 at design head
+  `c4e2c922b6f83aa8beb06c6b944a740bb701048d`, recorded design SHA-256
+  `87bf351ccb0e0ee8d22887b3f0ad0502c9ca1edaedb2b5c0ee95c1d8ffa70bd4`,
+  and merging [design PR #120](https://github.com/toddysm/regshape/pull/120).
+  Subsequent approval metadata was administrative, not a new technical revision.
+- **Current authorization:** the owner explicitly approved the
+  [revision-4 publication refinement](https://github.com/toddysm/regshape/issues/91#issuecomment-6666694366)
+  after a reproduced initial-directory acquisition race. This authorizes the
+  trusted-private namespace and atomic no-replace protocol below, with explicit
+  trust/platform/filesystem boundaries. The exact final revision-4 file hash has
+  **not** separately been reviewed/approved by the owner; retain the revision-3
+  hash as historical evidence, not as the hash of this revised text.
+  Delivery continues with hosted checks and agent-only reviews. Parent-controlled
+  protected merges remain required; no release, #112 work or branch cleanup is
+  authorized by this refinement.
 
 Open Container Initiative (OCI), command-line interface (CLI), application
 programming interface (API), product requirements document (PRD), engineering
@@ -28,6 +38,15 @@ not descriptions of already implemented functionality.
 Revision 3 closes review gaps in output-path identity, compressed-input/gzip
 budgets, layout-marker buffering and publication-tag validation. These are
 mandatory safety constraints, not claims that the implementation already exists.
+
+> **Revision 4 approval note:** `mkdir` followed by `stat/open` in an exposed
+> namespace cannot prove creation ownership: replacement before the first
+> identity read can be adopted and deleted. The owner approved establishing
+> ownership privately **before** exposing staging/output names, with native
+> atomic no-replace installation. User-facing command/output scope is unchanged.
+> Ordinary permissions do not isolate hostile processes with the same user
+> identity; D4 now states that trust precondition explicitly rather than
+> misrepresenting permission checks as such isolation.
 
 ## Part I: functional requirements
 
@@ -552,35 +571,70 @@ No successful pull relies on the old shallow validation result.
 
 Output parent must already exist and be writable. A destination that exists
 (including symlink, empty directory or file) is an error before registry access.
-Use private sibling staging with a random name; never use descriptor URLs,
+Use an invocation-private namespace on the output filesystem, containing the
+random staging directory; never use descriptor URLs,
 annotations or unvalidated digests for paths. Stream blobs to staged temporary
 files and promote to digest paths only after verification/close. Root/child
 documents retain their exact bytes; generated wrapper metadata is the only
 serialized JSON output.
 
-Before publication, reserve the final directory with exclusive `mkdir`. If
-another invocation created it meanwhile, fail without modifying it. Create an
-incomplete marker in that exclusively owned directory, move the verified staged
-blob tree and marker metadata, and atomically write `index.json` last. Remove
-the incomplete marker only after all required writes/diagnostics succeed.
-Recursive validation/push reject a marker even if other metadata exists.
-Reservation alone is not protection against path replacement: retain safely
-opened handles to the verified parent and reserved directory. Perform every
-subsequent create/move/rename/marker operation relative to those handles with
-no-follow semantics, never by reopening the absolute output pathname. Verify
-opened objects' type/identity, including the reserved directory's association
-with its parent entry immediately before commit. If that entry was renamed,
+**Revision-4 trust boundary.** Bootstrap requires retained no-follow directory
+handles for a root/effective-user-owned path. Every ancestor must deny
+group/other writes, except sticky ancestors owned by root or the effective user
+(whose sticky rule protects that user's new entries). Access-control lists
+(ACLs) are inspected through handles: the initial implementation rejects Linux
+extended access/default ACLs and Darwin allow entries; deny-only Darwin ACLs
+are accepted. Unknown/unreadable ACL policy fails closed. The new private root
+must be owned by the effective user with mode `0700`. Its identity, permissions,
+ACLs and bootstrap ancestry are rechecked throughout its lifetime.
+
+These enforceable checks exclude other unprivileged identities. They **do not**
+certify the absence of hostile same-user or privileged actors. The caller must
+exclusively control those principals' access to the private namespace, including
+its bootstrap parent, from initial acquisition until all children are closed.
+If that operational precondition cannot be met, this implementation is
+unsupported: use an isolated identity/environment or do not invoke it. There
+is no automatic hostile-process detector and no claim that mode `0700`, random
+names or another pathname check provides same-user isolation.
+
+Create/open owned directories only within that trusted bootstrap/private
+boundary. The caller-selected final name is **never** acquired by
+`mkdir/stat/open`. Finish the graph and metadata privately: create the incomplete
+marker, write `oci-layout`, and atomically install `index.json` last. Install the
+already held staging inode at the final name with a native atomic no-replace
+rename: Linux `renameat2(RENAME_NOREPLACE)` or Darwin
+`renameatx_np(RENAME_EXCL)`. Every existing target, including an empty directory
+or symlink, loses no data and causes an error. File promotions use the same
+no-replace rule. Verify target identity against the retained original handle
+before updating the ownership ledger; never adopt the object found at that name.
+
+Keep the private namespace alive through publication and cleanup. Unsupported
+platforms/native bindings fail before creation; an owned private probe verifies
+filesystem collision rejection and successful no-replace movement before
+registry access. Unsupported/cross-device operations fail explicitly. There is
+no `rename`, replace, copy or check-then-open fallback. Windows currently has no
+supported backend; its guard is tested rather than claiming safe writes.
+
+After installation, verify associations and remove the incomplete marker only
+after all required writes/diagnostics succeed. Marker removal is an irreversible
+publication boundary, including cancellation immediately after the unlink
+syscall. Recursive validation/push reject a marker even if other metadata exists.
+Retain safely opened parent/directory handles. Every create/move/rename/marker
+operation is handle-relative with no-follow semantics; never reopen the output
+pathname to obtain ownership. If an entry was renamed,
 replaced or became a symlink/reparse point, abort without writing through it or
-removing the replacement. Cleanup stays handle-relative to owned objects; if
-the moved directory cannot safely be removed, report it as retained rather than
-guessing a new pathname. Apply equivalent handle/identity protection to sibling
-staging and archive publication. Fail before unsafe filesystem side effects when
-the platform cannot provide the required operations; never silently fall back
-to check-then-open pathname writes.
+deleting the replacement. Reclaim an installed, incomplete directory into a
+fresh private quarantine name atomically, then check its identity **before**
+deleting contents. If a raced move captured a replacement, restore it using
+no-replace semantics. If restoration collides, retain it at the explicit private
+location without deleting either object. Unknown/moved paths are retained with
+diagnostics, not recursively removed. The private root itself is cleaned only
+inside the trusted bootstrap boundary. Apply equivalent ownership, no-replace
+and lifetime rules to later archive publication.
 There is **no claim of atomic whole-directory visibility**: concurrent readers
 must wait for completion and validate the layout.
-This prevents redirected writes, not another same-privilege process modifying
-caller-owned output after publication.
+This guards publication-path races within the stated trust boundary, not hostile
+access inside private storage or modification of caller-owned output after return.
 
 Track files/directories created by this invocation. On handled failure/cancel,
 remove only owned staged/output entries; do not recursively delete an
@@ -1115,6 +1169,12 @@ Required suites/measurements:
 - Rename-and-symlink replacement of a reserved destination/staging parent during
   publication: no writes outside owned handles, no deletion of replacement paths,
   failure on identity mismatch and explicit retained-output reporting.
+- Revision-4 acquisition/install/cleanup races: public mkdir ownership acquisition
+  rejected; preexisting substitution immediately before installation never adopted;
+  held-inode mismatch before/after native movement fails; quarantine replacement
+  is restored without replacement or explicitly retained on collision. Verify
+  namespace lifetime, owner/permission/ACL rejection, native flag values,
+  unsupported backends/filesystems, and zero registry calls on failed preflight.
 - Push into a fake destination content store, then pull/verify that store:
   object bytes and root identity must match. Assert every parent is published
   after required children; tag overrides only roots; default ref-name/digest;
@@ -1131,19 +1191,24 @@ Required suites/measurements:
 - Full legacy suite including Docker/layout push; scoped type/lint baseline
   comparisons. No new framework unless a demonstrated test requirement needs it.
 
-For this design-only PR, validate links/anchors, source/signature evidence,
-sample consistency, proposed limits/graph invariants and whitespace. No configured
-docs builder or Markdown linter exists; none is claimed. Hosted tests on the
-proposal validate unchanged runtime, not the future capability.
+The original design-only review validated links/anchors, source/signature
+evidence, sample consistency and whitespace, not unimplemented runtime behavior.
+Revision-4 delivery must validate its actual implementation and native safety
+matrix in addition to those document checks. No configured docs builder or
+Markdown linter exists; none is claimed.
 
 ### O. Next actions and approval gate
 
-Revision 3 and its seven linked children are owner-approved; design #120 is merged.
-Complete the authorized In progress inventory transition, then implement #114
-through an open reviewed PR. Material changes invalidate approval; later items
-and implementation merges require separate authorization. Final docs
-and later inventory close-out remain mandatory. No partner/legal launch event,
-release date, package bump or branch cleanup is authorized here.
+Revision 3 and its seven linked children were owner-approved; design #120 and
+raw-manifest delivery #122 are merged. The owner subsequently approved full
+delivery and the [revision-4 publication refinement](https://github.com/toddysm/regshape/issues/91#issuecomment-6666694366).
+Complete #115 with fresh exact-head checks and agent reviews, then continue the
+authorized child sequence. The parent controls protected merges and Epic state;
+this worker cannot merge. Historical revision-3 approval is not an assertion
+that the exact final revision-4 text/hash received separate owner review.
+Further material changes require renewed approval. Final docs and inventory
+close-out remain mandatory. No launch, release, package bump, #112 work or branch
+cleanup is authorized here.
 
 ### P. References
 

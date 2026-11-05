@@ -36,15 +36,18 @@ def _page(
     url: str | None = None,
     namespace: str = REPO,
 ) -> requests.Response:
-    """Build a real in-memory response, including intentionally invalid tag data."""
+    """Build a buffered registry response, including explicit issuer metadata for auth fixtures."""
     response = requests.Response()
     response.status_code = status
     response._content = json.dumps({"name": namespace, "tags": tags}).encode()
+    response._content_consumed = True
     response.headers["Content-Type"] = "application/json"
     if link is not None:
         response.headers["Link"] = link
     if url is not None:
         response.url = url
+    elif status == 401:
+        response.url = BASE + PATH
     return response
 
 
@@ -177,9 +180,11 @@ class TestTagRedirectSafety:
         self, middleware: bool, insecure: bool
     ) -> None:
         """Find a challenge behind a safe redirect without re-enabling auto-follow."""
-        challenge = _page([], status=401)
+        scheme = "http" if insecure else "https"
+        origin = f"{scheme}://{REGISTRY}"
+        challenge = _page([], status=401, url=origin + "/v2/challenge")
         challenge.headers["WWW-Authenticate"] = 'Basic realm="registry"'
-        pages = [_page([], status=401), _redirect("challenge"), challenge, _page(["a"])]
+        pages = [_page([], status=401, url=origin + PATH), _redirect("challenge"), challenge, _page(["a"])]
         with (
             patch("regshape.libs.decorators.call_details.requests.request", side_effect=pages) as http,
             patch("regshape.libs.auth.registryauth.authenticate", return_value="test-token") as exchange,
@@ -228,7 +233,7 @@ class TestTagRedirectSafety:
         foreign = _page([], status=401, url="https://xn--fa-hia.example/challenge")
         foreign.headers["WWW-Authenticate"] = 'Basic realm="other"'
         pages = [
-            _page([], status=401),
+            _page([], status=401, url="https://fass.example" + PATH),
             _redirect("https://fa\u00df.example/challenge"),
             foreign,
         ]

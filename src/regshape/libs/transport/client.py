@@ -11,7 +11,8 @@
               construction, handles the WWW-Authenticate challenge /
               401 -> authenticate -> retry cycle, and delegates every actual
               HTTP call to http_request so that --debug-calls telemetry
-              is available for free.
+              is available for free. Only responses from the configured registry
+              origin may initiate credential negotiation, including auth probes.
 
               TransportConfig is a plain dataclass that carries the
               per-registry connection settings.
@@ -24,7 +25,7 @@ from typing import Any, List, Optional
 
 import requests
 
-from regshape.libs._http import close_response
+from regshape.libs._http import ClosingResponse
 from regshape.libs.auth import registryauth
 from regshape.libs.auth.credentials import resolve_credentials
 from regshape.libs.decorators.call_details import http_request
@@ -41,6 +42,7 @@ from regshape.libs.transport.middleware import (
     _normalize_www_authenticate,
 )
 from regshape.libs.transport.models import RegistryRequest, RegistryResponse
+from regshape.libs.transport.urls import require_authentication_origin
 
 
 def _send_http_request(*args: Any, **kwargs: Any) -> requests.Response:
@@ -258,7 +260,13 @@ class RegistryClient:
         timeout: int, 
         **kwargs
     ) -> requests.Response:
-        """Handle legacy auth and discard an initial streamed 401 before probing/retrying."""
+        """Validate 401 issuers before legacy negotiation, disposing owned challenges and probes.
+
+        A foreign/missing-origin 401 fails before header interpretation or the
+        no-challenge fallback. Valid external token realms remain registry policy.
+        Successful off-origin responses are unchanged; rejected retry responses
+        are closed while valid final responses remain caller-owned.
+        """
         response = _send_http_request(url, method, headers=req_headers, timeout=timeout, **kwargs)
         self.last_response = response
 
@@ -266,9 +274,9 @@ class RegistryClient:
             return response
 
         # -- 401 handling --------------------------------------------------------
-        www_auth = response.headers.get("WWW-Authenticate", "")
-        if kwargs.get("stream"):
-            close_response(response)
+        require_authentication_origin(response, self.base_url)
+        with ClosingResponse(response):
+            www_auth = response.headers.get("WWW-Authenticate", "")
         if not www_auth:
             # Some registries (e.g. ACR) only return WWW-Authenticate on
             # the /v2/ endpoint.  Fall back to a /v2/ probe.
@@ -276,7 +284,10 @@ class RegistryClient:
                 v2_url = f"{self.base_url}/v2/"
                 v2_resp = http_request(v2_url, "GET", headers={}, timeout=timeout)
                 if v2_resp.status_code == 401:
-                    www_auth = v2_resp.headers.get("WWW-Authenticate", "")
+                    require_authentication_origin(v2_resp, self.base_url)
+                with ClosingResponse(v2_resp):
+                    if v2_resp.status_code == 401:
+                        www_auth = v2_resp.headers.get("WWW-Authenticate", "")
             else:
                 original_request = RegistryRequest(
                     method=method, url=url, headers=req_headers,
@@ -313,6 +324,8 @@ class RegistryClient:
 
         response = _send_http_request(url, method, headers=req_headers, timeout=timeout, **kwargs)
         self.last_response = response
+        if response.status_code == 401:
+            require_authentication_origin(response, self.base_url)
         return response
 
     # ------------------------------------------------------------------

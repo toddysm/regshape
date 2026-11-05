@@ -1,15 +1,53 @@
 #!/usr/bin/env python3
 
-"""Shared URI resolution and origin checks for registry pagination and auth probes.
+"""Shared URI resolution and origin checks for pagination, probes and authentication.
 
 Redirect users share the same 30-hop safety budget and supported status codes.
-These client policies do not change the default behavior of ordinary requests.
+Successful off-origin downloads remain allowed. A redirected authentication
+response may never select where configured registry credentials are negotiated.
 """
 
 from urllib.parse import urlsplit, urlunsplit
 
+import requests
+
+from regshape.libs._http import close_response
+from regshape.libs.errors import AuthError
+
 MAX_REDIRECTS = 30
 REDIRECT_STATUSES = (301, 302, 303, 307, 308)
+
+
+def require_authentication_origin(response: requests.Response, base_url: str) -> None:
+    """Require the actual response origin before interpreting a 401 or probing for a challenge.
+
+    Compare scheme, ASCII hostname and effective port with the configured
+    registry. Missing/malformed response URLs fail closed; the requested URL is
+    not evidence of where Requests ultimately received a redirected response.
+    This validates the challenge issuer, NOT its token realm: a trusted registry
+    may legitimately delegate token issuance to another origin.
+
+    :param response: Owned response whose status is 401; no body is read.
+    :param base_url: Configured registry origin, or an explicit trusted origin
+        supplied to standalone authentication middleware.
+    :raises AuthError: If origin cannot be verified. The rejected response is
+        closed, preserving this primary failure if cleanup/logging also fails.
+        A valid response remains caller-owned and is not closed here.
+    """
+    try:
+        actual = getattr(response, "url", None)
+        if (
+            not isinstance(base_url, str) or not base_url
+            or not isinstance(actual, str) or not actual
+            or "\\" in actual
+            or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in actual)
+            or _url_origin(actual) != _url_origin(base_url)
+        ):
+            raise ValueError("Unverified authentication response origin")
+    except ValueError:
+        error = AuthError("Refusing authentication from an unverified registry response origin")
+        close_response(response, primary_error=error)
+        raise error from None
 
 
 def resolve_registry_url(base_url: str, target: str, context_url: str) -> str:

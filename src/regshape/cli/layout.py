@@ -11,6 +11,7 @@
               ``generate manifest``, ``update config``, ``status``, ``show``,
               and ``validate`` subcommands for creating and managing OCI Image
               Layouts via a staged build workflow.
+              Recursive validation opts into strict artifact graph policy.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
@@ -24,9 +25,16 @@ import click
 
 from regshape.cli.formatting import emit_error, emit_json, progress_status
 from regshape.cli.progress import ProgressDisplay
+from regshape.libs.artifacts.models import ArtifactLimits
 from regshape.libs.decorators import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
-from regshape.libs.errors import AuthError, BlobError, LayoutError, ManifestError
+from regshape.libs.errors import (
+    ArtifactError,
+    AuthError,
+    BlobError,
+    LayoutError,
+    ManifestError,
+)
 from regshape.libs.layout import (
     generate_config,
     generate_manifest,
@@ -675,6 +683,13 @@ def show(ctx, layout_path):
 
 @layout.command("validate")
 @telemetry_options
+@click.option("--recursive", is_flag=True, help="Verify the complete artifact graph.")
+@click.option("--max-manifest-bytes", type=click.IntRange(min=1), default=None)
+@click.option("--max-objects", type=click.IntRange(min=1), default=None)
+@click.option("--max-depth", type=click.IntRange(min=1), default=None)
+@click.option("--max-total-bytes", type=click.IntRange(min=1), default=None)
+@click.option("--max-archive-bytes", type=click.IntRange(min=1), default=None)
+@click.option("--max-archive-input-bytes", type=click.IntRange(min=1), default=None)
 @click.option(
     "--path",
     "-p",
@@ -686,15 +701,31 @@ def show(ctx, layout_path):
 )
 @click.pass_context
 @track_scenario("layout validate")
-def validate(ctx, layout_path):
+def validate(
+    ctx, layout_path, recursive, max_manifest_bytes, max_objects, max_depth,
+    max_total_bytes, max_archive_bytes, max_archive_input_bytes,
+):
     """Validate the structural and content integrity of an OCI Image Layout.
 
-    Checks that all blobs referenced by ``index.json`` and all manifests
-    within them are present and their digests match the declared values.
+    Default behavior remains shallow. --recursive verifies all platforms,
+    explicit subjects and every config/layer. Limits require --recursive;
+    archive input is not implemented in this delivery.
     """
+    values = {
+        "max_manifest_bytes": max_manifest_bytes, "max_objects": max_objects,
+        "max_depth": max_depth, "max_total_bytes": max_total_bytes,
+        "max_archive_bytes": max_archive_bytes,
+        "max_archive_input_bytes": max_archive_input_bytes,
+    }
+    supplied = {key: value for key, value in values.items() if value is not None}
+    if supplied and not recursive:
+        raise click.UsageError("Safety limits require --recursive")
     try:
-        validate_layout(layout_path)
-    except (LayoutError, OSError) as exc:
+        if recursive:
+            validate_layout(layout_path, recursive=True, limits=ArtifactLimits(**supplied))
+        else:
+            validate_layout(layout_path)
+    except (ArtifactError, LayoutError, OSError) as exc:
         emit_error(layout_path, str(exc))
 
     click.echo(f"Layout at {layout_path} is valid.")

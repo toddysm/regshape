@@ -1,7 +1,8 @@
-"""Bound raw manifest entity decoding independently of urllib3 decoder buffering.
+"""Bound raw manifest and opt-in blob decoding independently of urllib3 buffering.
 
-Redirect bodies are rejected in a Requests response hook before Session can
-consume them eagerly. Ordinary registry operations retain their existing policy.
+The manifest redirect hook rejects responses before Session can consume them
+eagerly; bounded blob receives supply their own redirect hook. Ordinary registry
+operations retain their existing policy.
 """
 
 import zlib

@@ -45,7 +45,10 @@ jobs:
           src/regshape/tests/test_manifest_progress.py
           src/regshape/tests/test_transport_client.py
           src/regshape/tests/test_client_middleware_integration.py
+          src/regshape/tests/test_auth_challenge_origin.py
           src/regshape/tests/test_tag_pagination.py
+          src/regshape/tests/test_artifact_graph.py
+          src/regshape/tests/test_artifact_storage.py
 
   click-minimum:
     runs-on: ubuntu-latest
@@ -64,3 +67,25 @@ jobs:
           src/regshape/tests/test_refs.py
           src/regshape/tests/test_manifest_cli.py
           src/regshape/tests/test_manifest_cli_progress.py
+          src/regshape/tests/test_layout_cli.py
+          src/regshape/tests/test_artifact_graph.py
+
+  artifact-filesystem:
+    name: artifact-filesystem (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.12"
+      - name: Install package and test dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Test native safety boundaries and unsupported-platform guards
+        run: >-
+          python -m pytest -q
+          src/regshape/tests/test_artifact_storage.py
+          src/regshape/tests/test_artifact_namespace.py

@@ -31,8 +31,10 @@ def _make_response(
     body: str = "{}",
     www_auth: str = None,
 ) -> MagicMock:
+    """Model a completed registry response with the actual origin needed for credential negotiation."""
     resp = MagicMock(spec=requests.Response)
     resp.status_code = status_code
+    resp.url = f"https://{REGISTRY}{PATH}"
     resp.text = body
     headers = {}
     if www_auth:
