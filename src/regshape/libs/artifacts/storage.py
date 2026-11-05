@@ -7,6 +7,7 @@ effective user identity and privileged actors during the namespace lifetime:
 ordinary permissions do not isolate hostile same-identity processes.
 """
 
+import errno
 import hashlib
 import os
 import stat
@@ -33,6 +34,13 @@ def require_safe_filesystem() -> None:
         or os.stat not in os.supports_follow_symlinks
     ):
         raise ArtifactError("Safe handle-relative artifact storage is unsupported on this platform")
+
+
+def require_archive_publication() -> None:
+    """Require a no-follow, handle-relative hard-link API; runtime filesystem refusal still fails."""
+    require_safe_filesystem()
+    if os.link not in os.supports_dir_fd or os.link not in os.supports_follow_symlinks:
+        raise ArtifactError("Exclusive hard-link archive publication is unsupported on this platform")
 
 
 def _component(name: str) -> None:
@@ -345,6 +353,41 @@ class SafeDirectory:
             raise ArtifactError("Artifact file replaced; replacement retained")
         os.unlink(name, dir_fd=self.fd)
         del self.files[name]
+
+    def publish_file(self, name: str, destination: "SafeDirectory", new_name: str) -> None:
+        """Hard-link a completed private regular file without replacement, then unlink staging.
+
+        The public name is never registered for cleanup: the link syscall is an
+        irreversible publication boundary even if cancellation arrives before
+        its return or subsequent verification/unlink fails. No replacement is
+        ever adopted or removed. The trusted private source/namespace must stay
+        alive through this call; unsupported filesystems get no copy fallback.
+        """
+        _component(name)
+        _component(new_name)
+        require_archive_publication()
+        self.verify()
+        destination.verify()
+        if not self._inside_namespace():
+            raise ArtifactError("Archive publication requires a private source namespace")
+        expected = self.files[name]
+        current = os.stat(name, dir_fd=self.fd, follow_symlinks=False)
+        if not stat.S_ISREG(current.st_mode) or not os.path.samestat(current, expected):
+            raise ArtifactError("Archive source identity changed before publication")
+        try:
+            os.link(
+                name, new_name, src_dir_fd=self.fd, dst_dir_fd=destination.fd,
+                follow_symlinks=False,
+            )
+        except OSError as error:
+            if error.errno in (errno.ENOSYS, errno.EINVAL, errno.ENOTSUP, errno.EXDEV, errno.EPERM):
+                raise ArtifactError("Filesystem cannot provide exclusive hard-link archive publication") from error
+            raise
+        installed = os.stat(new_name, dir_fd=destination.fd, follow_symlinks=False)
+        if not stat.S_ISREG(installed.st_mode) or not os.path.samestat(installed, expected):
+            raise ArtifactError("Published archive identity changed; public entry retained")
+        destination.verify()
+        self.unlink(name)
 
     def move_file(self, name: str, destination: "SafeDirectory", new_name: str) -> None:
         """Promote a registered file using native no-replace semantics, without pathname reopening."""

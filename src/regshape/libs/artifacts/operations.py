@@ -1,12 +1,14 @@
-"""Download complete artifact graphs into safely published OCI directories.
+"""Download complete graphs into safely published OCI directories or gzip-tar.
 
 The client is borrowed, observers are synchronous and terminal-free, and a
-successful result means publication completed. Archive output and push are not
-implemented here. Snapshots expose verified private files for those later layers.
+successful result means publication completed. Directory/archive snapshots expose
+verified private files for consumers; recursive registry push is a separate layer.
 """
 
 import json
+import os
 import re
+import stat
 import tempfile
 from pathlib import Path
 from types import TracebackType
@@ -15,6 +17,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from regshape.libs._http import report_secondary_failure
+from regshape.libs.artifacts.archive import ArchiveSnapshot, write_archive
 from regshape.libs.artifacts.graph import (
     ACCEPT,
     INDEX_TYPES,
@@ -37,6 +40,7 @@ from regshape.libs.artifacts.storage import (
     INCOMPLETE,
     ContentStore,
     SafeDirectory,
+    require_archive_publication,
     require_safe_filesystem,
 )
 from regshape.libs.blobs import get_blob
@@ -198,13 +202,13 @@ def pull_artifact(
     limits: ArtifactLimits | None = None,
     progress_callback: ArtifactProgressCallback | None = None,
 ) -> ArtifactPullResult:
-    """Pull every platform/subject/config/layer into a new OCI layout directory.
+    """Pull every platform/subject/config/layer into a new OCI directory or gzip-tar.
 
     :param client: Borrowed configured transport; no credential lookup occurs here.
     :param repo: Strict relative registry repository.
     :param reference: A literal tag or supported SHA-256/SHA-512 digest, fetched once.
-    :param output_path: New destination with an existing no-symlink parent.
-    :param output_format: OCI only in this implementation; archives fail preflight.
+    :param output_path: New directory/file destination with an existing no-symlink parent.
+    :param output_format: OCI directory (default) or single-member OCI tar-gzip.
     :param limits: Independent policy caps; defaults apply when omitted.
     :param progress_callback: Optional synchronous observer; errors propagate unchanged.
     :returns: Frozen completed-publication record with the original root identity.
@@ -225,15 +229,21 @@ def pull_artifact(
     observers = _Observers(progress_callback)
     _validate_inputs(repo, reference, ACCEPT, None, None, policy.max_manifest_bytes)
     registry = _registry(client)
-    if output_format != ArtifactFormat.OCI:
-        raise ArtifactError("Only OCI directory output is implemented")
+    try:
+        output_format = ArtifactFormat(output_format)
+    except (ValueError, TypeError) as error:
+        raise ArtifactError("Unsupported artifact output format") from error
+    if output_format == ArtifactFormat.OCI_TAR_GZIP:
+        require_archive_publication()
+        if policy.max_gzip_header_bytes < 10:
+            raise ArtifactError("Gzip header exceeds max_gzip_header_bytes")
     marker = b'{"imageLayoutVersion":"1.0.0"}'
     if len(marker) > policy.max_layout_marker_bytes:
         raise ArtifactError("Generated oci-layout exceeds max_layout_marker_bytes")
     require_safe_filesystem()
     output = Path(output_path).absolute()
     if output.name in ("", ".", ".."):
-        raise ValueError("Output must name a new directory")
+        raise ValueError("Output must name a new directory or archive")
     try:
         with SafeDirectory.open(output.parent) as parent:
             if parent.exists(output.name):
@@ -298,11 +308,14 @@ def pull_artifact(
                 if len(wrapper) > policy.max_manifest_bytes:
                     raise ArtifactError("Generated wrapper exceeds max_manifest_bytes")
                 parse_document(wrapper, policy, media_type=OCI_INDEX)
-                _publish(parent, staging, output.name, wrapper)
+                if output_format == ArtifactFormat.OCI:
+                    _publish(parent, staging, output.name, wrapper)
+                else:
+                    write_archive(store, graph, wrapper, parent, output.name, policy)
                 result = ArtifactPullResult(
                     source=f"{registry}/{repo}{'@' if ':' in reference else ':'}{reference}",
                     resolved_reference=f"{registry}/{repo}@{root.digest}",
-                    root=root_descriptor, output_path=str(output), output_format=ArtifactFormat.OCI,
+                    root=root_descriptor, output_path=str(output), output_format=output_format,
                     indexes=sum(item.kind == "index" for item in graph.objects),
                     manifests=sum(item.kind == "manifest" for item in graph.objects),
                     blobs=sum(item.kind == "blob" for item in graph.objects),
@@ -387,3 +400,24 @@ class DirectorySnapshot:
             if self.parent is not None:
                 self.parent.close(primary)
         return False
+
+
+def snapshot_layout(
+    path: str | Path, *, limits: ArtifactLimits | None = None,
+) -> DirectorySnapshot | ArchiveSnapshot:
+    """Select a safe directory/archive snapshot without trusting a filename extension.
+
+    The returned context must be entered before using its store/graph/wrapper
+    and must outlive all consumers. Selection is advisory: each context performs
+    no-follow type/identity checks again when opening, so replacement cannot
+    redirect reads through a symlink. Nonregular/nondirectory sources fail.
+    """
+    source = Path(path).absolute()
+    with SafeDirectory.open(source.parent) as parent:
+        identity = os.stat(source.name, dir_fd=parent.fd, follow_symlinks=False)
+        parent.verify()
+    if stat.S_ISDIR(identity.st_mode):
+        return DirectorySnapshot(source, limits=limits)
+    if stat.S_ISREG(identity.st_mode):
+        return ArchiveSnapshot(source, limits=limits)
+    raise ArtifactError("Layout source must be a regular archive file or directory")

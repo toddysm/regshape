@@ -349,7 +349,7 @@ def test_source_symlinks_are_rejected(tmp_path: Path, which: str) -> None:
     moved = target.with_name(target.name + "-original")
     target.rename(moved)
     target.symlink_to(moved, target_is_directory=moved.is_dir())
-    with pytest.raises(OSError):
+    with pytest.raises((ArtifactError, OSError)):
         validate_layout(source, recursive=True)
     with pytest.raises(OSError), DirectorySnapshot(source):
         pytest.fail("Unsafe source snapshot entered")

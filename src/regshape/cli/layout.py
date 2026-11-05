@@ -696,8 +696,8 @@ def show(ctx, layout_path):
     "layout_path",
     required=True,
     type=click.Path(exists=True),
-    metavar="DIR",
-    help="Root directory of an OCI Image Layout to validate.",
+    metavar="PATH",
+    help="OCI layout directory, or gzip-tar archive with --recursive.",
 )
 @click.pass_context
 @track_scenario("layout validate")
@@ -708,8 +708,8 @@ def validate(
     """Validate the structural and content integrity of an OCI Image Layout.
 
     Default behavior remains shallow. --recursive verifies all platforms,
-    explicit subjects and every config/layer. Limits require --recursive;
-    archive input is not implemented in this delivery.
+    explicit subjects and every config/layer from a safe directory/archive
+    snapshot. Limits and gzip-tar input require --recursive.
     """
     values = {
         "max_manifest_bytes": max_manifest_bytes, "max_objects": max_objects,
