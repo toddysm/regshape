@@ -173,6 +173,11 @@ deflate are supported if the server still encodes the response. Unsupported or
 stacked encodings, incomplete streams, or corrupt/trailing encoded data fail
 explicitly. Invalid UTF-8 or non-JSON bytes can be saved if their identity
 and size are valid; higher-level graph code is responsible for schema checks.
+Deflate first uses its required zlib wrapper and permits raw-deflate compatibility
+fallback only before emitting any entity bytes, retaining at most 64 KiB of
+encoded prefix. A valid-looking two-byte zlib prefix alone does not choose the
+format. If ambiguity cannot be resolved within that bound or after output starts,
+the operation fails instead of replaying already emitted bytes.
 Error-body decoding is bounded by the smaller of `max_bytes` and 64 KiB and
 rejects overlarge errors. Framing/read errors propagate before tolerant OCI
 error parsing; bounded error buffering does not change successful payload bytes.

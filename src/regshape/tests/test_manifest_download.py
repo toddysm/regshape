@@ -1016,3 +1016,41 @@ def test_bounded_decoder_success_and_errors(tmp_path: Path, variant: str) -> Non
             result = download_manifest(client(), REPO, digest(payload), ACCEPT, path)
             assert path.read_bytes() == payload and result.size == len(payload)
     assert response.close_calls == 1
+
+
+@pytest.mark.parametrize("chunk_size", [1, 2, 7, 65536])
+def test_ambiguous_raw_deflate_prefix_falls_back_before_output(chunk_size: int) -> None:
+    """A raw stored block may begin with 0x789c without being a zlib-wrapped stream."""
+    wire = b"\x78\x9c\x00\x63\xff" + b"x" * 156 + b"\x01\x00\x00\xff\xff"
+    expected = zlib.decompress(wire, wbits=-15)
+    response = StreamResponse(wire, headers={"Content-Encoding": "deflate"})
+    try:
+        chunks = list(entity_chunks(response, chunk_size))
+        assert b"".join(chunks) == expected == b"x" * 156
+        assert all(len(chunk) <= chunk_size for chunk in chunks)
+    finally:
+        response.close()
+
+
+@pytest.mark.parametrize("past_output", [False, True])
+def test_deflate_fallback_never_replays_emitted_or_unbounded_input(
+    past_output: bool,
+) -> None:
+    """Fallback is forbidden once entity bytes were emitted or encoded history reached its cap."""
+    if past_output:
+        wire = zlib.compress(b"content" * 10000)[:-4] + b"bad!"
+    else:
+        wire = b"\x78\x9c" + b"\x00\x00\x00\xff\xff" * 14000 + b"\xff"
+    response = StreamResponse(wire, headers={"Content-Encoding": "deflate"})
+    received = 0
+    with patch(
+        "regshape.libs.manifests._stream.zlib.decompressobj", wraps=zlib.decompressobj
+    ) as decoder:
+        try:
+            with pytest.raises(requests.exceptions.ContentDecodingError):
+                for chunk in entity_chunks(response, 17):
+                    received += len(chunk)
+            assert decoder.call_count == 1
+            assert (received > 0) == past_output
+        finally:
+            response.close()
