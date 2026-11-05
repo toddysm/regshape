@@ -44,7 +44,10 @@ from regshape.libs.transport.models import RegistryRequest, RegistryResponse
 
 
 def _send_http_request(*args: Any, **kwargs: Any) -> requests.Response:
-    """Prepare counted bodies without changing existing HTTP argument conventions."""
+    """Prepare counted bodies and optional pre-redirect hooks without changing ordinary calls."""
+    response_hook = kwargs.pop("response_hook", None)
+    if response_hook is not None:
+        kwargs["hooks"] = {"response": response_hook}
     body = kwargs.get("data")
     if isinstance(body, _UploadBody):
         body.prepare_attempt()
@@ -224,7 +227,9 @@ class RegistryClient:
         url = f"{self.base_url}{request.url}" if request.url.startswith('/') else request.url
         
         # Use http_request for telemetry (--debug-calls)
-        redirect_options = {} if request.allow_redirects else {"allow_redirects": False}
+        redirect_options: dict[str, Any] = {} if request.allow_redirects else {"allow_redirects": False}
+        if request.response_hook is not None:
+            redirect_options["response_hook"] = request.response_hook
         response = _send_http_request(
             url=url,
             method=request.method,
@@ -267,7 +272,7 @@ class RegistryClient:
         if not www_auth:
             # Some registries (e.g. ACR) only return WWW-Authenticate on
             # the /v2/ endpoint.  Fall back to a /v2/ probe.
-            if kwargs.get("allow_redirects", True):
+            if kwargs.get("allow_redirects", True) and kwargs.get("response_hook") is None:
                 v2_url = f"{self.base_url}/v2/"
                 v2_resp = http_request(v2_url, "GET", headers={}, timeout=timeout)
                 if v2_resp.status_code == 401:
@@ -275,7 +280,9 @@ class RegistryClient:
             else:
                 original_request = RegistryRequest(
                     method=method, url=url, headers=req_headers,
-                    timeout=timeout, allow_redirects=False,
+                    timeout=timeout, allow_redirects=kwargs.get("allow_redirects", True),
+                    stream=kwargs.get("stream", False),
+                    response_hook=kwargs.get("response_hook"),
                 )
                 www_auth = AuthMiddleware._probe_v2_challenge(
                     self._terminal_handler, original_request, self.base_url,
@@ -340,6 +347,8 @@ class RegistryClient:
             request (e.g. data, params, stream). ``allow_redirects=False``
             disables automatic redirects, including authentication probes
             and retries, in both transport modes.
+            ``response_hook`` runs before Requests redirect processing and is
+            retained through auth retries/probes; callers own any hook-failure cleanup.
         :returns: The HTTP response from the registry.
         :raises AuthError: If authentication fails.
         :raises requests.exceptions.RequestException: On transport errors.
@@ -358,6 +367,7 @@ class RegistryClient:
                 params=kwargs.get('params'),
                 timeout=timeout,
                 allow_redirects=kwargs.get("allow_redirects", True),
+                response_hook=kwargs.get("response_hook"),
             )
             
             try:

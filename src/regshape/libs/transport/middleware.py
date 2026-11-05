@@ -449,6 +449,7 @@ class AuthMiddleware(BaseMiddleware):
             params=processed_request.params,
             timeout=processed_request.timeout,
             allow_redirects=processed_request.allow_redirects,
+            response_hook=processed_request.response_hook,
         )
 
         return next_handler(retry_request)
@@ -469,7 +470,9 @@ class AuthMiddleware(BaseMiddleware):
         authentication. The probe inherits the original redirect policy so
         an unvalidated redirect cannot introduce a foreign challenge. When
         automatic redirects are disabled, follow only validated same-origin
-        targets, with cycle detection and a 30-hop limit.
+        targets, with cycle detection and a 30-hop limit. Optional response hooks
+        are retained on probes, whose bodies then remain streamed and are closed
+        without consumption; a rejecting hook may abort before redirect handling.
 
         :returns: The ``WWW-Authenticate`` header value, or an empty
             string if the probe also lacks one.
@@ -481,12 +484,18 @@ class AuthMiddleware(BaseMiddleware):
             headers={},
             timeout=original_request.timeout,
             allow_redirects=original_request.allow_redirects,
+            response_hook=original_request.response_hook,
+            stream=original_request.response_hook is not None,
         )
         if original_request.allow_redirects:
             probe_response = next_handler(probe)
-            if probe_response.status_code == 401:
-                return _get_header_ci(probe_response.headers, "WWW-Authenticate")
-            return ""
+            try:
+                if probe_response.status_code == 401:
+                    return _get_header_ci(probe_response.headers, "WWW-Authenticate")
+                return ""
+            finally:
+                if probe.stream:
+                    close_response(probe_response.raw_response)
 
         origin = base_url or original_request.url
         try:
@@ -500,6 +509,8 @@ class AuthMiddleware(BaseMiddleware):
                 raise AuthError("Authentication probe redirect cycle detected")
             visited.add(current_url)
             probe_response = next_handler(probe)
+            if probe.stream:
+                close_response(probe_response.raw_response)
             try:
                 response_url = resolve_registry_url(
                     origin, probe_response.raw_response.url or current_url, current_url,
@@ -522,6 +533,8 @@ class AuthMiddleware(BaseMiddleware):
             probe = RegistryRequest(
                 method="GET", url=current_url, headers={},
                 timeout=original_request.timeout, allow_redirects=False,
+                response_hook=original_request.response_hook,
+                stream=original_request.response_hook is not None,
             )
             redirects += 1
 
