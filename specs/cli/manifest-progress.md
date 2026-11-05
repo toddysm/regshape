@@ -1,6 +1,6 @@
 # Manifest GET progress: functional requirements and engineering design
 
-- **Status:** Approved revision 3; library #105 merged, command item #104 implementation authorized.
+- **Status:** Approved revision 3; library #105 and command #104 merged, final documentation #102 authorized.
 - **Feature:** [#90](https://github.com/toddysm/regshape/issues/90).
 - **Design item:** [#101](https://github.com/toddysm/regshape/issues/101).
 - **Target:** [0.2](https://github.com/toddysm/regshape/milestone/1); not a release commitment.
@@ -8,9 +8,9 @@
 - **Date / inspected baseline:** 2026-11-04 / `662216f3ff508e83598c9f8af2096e50c682e20c`.
 - **Authorization:** Design artifacts, hosted GitHub Actions, agent-only reviews
   and merging [design PR #106](https://github.com/toddysm/regshape/pull/106).
-  The inventory-start and library PRs are merged. Command item #104 is authorized
-  through an open reviewed implementation PR. Its merge, final user documentation
-  delivery, release and branch/worktree cleanup are not authorized.
+  The inventory-start, library and command PRs are merged. Final documentation
+  item #102 is authorized through an open reviewed documentation PR. Its merge,
+  feature close-out, release and branch/worktree cleanup are not authorized.
 
 This combined product requirements document (PRD) and engineering design document
 (EDD) specifies approved behavior; the [capability inventory](../../docs/project-state.md)

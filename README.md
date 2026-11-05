@@ -65,6 +65,11 @@ Retrieve a manifest:
 regshape manifest get -a docker.io/library/alpine:latest
 ```
 
+Development builds containing manifest progress show one live stderr row for a
+manifest or index, completing only after output succeeds. Check installed help
+for `--no-progress`. See the [manifest download workflow](docs/guides/live-transfer-progress.md#download-a-manifest-or-index)
+for file/raw/part examples and the distinction between receipt and success.
+
 List tags for a repository:
 
 ```bash
@@ -94,7 +99,9 @@ affected commands and unchanged Docker/blob options.
 - [Creating OCI Layouts](docs/guides/create-oci-layout.md)
 - [Docker Desktop Integration](docs/guides/docker-desktop-integration.md)
 - [Live Transfer Progress](docs/guides/live-transfer-progress.md)
+- [Manifest/Index Download Progress](docs/guides/live-transfer-progress.md#download-a-manifest-or-index)
 - [Library Transfer Callbacks](docs/library/transfer-progress.md)
+- [Manifest Receive Observations](docs/library/transfer-progress.md#manifest-receive-observations)
 - [Artifact Options and Migration](docs/guides/artifact-options.md)
 
 ### Architecture & Design

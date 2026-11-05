@@ -3,7 +3,7 @@
 <!-- doc-type: overview -->
 
 Reconciled on **2026-11-04** against
-[main at 510266e](https://github.com/toddysm/regshape/commit/510266e638ffeca4ffa14779a2494802f3569b28).
+[main at 8e6032c](https://github.com/toddysm/regshape/commit/8e6032c09519e1f46d3df73e25f27645bdb264d4).
 The original baseline was captured on 2026-10-30 at
 [ed17d2e](https://github.com/toddysm/regshape/commit/ed17d2eef64da73528998e5c0917dff4e91820c5);
 unchanged capability evidence is retained below, while live progress and
@@ -26,9 +26,12 @@ and native breakdown are recorded in
 [design PR #106](https://github.com/toddysm/regshape/pull/106); runtime
 implementation of [library observations #105](https://github.com/toddysm/regshape/issues/105)
 is merged through [#108](https://github.com/toddysm/regshape/pull/108).
-Command integration is tracked under [#104](https://github.com/toddysm/regshape/issues/104);
-final user documentation remains required under [#102](https://github.com/toddysm/regshape/issues/102).
-This status does not extend the already-implemented blob progress claim to manifests.
+Command integration [#104](https://github.com/toddysm/regshape/issues/104) is merged
+through [#109](https://github.com/toddysm/regshape/pull/109). Final user documentation
+is delivered for review under [#102](https://github.com/toddysm/regshape/issues/102).
+The feature remains In progress until that documentation and a separately
+authorized inventory close-out merge. Runtime manifest progress is present, but
+its final delivery is not yet complete; no release is implied.
 
 Tracking is **issues-only** because Project access is unavailable in this
 workspace. The linked issues and pull requests remain authoritative for newer
@@ -74,7 +77,7 @@ the first version of every operation in that row.
 | OCI image-specification guidance for the development skill | In progress | [#66](https://github.com/toddysm/regshape/issues/66), [open #67](https://github.com/toddysm/regshape/pull/67) | [Issue requirements: #66](https://github.com/toddysm/regshape/issues/66) | [Current development skill](../.github/skills/regshape-dev/SKILL.md) | - | - |
 | Live progress for blob get/upload and layout/Docker push | Implemented | [Feature #72](https://github.com/toddysm/regshape/issues/72), merged [#80](https://github.com/toddysm/regshape/pull/80), [#81](https://github.com/toddysm/regshape/pull/81), [#82](https://github.com/toddysm/regshape/pull/82), [#83](https://github.com/toddysm/regshape/pull/83), [#84](https://github.com/toddysm/regshape/pull/84) | [Lightweight design: #72, revision 2](https://github.com/toddysm/regshape/issues/72) | [Developer reference: transfer callbacks](library/transfer-progress.md), [API reference: blobs](../specs/operations/blobs.md) | [How-to: live transfer progress](guides/live-transfer-progress.md) | 2026-11-03 |
 | Artifact-oriented CLI options with compatible legacy aliases | Implemented | [Feature #87](https://github.com/toddysm/regshape/issues/87), merged [#96](https://github.com/toddysm/regshape/pull/96), [#97](https://github.com/toddysm/regshape/pull/97), [#98](https://github.com/toddysm/regshape/pull/98), [#99](https://github.com/toddysm/regshape/pull/99) | [Functional requirements: artifact options](../specs/cli/artifact-options.md#part-i-functional-requirements) | [Engineering design: artifact options](../specs/cli/artifact-options.md#part-ii-engineering-design), [API source: reference parsers](../src/regshape/libs/refs.py) | [How-to: artifact options and migration](guides/artifact-options.md) | 2026-11-04 |
-| Live progress for manifest/index GET | In progress | [Feature #90](https://github.com/toddysm/regshape/issues/90), [design #101](https://github.com/toddysm/regshape/issues/101), [library #105](https://github.com/toddysm/regshape/issues/105), [command #104](https://github.com/toddysm/regshape/issues/104), [required docs #102](https://github.com/toddysm/regshape/issues/102) | [Approved functional requirements](../specs/cli/manifest-progress.md#part-i-functional-requirements) | [Approved engineering design](../specs/cli/manifest-progress.md#part-ii-engineering-design) | - | - |
+| Live progress for manifest/index GET | In progress | [Feature #90](https://github.com/toddysm/regshape/issues/90), merged [library #108](https://github.com/toddysm/regshape/pull/108) and [command #109](https://github.com/toddysm/regshape/pull/109), [required docs #102](https://github.com/toddysm/regshape/issues/102) | [Approved functional requirements](../specs/cli/manifest-progress.md#part-i-functional-requirements) | [Approved engineering design](../specs/cli/manifest-progress.md#part-ii-engineering-design), [Callback reference](library/transfer-progress.md#manifest-receive-observations) | [How-to: manifest/index download](guides/live-transfer-progress.md#download-a-manifest-or-index), [Command reference](../specs/cli/manifest.md#manifest-get); final delivery tracked in #102 | - |
 
 ## Evidence and important boundaries
 
