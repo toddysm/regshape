@@ -292,6 +292,13 @@ See the [complete manifest signature](../../specs/operations/manifests.md#get_ma
 For runnable command variants, row snapshots and recovery, see
 [Download a manifest or index](../guides/live-transfer-progress.md#download-a-manifest-or-index).
 
+The additive [raw manifest file receiver](../../specs/operations/manifests.md#download_manifest)
+reuses these events but always streams, even without an observer. Its RECEIVED
+follows its required digest/size verification and output-file/response close;
+it still does not mean model-valid or graph-complete. This stronger file-receive
+contract does not change `get_manifest` or the standalone command. A RECEIVED
+observer failure removes the owned raw output and propagates unchanged.
+
 ## Layout compatibility
 
 `push_layout(..., progress_callback=...)` retains the legacy string events:

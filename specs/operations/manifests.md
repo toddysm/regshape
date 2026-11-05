@@ -27,6 +27,7 @@ It never calls `requests` directly — all HTTP traffic goes through a
 ```
 src/regshape/libs/manifests/
 ├── __init__.py        # Package init; re-exports public symbols
+├── download.py        # Byte-preserving verified manifest-to-file receive
 └── operations.py      # Public domain operations + private error helper
 ```
 
@@ -109,6 +110,103 @@ The library remains terminal-free; [manifest command rendering](../cli/manifest.
 is a separate caller of this observation contract.
 See the [manifest workflow](../../docs/guides/live-transfer-progress.md#download-a-manifest-or-index)
 for command examples, progress snapshots and troubleshooting.
+
+**Decorator:** `@track_time`
+
+---
+
+### `download_manifest`
+
+The additive 0.2 development API preserves entity bytes in a new file rather than
+returning decoded text. It is the raw-receive foundation for
+[full artifact download](../cli/artifact-pull.md), not a recursive artifact pull.
+The existing `get_manifest` and `manifest get` behavior is unchanged.
+
+```python
+download_manifest(
+    client: RegistryClient,
+    repo: str,
+    reference: str,
+    accept: str,
+    output_path: str | Path,
+    *,
+    expected_digest: str | None = None,
+    expected_size: int | None = None,
+    max_bytes: int = 16777216,
+    progress_callback: ManifestProgressCallback | None = None,
+) -> ManifestDownload
+```
+
+The first four inputs have the same roles as `get_manifest`. The new operation
+validates relative repository components, registry tags and strict lowercase
+SHA-256/SHA-512 digest syntax before file/network activity; it rejects URL
+queries/fragments and traversal. `accept` must be a nonempty ASCII header value
+without controls. This does not change validation in existing operations.
+
+| Parameter | Meaning |
+| --- | --- |
+| `output_path` | Required new filename in an existing, trusted caller-controlled parent directory. Existing files, directories and symlinks are never overwritten; missing parents are not created. |
+| `expected_digest` | Optional additional descriptor digest. All requested, expected and reported digests are verified, including different supported algorithms. Contradictory requested/expected digests of the same algorithm fail preflight. |
+| `expected_size` | Optional nonnegative integer entity size, including known-empty zero. A mismatch fails; this is not an advisory HTTP length. |
+| `max_bytes` | Positive integer cap, default 16 MiB. A declared expected size above it fails preflight. Actual consumption enforces it even without an observer. Booleans are not accepted as sizes/limits. |
+| `progress_callback` | Optional synchronous manifest observer; does not control whether requests stream or integrity checks run. |
+
+`ManifestDownload` is a frozen dataclass exported with the function from
+`regshape.libs.manifests`:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `path` | `str` | Selected output filename, caller-owned after return. |
+| `digest` | `str` | Verified requested digest, otherwise expected digest, otherwise verified registry digest, otherwise computed SHA-256. |
+| `size` | `int` | Entity bytes saved after HTTP content-coding removal. |
+| `media_type` | `str` | Content-Type header as received, including parameters; empty if absent. Not a schema-validation claim. |
+| `reported_digest` | `str` | Verified Docker-Content-Digest header; empty only when absent. A present empty/malformed/unsupported header fails. |
+
+Successful responses are consumed in requested chunks no larger than 64 KiB,
+written and hashed without decoding, JSON parsing, reserialization or a complete
+in-memory payload. Invalid UTF-8 or non-JSON bytes can be saved if their identity
+and size are valid; higher-level graph code is responsible for schema checks.
+Error-body decoding is bounded by the smaller of `max_bytes` and 64 KiB and
+rejects overlarge errors. Framing/read errors propagate before tolerant OCI
+error parsing; bounded error buffering does not change successful payload bytes.
+
+Lifecycle is PREPARING, TRANSFERRING, then RECEIVED after digest/size checks,
+response close and file flush/close. Kind comes from the advertised type.
+Unknown/unusable or inconsistent HTTP sizes follow the shared advisory-total
+policy; descriptor-size mismatches still fail. All callbacks share one identity.
+No progress-only HEAD/refetch or partial-body resume is performed. Streamed
+cache bypass/authentication/retry cleanup applies even when no observer is supplied.
+
+The operation borrows the client and owns only its response/new output handle.
+The caller must exclude concurrent mutation of the trusted parent/output;
+this low-level file primitive is **not** the hostile-path-safe graph publication
+boundary planned in #91. Identity checks reject a replaced output entry before
+return and refuse to delete its replacement.
+
+Invalid inputs raise `ValueError` (`TypeError` for a non-callable observer);
+registry/integrity/cap failures raise `ManifestError`, with existing `AuthError`
+and Requests transport failures retained. File errors are `OSError` subclasses.
+Observers and cancellation propagate unchanged and disable recursive observer
+notifications. Failures remove the owned output where safe; secondary close/
+cleanup failures are logged without replacing the primary error. A failing
+RECEIVED observer prevents a return and removes the file. A later independent
+caller or diagnostic failure after successful return is not transactional with
+that complete file.
+
+Example (authenticate separately; replace the synthetic source and use a new file):
+
+```python
+from regshape.libs.manifests import download_manifest
+from regshape.libs.transport import RegistryClient, TransportConfig
+
+client = RegistryClient(TransportConfig(registry="registry.example.com"))
+received = download_manifest(
+    client, "team/example", "v1",
+    "application/vnd.oci.image.manifest.v1+json",
+    "manifest.raw",
+)
+print(received.digest, received.size)
+```
 
 **Decorator:** `@track_time`
 

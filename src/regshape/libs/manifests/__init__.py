@@ -11,6 +11,7 @@
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
+from regshape.libs.manifests.download import ManifestDownload, download_manifest
 from regshape.libs.manifests.operations import (
     delete_manifest,
     get_manifest,
@@ -25,11 +26,13 @@ from regshape.libs.progress import (
 )
 
 __all__ = [
+    "ManifestDownload",
     "ManifestKind",
     "ManifestPhase",
     "ManifestProgress",
     "ManifestProgressCallback",
     "delete_manifest",
+    "download_manifest",
     "get_manifest",
     "head_manifest",
     "push_manifest",
