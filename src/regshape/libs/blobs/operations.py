@@ -21,15 +21,20 @@ concerns — error reporting is the caller's responsibility.
 import hashlib
 import logging
 from collections.abc import Callable
+from pathlib import Path
 from typing import BinaryIO, Optional
 from urllib.parse import parse_qsl, urlparse
 
 import requests
 
+from regshape.libs._http import ClosingResponse
 from regshape.libs._http import download_total as _download_total
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.decorators.timing import track_time
 from regshape.libs.errors import AuthError, BlobError
+from regshape.libs.manifests._stream import entity_chunks
+from regshape.libs.manifests.download import _DownloadFile
+from regshape.libs.manifests.operations import _BufferedManifestText
 from regshape.libs.models.blob import BlobInfo, BlobUploadSession
 from regshape.libs.models.error import OciErrorResponse
 from regshape.libs.progress import (
@@ -89,6 +94,8 @@ def get_blob(
     *,
     progress_callback: ProgressCallback | None = None,
     total_size: int | None = None,
+    max_bytes: int | None = None,
+    output_dir_fd: int | None = None,
 ) -> BlobInfo:
     """Download a blob and verify its digest.
 
@@ -117,6 +124,10 @@ def get_blob(
     :param total_size: Optional trusted size of the consumed payload. With progress
         enabled, a valid Content-Length is used when encoding permits; otherwise
         the total is unknown. A size mismatch raises :class:`BlobError`.
+    :param max_bytes: Optional positive hard entity-byte cap. Enables bounded
+        decoding/error bodies and exclusive output, checking counts before writes.
+    :param output_dir_fd: Borrowed safe parent handle for a single output filename.
+        Requires max_bytes; the caller checks platform support and parent identity.
     :returns: :class:`~regshape.libs.models.blob.BlobInfo` built from
         response headers after successful digest verification.
     :raises AuthError: On authentication failure.
@@ -126,6 +137,13 @@ def get_blob(
     :raises requests.exceptions.RequestException: On transport errors.
     """
     _validate_chunk_size(chunk_size)
+    if max_bytes is not None:
+        return _get_blob_bounded(
+            client, repo, digest, output_path, chunk_size, progress_callback,
+            total_size, max_bytes, output_dir_fd,
+        )
+    if output_dir_fd is not None:
+        raise ValueError("output_dir_fd requires max_bytes")
     algorithm, sep, _ = digest.partition(":")
     if not sep or algorithm not in _SUPPORTED_ALGORITHMS:
         raise BlobError(
@@ -185,6 +203,92 @@ def get_blob(
                 ) from exc
         progress.complete()
         return info
+
+
+def _get_blob_bounded(
+    client: RegistryClient,
+    repo: str,
+    digest: str,
+    output_path: str | None,
+    chunk_size: int,
+    callback: ProgressCallback | None,
+    total_size: int | None,
+    max_bytes: int,
+    dir_fd: int | None,
+) -> BlobInfo:
+    """Receive into an exclusive file under strict pre-write budgets.
+
+    This opt-in path borrows a safe directory handle, never buffers an unbounded
+    error body, and preserves immutable observer exceptions through close/cleanup.
+    Blob redirects retain the transport's existing credential-stripping policy.
+    """
+    from regshape.libs.manifests.download import _digest_algorithm
+
+    algorithm = _digest_algorithm(digest)
+    if type(max_bytes) is not int or max_bytes <= 0:
+        raise ValueError("max_bytes must be a positive integer")
+    if output_path is None:
+        raise ValueError("Bounded blob download requires output_path")
+    progress = _TransferProgress(digest, TransferDirection.DOWNLOAD, callback, total_size)
+    if total_size is not None and total_size > max_bytes:
+        raise BlobError("Blob exceeds max_bytes")
+    size = 0
+    with progress, _DownloadFile(Path(output_path), dir_fd) as output:
+        with ClosingResponse(client.get(
+            f"/v2/{repo}/blobs/{digest}", stream=True,
+            headers={"Accept-Encoding": "identity"},
+            response_hook=_bounded_blob_redirect,
+        )) as response:
+            if response.status_code == 206 or "Content-Range" in response.headers:
+                raise BlobError("Partial blob responses are not supported")
+            if not 200 <= response.status_code < 300:
+                payload = bytearray()
+                for chunk in entity_chunks(response, min(chunk_size, 65536)):
+                    if len(payload) + len(chunk) > min(max_bytes, 65536):
+                        raise BlobError("Registry error body exceeds max_bytes")
+                    payload.extend(chunk)
+                buffered = _BufferedManifestText(bytes(payload), response.encoding)
+                buffered.status_code = response.status_code
+                _raise_for_blob_error(buffered, client.config.registry, repo, digest)
+            progress.emit(TransferPhase.TRANSFERRING)
+            hasher = hashlib.new(algorithm)
+            for chunk in entity_chunks(response, min(chunk_size, 65536, max_bytes + 1)):
+                if size + len(chunk) > max_bytes:
+                    raise BlobError("Blob exceeds max_bytes")
+                progress.check_increment(len(chunk))
+                output.write(chunk)
+                hasher.update(chunk)
+                size += len(chunk)
+                progress.advance(len(chunk))
+            progress.check_complete()
+            progress.emit(TransferPhase.VERIFYING)
+            if f"{algorithm}:{hasher.hexdigest()}" != digest:
+                raise BlobError("Blob digest verification failed")
+            content_type = response.headers.get("Content-Type", _DEFAULT_CONTENT_TYPE)
+        output.verify_identity()
+        output.close()
+        progress.complete()
+        output.verify_identity()
+    return BlobInfo(digest=digest, content_type=content_type, size=size)
+
+
+def _bounded_blob_redirect(response: requests.Response, **kwargs: object) -> requests.Response:
+    """Bound intermediate redirect bodies before Requests eagerly drains them.
+
+    Signed download redirects still use Requests' authorization-stripping policy.
+    A bounded discarded body is cached as empty solely to prevent an unbounded
+    second read by redirect handling; final entity bytes are never changed.
+    """
+    if 300 <= response.status_code < 400:
+        with ClosingResponse(response):
+            count = 0
+            for chunk in entity_chunks(response, 65536):
+                count += len(chunk)
+                if count > 65536:
+                    raise BlobError("Blob redirect body exceeds metadata limit")
+        response._content = b""
+        response._content_consumed = True  # type: ignore[attr-defined]  # Requests' redirect cache flag
+    return response
 
 
 @track_time

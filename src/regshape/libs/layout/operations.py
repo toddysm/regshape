@@ -11,6 +11,9 @@
               orchestration for completed layouts.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
+
+Opt-in recursive validation delegates to the strict artifact graph layer;
+legacy shallow validation and staged authoring retain their existing behavior.
 """
 
 import hashlib
@@ -22,6 +25,8 @@ from pathlib import Path
 from typing import BinaryIO, Union
 from uuid import uuid4
 
+from regshape.libs.artifacts.graph import validate_directory
+from regshape.libs.artifacts.models import ArtifactLimits
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import BlobError, LayoutError
 from regshape.libs.models.descriptor import Descriptor
@@ -384,7 +389,10 @@ def read_blob(layout_path: Union[str, Path], digest: str) -> bytes:
     return content
 
 
-def validate_layout(layout_path: Union[str, Path]) -> None:
+def validate_layout(
+    layout_path: Union[str, Path], *, recursive: bool = False,
+    limits: ArtifactLimits | None = None,
+) -> None:
     """Validate the structural and content integrity of an OCI Image Layout.
 
     Checks that the ``oci-layout`` marker is present and well-formed,
@@ -394,10 +402,25 @@ def validate_layout(layout_path: Union[str, Path]) -> None:
     references also exist and their digests match.
 
     :param layout_path: Path to the layout root to validate.
+    :param recursive: Verify the complete subject/index/config/layer closure with
+        strict JSON, size/digest checks and safe no-follow directory reads.
+    :param limits: Strict-mode policy; supplying limits without recursive=True
+        raises ValueError rather than silently ignoring them.
+    :raises ArtifactError: For strict graph, metadata or resource-budget failures.
     :raises LayoutError: Describing the first structural or integrity violation
         found.
     """
+    if recursive:
+        policy = limits if limits is not None else ArtifactLimits()
+        if not isinstance(policy, ArtifactLimits):
+            raise ValueError("limits must be ArtifactLimits")
+        validate_directory(str(layout_path), policy)
+        return
+    if limits is not None:
+        raise ValueError("limits require recursive=True")
     layout = _lp(layout_path)
+    if not layout.is_dir():
+        raise LayoutError("Layout validation requires a directory")
 
     # 1. Verify oci-layout marker
     marker = _oci_layout_file(layout)

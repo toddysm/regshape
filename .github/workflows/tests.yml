@@ -46,6 +46,8 @@ jobs:
           src/regshape/tests/test_transport_client.py
           src/regshape/tests/test_client_middleware_integration.py
           src/regshape/tests/test_tag_pagination.py
+          src/regshape/tests/test_artifact_graph.py
+          src/regshape/tests/test_artifact_storage.py
 
   click-minimum:
     runs-on: ubuntu-latest
@@ -64,3 +66,5 @@ jobs:
           src/regshape/tests/test_refs.py
           src/regshape/tests/test_manifest_cli.py
           src/regshape/tests/test_manifest_cli_progress.py
+          src/regshape/tests/test_layout_cli.py
+          src/regshape/tests/test_artifact_graph.py

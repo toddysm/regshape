@@ -131,16 +131,36 @@ class _DownloadFile:
     orchestration must provide its own safe staging/publication boundary.
     """
 
-    def __init__(self, path: Path) -> None:
-        """Retain the filename without opening or creating any parent directory."""
+    def __init__(self, path: Path, dir_fd: int | None = None) -> None:
+        """Retain a trusted path or a single filename relative to a borrowed safe handle."""
+        if dir_fd is not None and (path.name != str(path) or path.name in ("", ".", "..")):
+            raise ValueError("Handle-relative downloads require a single filename")
         self.path = path
+        self.dir_fd = dir_fd
         self.file: BinaryIO | None = None
         self.identity: os.stat_result | None = None
         self.close_attempted = False
 
     def __enter__(self) -> "_DownloadFile":
         """Create without replacing any existing file, directory or symlink."""
-        self.file = self.path.open("xb")
+        if self.dir_fd is None:
+            self.file = self.path.open("xb")
+        else:
+            fd = os.open(
+                self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600, dir_fd=self.dir_fd,
+            )
+            try:
+                self.file = os.fdopen(fd, "wb")
+            except BaseException as primary:
+                try:
+                    os.close(fd)
+                except OSError as cleanup:
+                    report_secondary_failure(primary, cleanup, "Manifest file acquisition cleanup")
+                report_secondary_failure(
+                    primary, primary, "Manifest output acquisition; newly created file retained",
+                )
+                raise
         try:
             self.identity = os.fstat(self.file.fileno())
         except BaseException as primary:
@@ -171,14 +191,20 @@ class _DownloadFile:
 
     def verify_identity(self) -> None:
         """Reject a missing/replaced output entry without touching its replacement."""
-        current = self.path.lstat()
+        current = (
+            self.path.lstat() if self.dir_fd is None
+            else os.stat(self.path, dir_fd=self.dir_fd, follow_symlinks=False)
+        )
         if self.identity is None or not os.path.samestat(current, self.identity):
             raise OSError("Manifest output was replaced; refusing to use or remove it")
 
     def _remove_failed(self) -> None:
         """Remove only our failed entry; report missing/replaced output explicitly."""
         self.verify_identity()
-        self.path.unlink()
+        if self.dir_fd is None:
+            self.path.unlink()
+        else:
+            os.unlink(self.path, dir_fd=self.dir_fd)
 
     def __exit__(
         self,
@@ -243,6 +269,7 @@ def download_manifest(
     expected_size: int | None = None,
     max_bytes: int = _DEFAULT_MAX_BYTES,
     progress_callback: ManifestProgressCallback | None = None,
+    output_dir_fd: int | None = None,
 ) -> ManifestDownload:
     """Stream exact manifest entity bytes to a new file and verify identity/size.
 
@@ -259,6 +286,10 @@ def download_manifest(
         a 64 KiB cap. Reads request at most 64 KiB and never buffer a whole success body.
     :param progress_callback: Optional synchronous manifest observer. RECEIVED
         follows verification and response/file close, not JSON/schema validation.
+    :param output_dir_fd: Optional borrowed, safely opened directory handle.
+        In this mode output_path must be a single filename; all file creation,
+        identity checks and cleanup are handle-relative. The caller owns parent
+        association verification and platform capability preflight.
     :returns: Frozen path/identity/size/header metadata; caller owns the saved file.
     :raises ValueError: On invalid inputs, before file/network activity.
     :raises TypeError: If the observer is not callable.
@@ -278,7 +309,7 @@ def download_manifest(
         repo, reference, accept, expected_digest, expected_size, max_bytes
     )
     path = Path(output_path)
-    with progress, _DownloadFile(path) as output:
+    with progress, _DownloadFile(path, output_dir_fd) as output:
         with ClosingResponse(
             client.get(
                 f"/v2/{repo}/manifests/{reference}",
