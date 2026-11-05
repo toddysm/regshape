@@ -7,6 +7,7 @@ CLI tests use the Click test runner.
 """
 
 import gzip
+import inspect
 import io
 import json
 import sys
@@ -39,6 +40,9 @@ pytestmark = pytest.mark.skipif(
 
 
 def _runner():
+    """Capture stderr separately on minimum Click 8.1 and current versions."""
+    if "mix_stderr" in inspect.signature(CliRunner).parameters:
+        return CliRunner(mix_stderr=False)
     return CliRunner()
 
 
@@ -494,6 +498,7 @@ class TestPushCLI:
         assert call_kwargs["chunk_size"] == 1048576
 
     def test_dry_run_rejects_tag_override_with_multiple_manifests(self, tmp_path):
+        """Multi-root override errors belong on stderr on minimum/current Click alike."""
         layout_dir = _build_multi_manifest_layout(tmp_path)
 
         result = _runner().invoke(regshape, [
@@ -503,4 +508,4 @@ class TestPushCLI:
             "--dry-run",
         ])
         assert result.exit_code != 0
-        assert "tag override" in result.output.lower() or "multiple" in result.output.lower()
+        assert "tag override" in result.stderr.lower()

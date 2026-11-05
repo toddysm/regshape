@@ -13,7 +13,6 @@ from urllib.parse import parse_qsl, unquote, urlsplit
 
 import pytest
 import requests
-from click.testing import CliRunner
 
 from regshape.cli.main import regshape
 from regshape.libs.artifacts import ArtifactFormat, pull_artifact
@@ -34,6 +33,7 @@ from regshape.tests.artifact_fixtures import (
     write_layout,
 )
 from regshape.tests.test_docker_operations import _make_single_platform_tar
+from regshape.tests.test_layout_push import _runner
 
 
 @pytest.fixture(autouse=True)
@@ -192,11 +192,11 @@ def test_pull_push_command_round_trip(
             command += ["--chunked", "--chunk-size", "13"]
         credentials.reset_mock()
         calls_before_dry_run = len(registry.calls)
-        dry = CliRunner().invoke(regshape, [*command, "--dry-run"])
+        dry = _runner().invoke(regshape, [*command, "--dry-run"])
         assert dry.exit_code == 0, dry.output
         credentials.assert_not_called()
         assert len(registry.calls) == calls_before_dry_run
-        result = CliRunner().invoke(regshape, command)
+        result = _runner().invoke(regshape, command)
     assert result.exit_code == 0, (result.output, result.exception)
     actual, planned = json.loads(result.output), json.loads(dry.output)
     assert [(item["digest"], item["reference"]) for item in actual["manifests"]] == [
@@ -242,7 +242,7 @@ def test_local_damage_precedes_all_credentials_and_network(tmp_path: Path, damag
         patch("regshape.libs.decorators.call_details.requests.request") as network,
     ):
         command = ["layout", "push", "--path", str(source), "--dest", "registry.example/dest", "--json"]
-        result = CliRunner().invoke(regshape, command + (["--dry-run"] if dry else []))
+        result = _runner().invoke(regshape, command + (["--dry-run"] if dry else []))
     assert result.exit_code == 1
     assert not result.stdout
     client.assert_not_called()
@@ -275,7 +275,7 @@ def test_invalid_destinations_precede_client(tmp_path: Path, destination: str, d
     """Digest destinations and invalid literal tags fail as usage errors without credentials."""
     source, _, _ = _local(tmp_path)
     with patch("regshape.cli.layout.RegistryClient") as client:
-        result = CliRunner().invoke(regshape, [
+        result = _runner().invoke(regshape, [
             "layout", "push", "--path", str(source), "--dest", destination,
             *(["--dry-run"] if dry else []),
         ])
@@ -390,7 +390,7 @@ def test_cli_limit_types_precede_client(tmp_path: Path, name: str) -> None:
     """Every exposed safety cap rejects zero through Click's positive integer contract."""
     source, _, _ = _local(tmp_path)
     with patch("regshape.cli.layout.RegistryClient") as client:
-        result = CliRunner().invoke(regshape, [
+        result = _runner().invoke(regshape, [
             "layout", "push", "--path", str(source), "--dest", "registry.example/dest",
             "--" + name, "0",
         ])
@@ -403,7 +403,7 @@ def test_manifest_limit_used_by_real_and_dry_run(tmp_path: Path, dry: bool) -> N
     """A positive but insufficient budget fails the shared plan before client construction."""
     source, _, _ = _local(tmp_path)
     with patch("regshape.cli.layout.RegistryClient") as client:
-        result = CliRunner().invoke(regshape, [
+        result = _runner().invoke(regshape, [
             "layout", "push", "--path", str(source), "--dest", "registry.example/dest",
             "--max-manifest-bytes", "1", *(["--dry-run"] if dry else []),
         ])
@@ -420,11 +420,11 @@ def test_unsupported_platform_guard(tmp_path: Path) -> None:
         patch("regshape.cli.layout.RegistryClient") as client,
     ):
         for dry in (False, True):
-            result = CliRunner().invoke(regshape, [
+            result = _runner().invoke(regshape, [
                 "layout", "push", "--path", str(source), "--dest", "registry.example/dest",
                 *(["--dry-run"] if dry else []),
             ])
-            assert result.exit_code == 1 and "unsupported" in result.output
+            assert result.exit_code == 1 and "unsupported" in result.stderr
     client.assert_not_called()
 
 
@@ -518,11 +518,11 @@ def test_archive_cli_limits_precede_credentials(tmp_path: Path, name: str, dry: 
     ):
         pull_artifact(_client(), "source", "moving", source, output_format=ArtifactFormat.OCI_TAR_GZIP)
     with patch("regshape.cli.layout.RegistryClient") as client:
-        result = CliRunner().invoke(regshape, [
+        result = _runner().invoke(regshape, [
             "layout", "push", "--path", str(source), "--dest", "registry.example/dest",
             "--" + name, "1", *(["--dry-run"] if dry else []),
         ])
-    assert result.exit_code == 1 and name.replace("-", "_") in result.output
+    assert result.exit_code == 1 and name.replace("-", "_") in result.stderr
     client.assert_not_called()
 
 
@@ -537,7 +537,7 @@ def test_invalid_annotation_command_override_has_no_client(tmp_path: Path, dry: 
         patch("regshape.cli.layout.RegistryClient") as client,
         patch("regshape.libs.transport.client.resolve_credentials") as credentials,
     ):
-        result = CliRunner().invoke(regshape, [
+        result = _runner().invoke(regshape, [
             "layout", "push", "--path", str(source), "--dest", "registry.example/dest:valid",
             *(["--dry-run"] if dry else []),
         ])
@@ -558,7 +558,7 @@ def test_docker_command_real_conversion_and_push(chunked: bool, tag: str | None)
         patch("regshape.libs.decorators.call_details.requests.request", side_effect=registry.respond),
     ):
         docker.from_env.return_value.images.get.return_value.save.return_value = iter([tar_bytes])
-        result = CliRunner().invoke(regshape, [
+        result = _runner().invoke(regshape, [
             "docker", "push", "--image", "testimage:latest",
             "--dest", "registry.example/dest" + (f":{tag}" if tag else ""),
             "--json", *(["--chunked", "--chunk-size", "13"] if chunked else []),

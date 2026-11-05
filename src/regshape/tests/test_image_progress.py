@@ -10,7 +10,6 @@ from urllib.parse import parse_qsl, unquote, urlsplit
 
 import pytest
 import requests
-from click.testing import CliRunner
 
 from regshape.cli.main import regshape
 from regshape.cli.progress import ProgressDisplay
@@ -34,7 +33,7 @@ from regshape.libs.models.manifest import ImageManifest, parse_manifest
 from regshape.libs.progress import TransferDirection, TransferPhase, TransferProgress
 from regshape.libs.transport import RegistryClient, TransportConfig
 from regshape.libs.transport.middleware import RetryConfig
-from regshape.tests.test_layout_push import _build_layout
+from regshape.tests.test_layout_push import _build_layout, _runner
 from regshape.tests.test_progress_display import Terminal
 
 
@@ -340,7 +339,7 @@ def test_image_command_wiring_and_clean_result_channels(
         patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
         patch("regshape.libs.decorators.call_details.requests.request", side_effect=registry.respond),
     ):
-        result = CliRunner().invoke(regshape, args)
+        result = _runner().invoke(regshape, args)
     assert result.exit_code == 0, result.output
     assert len(registry.stored) == 1 and displays[0].completed == displays[0].skipped == 1
     methods = [method for method, _ in registry.calls]
@@ -402,7 +401,7 @@ def test_docker_failure_cleans_preparation_and_temp_layout(tmp_path: Path, failu
         patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
         patch("regshape.libs.decorators.call_details.requests.request", side_effect=registry.respond),
     ):
-        result = CliRunner().invoke(regshape, [
+        result = _runner().invoke(regshape, [
             "docker", "push", "--image", "example:latest", "--dest", "registry.example.invalid/repo",
         ])
     assert result.exit_code == 1 and "Pushed" not in result.stdout
