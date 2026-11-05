@@ -1,27 +1,29 @@
 # Complete artifact download and round-trip: requirements and engineering design
 
-- **Status:** Draft revision 3; specification/breakdown publication authorized, not implementation or merge.
+- **Status:** Approved revision 3; design merged, raw-manifest item #114 implementation authorized.
 - **Feature:** [#91](https://github.com/toddysm/regshape/issues/91).
 - **Design item:** [#113](https://github.com/toddysm/regshape/issues/113).
 - **Related, separate capability:** [#112](https://github.com/toddysm/regshape/issues/112), config/layer-position downloads.
 - **Target:** [0.2](https://github.com/toddysm/regshape/milestone/1); not a release commitment.
 - **Date / inspected baseline:** 2026-11-05 UTC / `d0e2540a24e77b92949e8b3371c1485185e75a6a`.
 - **Owner evidence:** [recorded requirements clarification](https://github.com/toddysm/regshape/issues/91#issuecomment-6646891148).
-- **Authorization:** one combined specification, seven native children, Planned inventory rows for #91/#112,
-  and one open design pull request with hosted checks and agent-only reviews.
-  Final design approval, implementation, merges, release and worktree cleanup remain separate gates.
+- **Authorization:** owner approved revision 3 and merging
+  [design PR #120](https://github.com/toddysm/regshape/pull/120). The In progress
+  inventory transition and item #114 through an open reviewed implementation PR
+  are authorized, using hosted checks and agent-only reviews. Its runtime merge,
+  later delivery items, release and worktree cleanup remain separate gates.
 
 Open Container Initiative (OCI), command-line interface (CLI), application
 programming interface (API), product requirements document (PRD), engineering
 design document (EDD), and continuous integration (CI) are abbreviated below.
-All new command shapes, events, limits and output below are **proposed contracts**,
+All new command shapes, events, limits and output below are **approved design contracts**,
 not descriptions of already implemented functionality.
 
 > **Revision 2 approval note:** Review exposed a gap between excluding subjects
-> and promising a self-contained round-trip. This draft now follows explicit
+> and promising a self-contained round-trip. The approved design follows explicit
 > `subject` descriptors, without discovering referrers. A subject-bearing artifact
 > can therefore download more content than the initial proposal implied. This
-> material refinement requires owner approval with the rest of the design.
+> material refinement was explicitly approved with revision 3.
 
 Revision 3 closes review gaps in output-path identity, compressed-input/gzip
 budgets, layout-marker buffering and publication-tag validation. These are
@@ -337,7 +339,7 @@ level that this local client cannot guarantee.
 
 > NOTE: Real-registry p95 throughput/latency and maximum-envelope memory are not
 > measured yet. Implementation must record measurements; default limits are
-> engineering proposals for owner approval, not production certification.
+> owner-approved engineering policies, not production certification.
 
 ### 11. Observability and troubleshooting
 
@@ -412,9 +414,9 @@ or resumable transfer engine.
 
 Part I and #91 capture owner requirements, including the later required archive
 and nested-index push scope. #90 is merged and closed. #112 remains independent;
-#88 is not a new hard dependency. The owner authorized design artifacts, not
-the final technical design or Build. All new limits and interface details below
-remain subject to the design approval gate.
+#88 is not a new hard dependency. The owner approved revision 3, its limits and interface details and the native
+breakdown. Design #120 is merged; starting Build with #114 is authorized.
+Later implementation merges and delivery items retain their separate gates.
 
 ### C. Current gaps
 
@@ -1136,10 +1138,10 @@ proposal validate unchanged runtime, not the future capability.
 
 ### O. Next actions and approval gate
 
-Publish revision 3 and seven linked children, address design review feedback and
-leave the PR open. Owner approval must cover this exact document and breakdown;
-material changes invalidate approval. Build requires explicit scoped authorization,
-including an In progress inventory transition before implementation. Final docs
+Revision 3 and its seven linked children are owner-approved; design #120 is merged.
+Complete the authorized In progress inventory transition, then implement #114
+through an open reviewed PR. Material changes invalidate approval; later items
+and implementation merges require separate authorization. Final docs
 and later inventory close-out remain mandatory. No partner/legal launch event,
 release date, package bump or branch cleanup is authorized here.
 
