@@ -22,6 +22,7 @@ import json
 import sys
 
 import click
+import requests
 
 from regshape.cli.formatting import emit_error, emit_json, progress_status
 from regshape.cli.progress import ProgressDisplay
@@ -39,7 +40,6 @@ from regshape.libs.layout import (
     generate_config,
     generate_manifest,
     init_layout,
-    push_layout,
     read_index,
     read_stage,
     stage_layer,
@@ -48,13 +48,17 @@ from regshape.libs.layout import (
     update_manifest_annotations,
     validate_layout,
 )
+from regshape.libs.layout.operations import (
+    LayoutPushPlan,
+    execute_layout_push,
+    parse_push_destination,
+)
 from regshape.libs.models.mediatype import (
     OCI_IMAGE_CONFIG,
     OCI_IMAGE_LAYER_TAR_GZIP,
     OCI_IMAGE_LAYER_TAR_ZSTD,
     OCI_IMAGE_MANIFEST,
 )
-from regshape.libs.refs import parse_image_ref
 from regshape.libs.transport import RegistryClient
 from regshape.libs.transport.client import TransportConfig
 
@@ -770,12 +774,18 @@ def _format_size(size: int) -> str:
 @layout.command("push")
 @telemetry_options
 @click.option("--no-progress", is_flag=True, default=False, help="Disable interactive transfer progress.")
+@click.option("--max-manifest-bytes", type=click.IntRange(min=1), default=None)
+@click.option("--max-objects", type=click.IntRange(min=1), default=None)
+@click.option("--max-depth", type=click.IntRange(min=1), default=None)
+@click.option("--max-total-bytes", type=click.IntRange(min=1), default=None)
+@click.option("--max-archive-bytes", type=click.IntRange(min=1), default=None)
+@click.option("--max-archive-input-bytes", type=click.IntRange(min=1), default=None)
 @click.option(
     "--path", "-p", "layout_path",
     required=True,
     type=click.Path(exists=True),
-    metavar="DIR",
-    help="Root directory of a valid, completed OCI Image Layout.",
+    metavar="PATH",
+    help="Complete OCI layout directory or supported gzip-tar archive.",
 )
 @click.option(
     "--dest", "-d", "dest",
@@ -792,7 +802,7 @@ def _format_size(size: int) -> str:
     help="Use chunked (streaming) upload protocol for blobs.",
 )
 @click.option(
-    "--chunk-size", type=int, default=65536, show_default=True,
+    "--chunk-size", type=click.IntRange(min=1), default=65536, show_default=True,
     metavar="BYTES",
     help="Chunk size in bytes (chunked mode only).",
 )
@@ -803,56 +813,51 @@ def _format_size(size: int) -> str:
 @click.option("--json", "as_json", is_flag=True, default=False, help="Output JSON.")
 @click.pass_context
 @track_scenario("layout push")
-def push_cmd(ctx, layout_path, dest, force, chunked, chunk_size, dry_run, as_json, no_progress):
-    """Push an OCI Image Layout to a remote registry.
+def push_cmd(
+    ctx, layout_path, dest, force, chunked, chunk_size, dry_run, as_json, no_progress,
+    max_manifest_bytes, max_objects, max_depth, max_total_bytes, max_archive_bytes,
+    max_archive_input_bytes,
+):
+    """Push a complete directory/archive graph with locally verified references.
 
-    Reads the layout's index.json, uploads all blobs (layers and config),
-    then pushes each manifest to the destination registry. Interactive progress
-    retains one row per unique blob; JSON and --no-progress suppress animation.
+    Planning precedes client construction, including credential-helper access.
+    Dry-run uses that same snapshot/plan and constructs no client. Interactive
+    progress retains one row per unique blob; JSON/--no-progress suppress it.
+    Native safe snapshots require Linux/Darwin; Windows fails closed.
     """
-    # --- Parse destination ---
     try:
-        registry, repo, reference = parse_image_ref(dest)
+        registry, repo, tag_override = parse_push_destination(dest)
     except ValueError as exc:
-        emit_error(layout_path, str(exc))
-
-    tag_override = reference if reference != "latest" or _has_explicit_ref(dest) else None
-
-    # --- Dry-run mode ---
-    if dry_run:
-        _push_dry_run(layout_path, registry, repo, tag_override, as_json)
-        return
-
-    # --- Build client ---
-    insecure = ctx.obj.get("insecure", False) if ctx.obj else False
-    client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
-
-    # --- Execute push ---
+        raise click.BadParameter(str(exc), param_hint="--dest") from exc
+    values = {
+        "max_manifest_bytes": max_manifest_bytes, "max_objects": max_objects,
+        "max_depth": max_depth, "max_total_bytes": max_total_bytes,
+        "max_archive_bytes": max_archive_bytes,
+        "max_archive_input_bytes": max_archive_input_bytes,
+    }
+    limits = ArtifactLimits(**{key: value for key, value in values.items() if value is not None})
     dest_display = f"{registry}/{repo}"
     if tag_override:
         dest_display += f":{tag_override}"
-
-    if not as_json:
-        progress_status(f"Pushing layout {layout_path} -> {dest_display}\n")
-
     try:
-        with ProgressDisplay(
-            disabled=no_progress, structured=as_json, total_blobs=None, show_counts=True,
-        ) as progress:
-            progress.prepare("Preparing OCI layout")
-            result = push_layout(
-                layout_path=layout_path,
-                client=client,
-                repo=repo,
-                tag_override=tag_override,
-                force=force,
-                chunked=chunked,
-                chunk_size=chunk_size,
-                transfer_callback=progress.observe,
-            )
-    except LayoutError as exc:
-        emit_error(layout_path, str(exc))
-    except (AuthError, BlobError, ManifestError, OSError) as exc:
+        with LayoutPushPlan(layout_path, tag_override, limits=limits) as plan:
+            if dry_run:
+                _push_dry_run(plan, registry, repo, as_json)
+                return
+            insecure = ctx.obj.get("insecure", False) if ctx.obj else False
+            client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
+            if not as_json:
+                progress_status(f"Pushing layout {layout_path} -> {dest_display}\n")
+            with ProgressDisplay(
+                disabled=no_progress, structured=as_json, total_blobs=None, show_counts=True,
+            ) as progress:
+                progress.prepare("Preparing OCI layout")
+                result = execute_layout_push(
+                    plan, client, repo, force=force, chunked=chunked,
+                    chunk_size=chunk_size, transfer_callback=progress.observe,
+                )
+    except (ArtifactError, LayoutError, AuthError, BlobError, ManifestError,
+            OSError, requests.exceptions.RequestException) as exc:
         emit_error(dest_display, str(exc))
 
     # --- Output ---
@@ -894,70 +899,38 @@ def push_cmd(ctx, layout_path, dest, force, chunked, chunk_size, dry_run, as_jso
         )
 
 
-def _push_dry_run(layout_path, registry, repo, tag_override, as_json):
-    """Validate layout and print what would be pushed without network calls."""
-    from regshape.libs.models.manifest import ImageManifest as _IM
-    from regshape.libs.models.manifest import parse_manifest as _pm
+def _push_dry_run(plan: LayoutPushPlan, registry: str, repo: str, as_json: bool) -> None:
+    """Render intended publications from the active verified plan, without registry access.
 
-    try:
-        validate_layout(layout_path)
-        index = read_index(layout_path)
-    except LayoutError as exc:
-        emit_error(layout_path, str(exc))
-
-    if not index.manifests:
-        emit_error(layout_path, "index.json contains no manifests")
-
-    if tag_override and len(index.manifests) > 1:
-        emit_error(
-            layout_path,
-            f"tag override supplied but index.json has {len(index.manifests)} manifests; "
-            "omit the tag or push a single-manifest layout",
-        )
-
-    from regshape.libs.layout import read_blob as _rb
-
-    results = []
-    for entry in index.manifests:
-        manifest_bytes = _rb(layout_path, entry.digest)
-        manifest_obj = _pm(manifest_bytes.decode("utf-8"))
-        blobs = []
-        if isinstance(manifest_obj, _IM):
-            for layer in manifest_obj.layers:
-                blobs.append((layer.digest, layer.size, layer.media_type))
-            blobs.append((manifest_obj.config.digest, manifest_obj.config.size,
-                          manifest_obj.config.media_type))
-
-        if tag_override:
-            ref = tag_override
-        elif entry.annotations and "org.opencontainers.image.ref.name" in entry.annotations:
-            ref = entry.annotations["org.opencontainers.image.ref.name"]
-        else:
-            ref = entry.digest
-
-        results.append((entry, ref, blobs))
-
+    Existing flat JSON keys are retained; media_type additionally identifies
+    index reports (whose blobs list is empty). No acknowledged counts/actions
+    are fabricated because existence checks and writes have not happened.
+    """
     if as_json:
         output = {
             "dry_run": True,
-            "layout_path": str(layout_path),
+            "layout_path": plan.layout_path,
             "destination": f"{registry}/{repo}",
             "manifests": [
                 {
-                    "digest": entry.digest,
-                    "reference": ref,
+                    "digest": publication.document.digest,
+                    "reference": publication.reference,
+                    "media_type": publication.document.media_type,
                     "blobs": [
-                        {"digest": d, "size": s, "media_type": mt}
-                        for d, s, mt in blobs
+                        {"digest": blob.digest, "size": blob.size, "media_type": blob.media_type}
+                        for blob in publication.blobs
                     ],
                 }
-                for entry, ref, blobs in results
+                for publication in plan.publications
             ],
         }
         emit_json(output)
     else:
-        click.echo(f"[dry-run] Layout {layout_path} -> {registry}/{repo}\n")
-        for entry, ref, blobs in results:
-            for digest, size, _mt in blobs:
-                click.echo(f"[dry-run] Would upload blob {_short_digest(digest)} ({_format_size(size)})")
-            click.echo(f"[dry-run] Would push manifest {_short_digest(entry.digest)} as '{ref}'")
+        click.echo(f"[dry-run] Layout {plan.layout_path} -> {registry}/{repo}\n")
+        for blob in plan.blobs:
+            click.echo(f"[dry-run] Would upload blob {_short_digest(blob.digest)} ({_format_size(blob.size)})")
+        for publication in plan.publications:
+            click.echo(
+                f"[dry-run] Would push manifest {_short_digest(publication.document.digest)} "
+                f"as '{publication.reference}'"
+            )

@@ -50,6 +50,9 @@ jobs:
           src/regshape/tests/test_artifact_graph.py
           src/regshape/tests/test_artifact_storage.py
           src/regshape/tests/test_artifact_archive.py
+          src/regshape/tests/test_artifact_push.py
+          src/regshape/tests/test_image_progress.py
+          src/regshape/tests/test_layout_push.py
 
   click-minimum:
     runs-on: ubuntu-latest
@@ -71,6 +74,10 @@ jobs:
           src/regshape/tests/test_layout_cli.py
           src/regshape/tests/test_artifact_graph.py
           src/regshape/tests/test_artifact_archive.py
+          src/regshape/tests/test_artifact_push.py
+          src/regshape/tests/test_layout_push.py
+          src/regshape/tests/test_image_progress.py
+          src/regshape/tests/test_docker_cli.py
 
   artifact-filesystem:
     name: artifact-filesystem (${{ matrix.os }})
@@ -92,3 +99,5 @@ jobs:
           src/regshape/tests/test_artifact_storage.py
           src/regshape/tests/test_artifact_namespace.py
           src/regshape/tests/test_artifact_archive.py
+          src/regshape/tests/test_artifact_push.py
+          src/regshape/tests/test_layout_push.py

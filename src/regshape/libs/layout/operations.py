@@ -14,6 +14,8 @@
 
 Opt-in recursive validation delegates to the strict artifact graph layer;
 legacy shallow validation and staged authoring retain their existing behavior.
+Push always snapshots the complete directory/archive graph before registry work;
+native Linux/Darwin storage requirements apply to that strict path.
 """
 
 import hashlib
@@ -22,13 +24,30 @@ import os
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import BinaryIO, Union
+from types import TracebackType
+from typing import BinaryIO, Literal, Union, cast, final
+from urllib.parse import urlsplit
 from uuid import uuid4
 
-from regshape.libs.artifacts.models import ArtifactLimits
-from regshape.libs.artifacts.operations import snapshot_layout
+import requests
+
+from regshape.libs.artifacts.graph import (
+    REF_NAME,
+    Edge,
+    GraphObject,
+    parse_document,
+    strict_json,
+)
+from regshape.libs.artifacts.models import ArtifactLimits, digest_parts
+from regshape.libs.artifacts.operations import (
+    ArchiveSnapshot,
+    DirectorySnapshot,
+    snapshot_layout,
+    validate_tag,
+)
 from regshape.libs.decorators.scenario import track_scenario
-from regshape.libs.errors import BlobError, LayoutError
+from regshape.libs.errors import BlobError, LayoutError, ManifestError
+from regshape.libs.manifests.download import _validate_inputs
 from regshape.libs.models.descriptor import Descriptor
 from regshape.libs.models.manifest import ImageIndex, ImageManifest, parse_manifest
 from regshape.libs.models.mediatype import OCI_IMAGE_INDEX
@@ -38,6 +57,7 @@ from regshape.libs.progress import (
     TransferPhase,
     TransferProgress,
 )
+from regshape.libs.refs import parse_image_ref
 from regshape.libs.transport import RegistryClient
 
 # ===========================================================================
@@ -852,7 +872,7 @@ class BlobPushReport:
 
 @dataclass
 class ManifestPushReport:
-    """Report for pushing a single manifest and its blobs."""
+    """One document publication; indexes have no blobs and aliases are separate reports."""
 
     digest: str
     reference: str
@@ -863,7 +883,12 @@ class ManifestPushReport:
 
 @dataclass
 class PushResult:
-    """Aggregated result of a layout push operation."""
+    """Acknowledged publications and compatible per-reference blob accounting.
+
+    manifests_pushed counts document PUTs, including required root aliases.
+    Blob uploads/bytes are unique; skips also include reused per-manifest references.
+    No partial result is returned on failure and remote content is never rolled back.
+    """
 
     layout_path: str
     destination: str
@@ -882,6 +907,256 @@ def _collect_blob_descriptors(manifest: ImageManifest) -> list[Descriptor]:
     return blobs
 
 
+@dataclass(frozen=True)
+class PushPublication:
+    """Exact document/reference operation with legacy layer-then-config report edges."""
+
+    document: GraphObject
+    reference: str
+    blobs: tuple[Edge, ...]
+    root_reference: bool = False
+
+
+def parse_push_destination(destination: str) -> tuple[str, str, str | None]:
+    """Resolve registry/repository/optional tag without credentials or URL normalization.
+
+    Digest destinations are rejected. An omitted tag returns None, not latest;
+    callers that historically default to latest (Docker push) can do so explicitly.
+    Invalid input raises ValueError without echoing untrusted reference text.
+    """
+    if not isinstance(destination, str) or any(
+        char in destination for char in "@?#%\\"
+    ) or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in destination):
+        raise ValueError("Push destination must be registry/repository[:tag], not a digest or URL")
+    try:
+        registry, repo, reference = parse_image_ref(destination)
+        authority = urlsplit("//" + registry)
+        if (
+            not authority.hostname or authority.username is not None
+            or authority.password is not None or authority.path
+        ):
+            raise ValueError("Invalid registry authority")
+        _ = authority.port
+        _validate_inputs(repo, reference, "application/json", None, None, 1)
+    except ValueError as error:
+        raise ValueError("Invalid push destination registry, repository or ASCII tag") from error
+    tag = reference if ":" in destination.rsplit("/", 1)[-1] else None
+    return registry, repo, tag
+
+
+@final
+class LayoutPushPlan:
+    """Own a verified private snapshot and its deterministic publication plan.
+
+    Enter before constructing a credentialed client. The context must outlive
+    execution or dry-run rendering; no consumer may reopen the original source.
+    Publications retain bytes in the snapshot, not serialized model copies.
+    Only Linux/Darwin native storage is supported, under the artifact layer's
+    trusted-private namespace contract (not hostile same-user/root isolation).
+    """
+
+    def __init__(
+        self, layout_path: str | Path, tag_override: str | None = None,
+        *, limits: ArtifactLimits | None = None,
+    ) -> None:
+        """Retain source and validate policy/tag without credentials or network effects."""
+        self.layout_path = str(layout_path)
+        self.limits = limits if limits is not None else ArtifactLimits()
+        if not isinstance(self.limits, ArtifactLimits):
+            raise ValueError("limits must be ArtifactLimits")  # noqa: TRY004 - shared public policy contract
+        self.tag_override = validate_tag(tag_override) if tag_override is not None else None
+        self.publications: tuple[PushPublication, ...] = ()
+        self.blobs: tuple[GraphObject, ...] = ()
+        self.snapshot: DirectorySnapshot | ArchiveSnapshot | None = None
+
+    def __enter__(self) -> "LayoutPushPlan":
+        """Snapshot and resolve every reference before exposing an executable plan."""
+        if self.snapshot is not None:
+            raise RuntimeError("Push plan is already active")
+        snapshot = snapshot_layout(self.layout_path, limits=self.limits)
+        snapshot.__enter__()
+        self.snapshot = snapshot
+        try:
+            self._prepare()
+        except BaseException as primary:
+            self.__exit__(type(primary), primary, primary.__traceback__)
+            raise
+        return self
+
+    def _prepare(self) -> None:
+        """Parse bounded original wrapper metadata and schedule dependency-first PUTs."""
+        snapshot = self.snapshot
+        if snapshot is None:
+            raise RuntimeError("Push plan is not active")
+        wrapper = strict_json(snapshot.wrapper_bytes, self.limits, self.limits.max_manifest_bytes)
+        roots = snapshot.graph.roots
+        if not roots:
+            raise LayoutError("index.json contains no manifests")
+        if self.tag_override is not None and len(roots) != 1:
+            raise LayoutError(
+                f"tag override supplied but index.json has {len(roots)} manifests",
+                "omit the tag or push a single-root layout",
+            )
+        references = []
+        for root, original in zip(roots, wrapper["manifests"]):
+            annotations = original.get("annotations", {})
+            source_tag = validate_tag(annotations[REF_NAME]) if REF_NAME in annotations else None
+            references.append(self.tag_override or source_tag or root.digest)
+
+        documents: dict[str, tuple[GraphObject, tuple[Edge, ...]]] = {}
+        required: set[str] = set()
+        blob_objects = {obj.digest: obj for obj in snapshot.graph.objects if obj.kind == "blob"}
+        for obj in snapshot.graph.objects:
+            if obj.kind == "blob":
+                continue
+            raw = cast(bytes, snapshot.store.verify(obj.digest, obj.size, cap=self.limits.max_manifest_bytes))
+            parsed = parse_document(raw, self.limits, media_type=obj.media_type)
+            required.update(edge.digest for edge in parsed.children if edge.document)
+            # Preserve the old flat report's layer/config ordering, including repeated edges.
+            blobs = tuple(edge for edge in parsed.children if edge.role == "layer")
+            blobs += tuple(edge for edge in parsed.children if edge.role == "config")
+            documents[obj.digest] = (obj, blobs)
+
+        publications = []
+        seen = set()
+        root_digests = {root.digest for root in roots}
+        for digest, (obj, blobs) in documents.items():
+            if digest not in root_digests or digest in required:
+                publications.append(PushPublication(obj, digest, blobs))
+                seen.add((digest, digest))
+        for root, reference in zip(roots, references):
+            key = (root.digest, reference)
+            if key not in seen:
+                obj, blobs = documents[root.digest]
+                publications.append(PushPublication(obj, reference, blobs, True))
+                seen.add(key)
+        self.publications = tuple(publications)
+        # Preserve ordinary flat layout's first-occurrence layer/config callback ordering.
+        blob_order = dict.fromkeys(blob.digest for item in publications for blob in item.blobs)
+        self.blobs = tuple(blob_objects[digest] for digest in blob_order)
+
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> Literal[False]:
+        """Release only private snapshot storage, preserving the consumer's primary error."""
+        snapshot, self.snapshot = self.snapshot, None
+        if snapshot is not None:
+            snapshot.__exit__(exc_type, exc, traceback)
+        return False
+
+
+def execute_layout_push(
+    plan: LayoutPushPlan, client: RegistryClient, repo: str, *,
+    force: bool = False, chunked: bool = False, chunk_size: int = 65536,
+    progress_callback=None, transfer_callback: ProgressCallback | None = None,
+) -> PushResult:
+    """Execute an active local plan, borrowing the client and preserving raw bytes.
+
+    Upload unique blobs first; only a BlobError with status_code 404 means
+    missing. Document dependencies are acknowledged by digest before parents,
+    then final root references are published. Legacy callbacks retain their
+    names/arguments; typed progress has one logical row per unique blob.
+    Observer errors propagate unchanged. Remote partial state is never removed;
+    a transport failure during a final root PUT raises chained ManifestError
+    explicitly reporting outcome uncertainty.
+    """
+    from regshape.libs.blobs import head_blob, upload_blob_chunked, upload_blob_stream
+    from regshape.libs.manifests import push_manifest
+
+    snapshot = plan.snapshot
+    if snapshot is None:
+        raise RuntimeError("Push plan must be used inside its context")
+    if transfer_callback is not None and not callable(transfer_callback):
+        raise TypeError("Transfer callback must be callable")
+    if progress_callback is not None and not callable(progress_callback):
+        raise TypeError("Progress callback must be callable")
+    if type(chunk_size) is not int or chunk_size <= 0:
+        raise ValueError("chunk_size must be a positive integer")
+    for publication in plan.publications:
+        _validate_inputs(
+            repo, publication.reference, publication.document.media_type,
+            publication.document.digest, None, plan.limits.max_manifest_bytes,
+        )
+    result = PushResult(plan.layout_path, f"{client.config.registry}/{repo}")
+    actions = {}
+    for blob in plan.blobs:
+        exists = False
+        if not force:
+            try:
+                head_blob(client, repo, blob.digest)
+                exists = True
+            except BlobError as error:
+                if error.status_code != 404:
+                    raise
+        if exists:
+            actions[blob.digest] = "skipped"
+            if progress_callback is not None:
+                progress_callback("blob_skip", digest=blob.digest, size=blob.size)
+            if transfer_callback is not None:
+                transfer_callback(TransferProgress(
+                    uuid4().hex, blob.digest, TransferDirection.UPLOAD,
+                    TransferPhase.SKIPPED, 0, blob.size,
+                ))
+            continue
+        if progress_callback is not None:
+            progress_callback("blob_start", digest=blob.digest, size=blob.size,
+                              media_type=blob.media_type)
+        algorithm, encoded = digest_parts(blob.digest)
+        with (
+            snapshot.store.directory.open_child("blobs") as blobs,
+            blobs.open_child(algorithm) as directory,
+            directory.read_file(encoded) as source,
+        ):
+            if chunked:
+                upload_blob_chunked(
+                    client, repo, source, blob.digest, chunk_size=chunk_size,
+                    total_size=blob.size, progress_callback=transfer_callback,
+                )
+            else:
+                upload_blob_stream(
+                    client, repo, source, blob.digest,
+                    total_size=blob.size, progress_callback=transfer_callback,
+                )
+        actions[blob.digest] = "uploaded"
+        result.blobs_uploaded += 1
+        result.bytes_uploaded += blob.size
+        if progress_callback is not None:
+            progress_callback("blob_done", digest=blob.digest, size=blob.size)
+
+    reported = set()
+    for publication in plan.publications:
+        obj = publication.document
+        raw = cast(bytes, snapshot.store.verify(obj.digest, obj.size, cap=plan.limits.max_manifest_bytes))
+        try:
+            push_manifest(
+                client, repo, publication.reference, raw, obj.media_type,
+                expected_digest=obj.digest,
+            )
+        except requests.exceptions.RequestException as error:
+            if publication.root_reference:
+                raise ManifestError(
+                    "Root publication outcome uncertain; verify the destination before retrying",
+                    "the registry may have committed the exact payload; no rollback was attempted",
+                ) from error
+            raise
+        report = ManifestPushReport(obj.digest, publication.reference, obj.media_type)
+        for edge in publication.blobs:
+            repeated = edge.digest in reported
+            action = "skipped" if repeated else actions[edge.digest]
+            report.blobs.append(BlobPushReport(edge.digest, edge.size, edge.media_type, action))
+            if action == "skipped":
+                result.blobs_skipped += 1
+            if repeated and progress_callback is not None:
+                progress_callback("blob_skip", digest=edge.digest, size=edge.size)
+            reported.add(edge.digest)
+        result.manifests.append(report)
+        result.manifests_pushed += 1
+        if progress_callback is not None:
+            progress_callback("manifest_done", digest=obj.digest, reference=publication.reference)
+    return result
+
+
 @track_scenario("layout push")
 def push_layout(
     layout_path: Union[str, Path],
@@ -894,20 +1169,21 @@ def push_layout(
     progress_callback=None,
     *,
     transfer_callback: ProgressCallback | None = None,
+    limits: ArtifactLimits | None = None,
 ) -> PushResult:
-    """Push an OCI Image Layout to a remote registry.
+    """Snapshot and push a complete OCI directory or supported gzip-tar graph.
 
-    Reads the layout's ``index.json`` to discover all manifests and their
-    referenced blobs (layers and configs), uploads every blob, then pushes
-    each manifest.
+    Strict verification and publication-tag validation precede all client calls.
+    Upload each unique blob, then publish original documents dependency-first,
+    with root aliases last. Never upload the generated local wrapper.
 
-    :param layout_path: Root of a valid, completed OCI Image Layout.
+    :param layout_path: Directory or supported archive, copied into private storage.
     :param client: An authenticated
         :class:`~regshape.libs.transport.RegistryClient`.
     :param repo: Target repository name (e.g. ``"myrepo/myimage"``).
     :param tag_override: If provided, overrides ``ref.name`` annotation
-        for single-manifest layouts. Must be ``None`` when the layout
-        contains multiple manifests.
+        for a single top-level root (possibly an index with many descendants).
+        Present source tags are validated even with an override.
     :param force: If ``True``, skip ``HEAD`` existence checks and upload
         all blobs unconditionally.
     :param chunked: If ``True``, use the chunked upload protocol.
@@ -920,178 +1196,21 @@ def push_layout(
         the legacy callback. Both upload protocols report actual logical bytes;
         existing blobs emit one skipped event per unique digest. Descriptor
         sizes are trusted totals. Observer exceptions propagate unchanged.
+    :param limits: Independent artifact graph/archive safety budgets; defaults
+        to ArtifactLimits. Linux/Darwin native storage only; Windows fails closed.
     :returns: A :class:`PushResult` with per-manifest reports and summary
         statistics.
     :raises LayoutError: If the layout is invalid or incomplete.
+    :raises regshape.libs.errors.ArtifactError: On strict graph/storage/tag failures.
     :raises regshape.libs.errors.AuthError: On authentication failure.
     :raises regshape.libs.errors.BlobError: On blob upload failure.
     :raises regshape.libs.errors.ManifestError: On manifest push failure.
     :raises TypeError: If the typed observer is not callable.
     """
-    from regshape.libs.blobs import head_blob, upload_blob_chunked, upload_blob_stream
-    from regshape.libs.manifests import push_manifest
-
     if transfer_callback is not None and not callable(transfer_callback):
         raise TypeError("Transfer callback must be callable")
-    layout = _lp(layout_path)
-    validate_layout(layout)
-
-    index = _read_index(layout)
-    if not index.manifests:
-        raise LayoutError(
-            "index.json contains no manifests",
-            "run 'layout generate manifest' first",
+    with LayoutPushPlan(layout_path, tag_override, limits=limits) as plan:
+        return execute_layout_push(
+            plan, client, repo, force=force, chunked=chunked, chunk_size=chunk_size,
+            progress_callback=progress_callback, transfer_callback=transfer_callback,
         )
-
-    if tag_override and len(index.manifests) > 1:
-        raise LayoutError(
-            f"tag override supplied but index.json has {len(index.manifests)} manifests",
-            "omit the tag or push a single-manifest layout",
-        )
-
-    result = PushResult(
-        layout_path=str(layout),
-        destination=f"{client.config.registry}/{repo}",
-    )
-
-    # Track blobs already uploaded in this session to avoid duplicate work
-    uploaded_digests: set[str] = set()
-
-    for entry_idx, entry in enumerate(index.manifests):
-        manifest_bytes = read_blob(layout, entry.digest)
-        manifest_obj = parse_manifest(manifest_bytes.decode("utf-8"))
-        if not isinstance(manifest_obj, ImageManifest):
-            raise LayoutError(
-                f"manifest {entry.digest} is not an OCI Image Manifest",
-                f"got {type(manifest_obj).__name__}",
-            )
-
-        blob_descs = _collect_blob_descriptors(manifest_obj)
-        manifest_report = ManifestPushReport(
-            digest=entry.digest,
-            reference="",
-            media_type=entry.media_type,
-        )
-
-        # -- Upload blobs --
-        for blob_desc in blob_descs:
-            if blob_desc.digest in uploaded_digests:
-                blob_report = BlobPushReport(
-                    digest=blob_desc.digest,
-                    size=blob_desc.size,
-                    media_type=blob_desc.media_type,
-                    action="skipped",
-                )
-                manifest_report.blobs.append(blob_report)
-                result.blobs_skipped += 1
-                if progress_callback:
-                    progress_callback("blob_skip", digest=blob_desc.digest,
-                                      size=blob_desc.size)
-                continue
-
-            # Check existence unless --force
-            exists = False
-            if not force:
-                try:
-                    head_blob(client, repo, blob_desc.digest)
-                    exists = True
-                except BlobError as exc:
-                    if exc.status_code is not None and exc.status_code != 404:
-                        raise
-                    exists = False
-
-            if exists:
-                uploaded_digests.add(blob_desc.digest)
-                blob_report = BlobPushReport(
-                    digest=blob_desc.digest,
-                    size=blob_desc.size,
-                    media_type=blob_desc.media_type,
-                    action="skipped",
-                )
-                manifest_report.blobs.append(blob_report)
-                result.blobs_skipped += 1
-                if progress_callback:
-                    progress_callback("blob_skip", digest=blob_desc.digest,
-                                      size=blob_desc.size)
-                if transfer_callback is not None:
-                    transfer_callback(TransferProgress(
-                        uuid4().hex, blob_desc.digest, TransferDirection.UPLOAD,
-                        TransferPhase.SKIPPED, 0, blob_desc.size,
-                    ))
-                continue
-
-            # Upload
-            if progress_callback:
-                progress_callback("blob_start", digest=blob_desc.digest,
-                                  size=blob_desc.size,
-                                  media_type=blob_desc.media_type)
-
-            blob_file_path = _blob_path(layout, blob_desc.digest)
-            try:
-                blob_fh = blob_file_path.open("rb")
-            except OSError as exc:
-                raise LayoutError(
-                    f"Blob {blob_desc.digest} not found in {layout}", str(exc),
-                ) from exc
-            with blob_fh:
-                if chunked:
-                    upload_blob_chunked(
-                        client, repo, blob_fh,
-                        blob_desc.digest,
-                        chunk_size=chunk_size,
-                        total_size=blob_desc.size,
-                        progress_callback=transfer_callback,
-                    )
-                else:
-                    algorithm, _ = blob_desc.digest.split(":", 1)
-                    if algorithm != "sha256":
-                        raise LayoutError(
-                            f"Unsupported digest algorithm: {algorithm!r}",
-                            "only sha256 is supported",
-                        )
-                    actual = _hash_blob_stream(blob_fh)
-                    if actual != blob_desc.digest:
-                        raise LayoutError(
-                            f"Digest mismatch for {blob_desc.digest}", f"computed {actual}",
-                        )
-                    blob_fh.seek(0)
-                    upload_blob_stream(
-                        client, repo, blob_fh, blob_desc.digest,
-                        total_size=blob_desc.size,
-                        progress_callback=transfer_callback,
-                    )
-
-            uploaded_digests.add(blob_desc.digest)
-            blob_report = BlobPushReport(
-                digest=blob_desc.digest,
-                size=blob_desc.size,
-                media_type=blob_desc.media_type,
-                action="uploaded",
-            )
-            manifest_report.blobs.append(blob_report)
-            result.blobs_uploaded += 1
-            result.bytes_uploaded += blob_desc.size
-            if progress_callback:
-                progress_callback("blob_done", digest=blob_desc.digest,
-                                  size=blob_desc.size)
-
-        # -- Determine reference --
-        if tag_override:
-            reference = tag_override
-        elif entry.annotations and "org.opencontainers.image.ref.name" in entry.annotations:
-            reference = entry.annotations["org.opencontainers.image.ref.name"]
-        else:
-            reference = entry.digest
-
-        manifest_report.reference = reference
-
-        # -- Push manifest --
-        push_manifest(client, repo, reference, manifest_bytes, entry.media_type)
-        manifest_report.status = "pushed"
-        result.manifests.append(manifest_report)
-        result.manifests_pushed += 1
-        if progress_callback:
-            progress_callback("manifest_done", digest=entry.digest,
-                              reference=reference)
-
-    return result

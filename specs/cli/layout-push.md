@@ -2,12 +2,13 @@
 
 ## Overview
 
-The `layout push` command pushes the contents of a local OCI Image Layout
-directory to a remote OCI-compliant registry. It reads the layout's
-`index.json` to discover all manifests and their referenced blobs (layers
-and configs), uploads every blob, then pushes each manifest. The command
-reuses the existing `libs/blobs` and `libs/manifests` operations — no new
-network-level code is required.
+The `layout push` command pushes a complete Open Container Initiative (OCI)
+layout directory or supported gzip-tar archive to a registry. Strict private
+snapshotting verifies every reachable index, manifest, explicit subject,
+configuration and layer before credentials or network calls. Nested indexes
+retain all platforms; original document bytes and identities are never rewritten.
+See the [complete artifact design](artifact-pull.md#d7-recursive-layout-push-and-existing-surfaces)
+for the approved publication contract.
 
 `layout push` is the natural next step after building a layout with the
 `init → add layer → generate config → generate manifest` pipeline. It bridges
@@ -15,20 +16,18 @@ the offline layout world and the online registry world.
 
 ### Push Algorithm
 
-For each manifest descriptor in `index.json`:
+1. Copy the complete closure into private verified storage and resolve all
+   literal publication tags, including overridden source annotations.
+2. Upload each unique configuration/layer blob once, unless HEAD returns 200.
+   Only a `BlobError` carrying `status_code=404` means missing; an unclassified
+   error is not permission to upload. Both upload modes support SHA-256/SHA-512.
+3. Publish child documents and subjects by digest before their parents.
+4. Publish requested root references last. A root also referenced by another
+   document receives its digest publication early and its tag alias last.
+   Deduplicate identical `(digest, reference)` operations.
 
-```
-1.  Parse the manifest blob to extract its layer + config descriptors.
-2.  For each blob (layers first, then config):
-    a.  HEAD /v2/{repo}/blobs/{digest}  — check if already present.
-    b.  If 404 → upload the blob (monolithic or chunked).
-    c.  If 2xx  → skip (already exists).
-3.  PUT /v2/{repo}/manifests/{reference} — push the manifest.
-```
-
-If the index contains multiple manifests (multi-platform image), each is
-pushed individually. A future extension could wrap them in an index manifest;
-that is out of scope for this spec.
+The local wrapper is never published as the artifact root. Snapshot source paths
+are never reopened after verification, and mutable source files are not hard-linked.
 
 ### Blob Existence Check
 
@@ -52,14 +51,20 @@ regshape layout push [OPTIONS]
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--path` | `-p` | path | required | Root directory of a valid, completed OCI Image Layout (must have at least one manifest in `index.json`) |
-| `--dest` | `-d` | string | required | Destination image reference — `registry/repo` or `registry/repo:tag`. If a tag is included it overrides the `ref.name` annotation in `index.json` for single-manifest layouts. See [Reference Resolution](#reference-resolution). |
+| `--path` | `-p` | path | required | Complete OCI directory or supported gzip-tar archive, with at least one top-level root |
+| `--dest` | `-d` | string | required | `registry/repo` or `registry/repo:tag`; an override requires exactly one top-level root, not one descendant |
 | `--force` | | flag | `false` | Skip the `HEAD` existence check and upload every blob unconditionally |
 | `--chunked` | | flag | `false` | Use the chunked (streaming) upload protocol for blobs instead of monolithic |
 | `--chunk-size` | | integer | `65536` | Chunk size in bytes when `--chunked` is enabled |
 | `--dry-run` | | flag | `false` | Validate the layout and print what *would* be pushed without making any network calls |
 | `--json` | | flag | `false` | Preserve the structured result on stdout without animated progress |
 | `--no-progress` | | flag | `false` | Disable interactive progress without changing transfers or telemetry |
+| `--max-manifest-bytes` | | positive integer | 16777216 | Per-document and wrapper byte cap |
+| `--max-objects` | | positive integer | 100000 | Unique content addresses |
+| `--max-depth` | | positive integer | 64 | Graph depth; roots are depth zero |
+| `--max-total-bytes` | | positive integer | 1099511627776 | Distinct stored object bytes |
+| `--max-archive-bytes` | | positive integer | 2199023255552 | Expanded archive bytes |
+| `--max-archive-input-bytes` | | positive integer | 2199023255552 | Compressed archive bytes |
 
 Root options include `--insecure`, `--verbose`, and `--log-file`.
 JSON and telemetry options belong to `layout push`; use
@@ -79,53 +84,40 @@ by other regshape commands:
 
 ### Multi-manifest layouts
 
-When `index.json` contains more than one manifest and `--dest` includes a
-tag, the command exits with an error — a single tag cannot address multiple
-manifests. Each manifest is pushed by its digest, and if it carries an
-`org.opencontainers.image.ref.name` annotation, that tag is also created.
+More than one top-level root prohibits a destination tag override. A single
+index root with many descendants permits it. Without an override, use each
+root's ref-name tag, or its digest when untagged; never invent `latest`.
+
+Explicit destination tags and present source ref-name annotations must fully
+match ASCII `[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}`, even with an override.
+Digest destinations, query/fragment/percent forms, controls and invalid tags
+are rejected before credential resolution. Tags are not trimmed or decoded.
 
 ---
 
 ## Behaviour
 
-1. **Validate** — call `validate_layout(layout)`. Exit 1 on failure.
-2. **Read index** — call `read_index(layout)` to get the list of manifest
-   descriptors from `index.json`.
-3. **Resolve destination** — parse `--dest` via `parse_image_ref()` to
-   extract `(registry, repo, reference)`. If the reference component is a
-   tag and the index has more than one manifest, exit with an error.
-4. **Create client** — build `RegistryClient` with
-   `TransportConfig(registry=registry, insecure=ctx.obj["insecure"])`.
-5. **For each manifest descriptor** in `index.json.manifests`:
-   a. Read the manifest blob via `read_blob(layout, descriptor.digest)`.
-   b. Parse the manifest to extract layer and config descriptors.
-   c. **Upload blobs** — for each blob descriptor (layers + config):
-      - Unless `--force`: call `head_blob(client, repo, blob.digest)`.
-        If 2xx, invoke skip callback and continue. If `BlobError` with
-        status 404 (or no status), treat as "not present"; re-raise any
-        other `BlobError`.
-      - For monolithic uploads: open and verify the blob using bounded reads,
-        rewind it, and call `upload_blob_stream(...)` with its descriptor size
-        and optional typed observer.
-      - For chunked uploads (`--chunked`): open the blob file directly
-        from disk and call `upload_blob_chunked(...)` to stream without
-        loading the entire blob into memory.
-      - Preserve the legacy string-event callback and independently forward
-        typed observations for both protocols. Require a final PUT with
-        `201 Created` before reporting a blob as uploaded.
-   d. **Push manifest** — determine the reference:
-      - If `--dest` included a tag and this is the only manifest: use
-        that tag.
-      - Otherwise: use the manifest's `org.opencontainers.image.ref.name`
-        annotation if present; fall back to the manifest digest.
-      - Call `push_manifest(client, repo, reference, manifest_bytes, descriptor.media_type)`.
-      - Print confirmation with digest.
-6. **Print summary** and exit 0.
+The command enters `LayoutPushPlan` before constructing `RegistryClient`, then
+uses `execute_layout_push` while that snapshot context is still active.
+The public `push_layout` convenience function uses the same plan/executor and
+borrows its caller-provided client. Document PUTs supply `expected_digest`,
+require `201 Created` and validate any reported digest against exact bytes.
+An absent digest header is allowed after verification of the submitted payload.
+
+Strict source operations require the Linux/Darwin native safe-filesystem backend
+and a trusted private namespace. Windows fails closed. This is not isolation
+from hostile processes with the same user identity or root privileges.
+
+Errors do not delete uploaded remote content. A lost final root response reports
+**outcome uncertain**: the registry may already have committed it; explicitly
+verify the destination before retrying. No successful result is emitted on failure.
 
 ### Dry-run mode (`--dry-run`)
 
-Steps 1-3 execute normally. For steps 5a–5d the command prints what it
-*would* do without making any network calls:
+Dry-run enters the identical verified snapshot/plan and prints intended operations.
+It constructs no registry client, invokes no credential helper and performs no
+HEAD or other network call. It does not claim that uploads were acknowledged or
+predict which blobs already exist:
 
 ```
 [dry-run] Layout ./my-image -> registry.io/myrepo/myimage
@@ -316,17 +308,18 @@ regshape layout push \
 
 ## Library Function
 
-The CLI command delegates to a library function in `libs/layout/operations.py`:
+The command and library share planning/execution in
+[src/regshape/libs/layout/operations.py](../../src/regshape/libs/layout/operations.py):
 
-### `push_layout(layout_path, client, repo, tag_override, force, chunked, chunk_size, progress_callback, *, transfer_callback=None) -> PushResult`
+### `push_layout(layout_path, client, repo, tag_override, force, chunked, chunk_size, progress_callback, *, transfer_callback=None, limits=None) -> PushResult`
 
 **Parameters:**
 
-- `layout_path: str | Path` — Root of the OCI Image Layout directory.
+- `layout_path: str | Path` — OCI directory or supported gzip-tar archive.
 - `client: RegistryClient` — Authenticated transport client.
 - `repo: str` — Target repository name (e.g. `"myrepo/myimage"`).
 - `tag_override: str | None` — If provided, overrides `ref.name` annotation
-  for single-manifest layouts.
+  for single-root layouts, including nested indexes.
 - `force: bool` — Skip existence checks when `True`.
 - `chunked: bool` — Use chunked upload protocol when `True`.
 - `chunk_size: int` — Chunk size (only used when `chunked=True`).
@@ -336,14 +329,29 @@ The CLI command delegates to a library function in `libs/layout/operations.py`:
 - `transfer_callback: ProgressCallback | None` — Independent typed observer for
   actual logical byte progress in both protocols and one skipped event per
   unique existing digest. Observer exceptions propagate unchanged.
+- `limits: ArtifactLimits | None` — Independent graph/archive resource budgets.
 
 **Returns:** A `PushResult` dataclass containing the per-manifest
 push report and summary statistics (manifests pushed, blobs uploaded, blobs
 skipped, bytes uploaded).
+Index publication reports have `blobs: []`; `manifests_pushed` counts acknowledged
+document publications, including required aliases. Blob uploads and bytes are
+unique, while skipped counts retain per-manifest reused-reference accounting.
+Ordinary flat JSON keys and counts remain compatible. Dry-run retains its keys
+and adds `media_type` to distinguish index documents.
+
+`LayoutPushPlan(path, tag_override=None, *, limits=None)` is a context manager:
+its `snapshot`, ordered `publications` and unique `blobs` are valid only inside
+the context. `PushPublication` contains `document`, `reference`, ordered
+layer-then-config `blobs`, and `root_reference`. The executor borrows the active
+plan/client and does not close either. Use the context's snapshot store, never
+the original input path; exit releases private storage even on observer errors.
+These helpers are available from the operations module for command integration.
 
 **Raises:**
 
 - `LayoutError` — Layout is invalid or incomplete.
+- `ArtifactError` / `OSError` — Strict graph, tag, budget, archive or filesystem failure.
 - `AuthError` — Authentication failure.
 - `BlobError` — Blob upload failure.
 - `ManifestError` — Manifest push failure.
@@ -353,13 +361,12 @@ skipped, bytes uploaded).
 ## Dependencies
 
 - **Internal:**
-  - `libs/layout/operations.py` — `validate_layout`, `read_index`, `read_blob`
+  - [src/regshape/libs/layout/operations.py](../../src/regshape/libs/layout/operations.py) — shared plan and executor
+  - [src/regshape/libs/artifacts/operations.py](../../src/regshape/libs/artifacts/operations.py) — directory/archive snapshot selection
   - [Blob operations](../../src/regshape/libs/blobs/operations.py) — `head_blob`, `upload_blob_stream`, `upload_blob_chunked`
-  - `libs/manifests/operations.py` — `push_manifest`
-  - `libs/transport/client.py` — `RegistryClient`, `TransportConfig`
-  - `libs/refs.py` — `parse_image_ref`
-  - `libs/models/manifest.py` — `parse_manifest`
-  - `libs/errors.py` — `LayoutError`, `AuthError`, `BlobError`, `ManifestError`
+  - [src/regshape/libs/manifests/operations.py](../../src/regshape/libs/manifests/operations.py) — verified `push_manifest`
+  - [src/regshape/libs/transport/client.py](../../src/regshape/libs/transport/client.py) — `RegistryClient`, `TransportConfig`
+  - [src/regshape/libs/errors.py](../../src/regshape/libs/errors.py) — explicit domain errors
 - **External:** none (no new third-party packages)
 
 ---
@@ -385,10 +392,10 @@ for resource ownership and compatibility.
 
 ## Implementation Notes
 
-- Add `push` as a new Click command under the existing `layout` group in
-  `src/regshape/cli/layout.py`.
-- Implement `push_layout()` in `src/regshape/libs/layout/operations.py`
-  and export it from `libs/layout/__init__.py`.
+- The existing `push` command remains under the `layout` group in
+  [src/regshape/cli/layout.py](../../src/regshape/cli/layout.py).
+- `push_layout()` remains exported by
+  [src/regshape/libs/layout/__init__.py](../../src/regshape/libs/layout/__init__.py).
 - Decorate the library function with `@track_scenario("layout push")`.
 - The `head_blob` call may return a `BlobError` with status 404 — catch
   it and treat as "blob not present" rather than a fatal error.

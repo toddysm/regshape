@@ -67,10 +67,15 @@ content.
 
 **Behaviour:**
 
-1. `GET` path `"/v2/{repo}/blobs/{digest}"`.
+1. Build path `"/v2/{repo}/blobs/{digest}"`.
 2. Call `client.head(path)`.
 3. Pass response to `_raise_for_blob_error`.
-4. Return `_blob_info_from_response(response, digest)`.
+4. Require `200 OK` to confirm existence, then return
+   `_blob_info_from_response(response, digest)`. Only `BlobError.status_code == 404`
+   identifies absence; unclassified or other-status errors must not be treated
+   as permission to upload.
+5. Close the owned response on every path without replacing an active error
+   with a secondary cleanup failure.
 
 **Decorator:** `@track_time`
 
@@ -244,13 +249,17 @@ Uploads a blob using the chunked POST + N×PATCH + PUT protocol.
      `Content-Length`, `Content-Type: application/octet-stream`.
    - Pass to `_raise_for_upload_error`.
    - Advance `session.offset += len(chunk)`.
-   - If `Location` header is present in the PATCH response, attempt to update
-     `session.upload_path` and `session.session_id` via `BlobUploadSession.from_location`;
-     silently ignore unparseable new locations (keep existing path).
+   - If `Location` is nonempty in the PATCH response, update the upload path
+     and session ID using `BlobUploadSession.from_location`. Invalid locations
+     fail explicitly rather than silently reusing a stale session URL.
 4. **PUT** (completing) — split `session.upload_path`, append `("digest", digest)`,
    send PUT with empty body and `Content-Length: 0`.
    Pass to `_raise_for_upload_error`.
 5. Compare and return confirmed digest (same as `upload_blob`).
+
+Every POST/PATCH/PUT response is owned and closed before reporting that stage
+as complete. Streamed monolithic uploads use the same response ownership rule;
+cleanup errors never replace active transfer or observer failures.
 
 **Decorator:** `@track_scenario("blob upload chunked")`
 
