@@ -282,6 +282,8 @@ def push_manifest(
     reference: str,
     body: bytes,
     content_type: str,
+    *,
+    expected_digest: str | None = None,
 ) -> str:
 ```
 
@@ -294,15 +296,32 @@ Pushes a manifest to a repository, creating or overwriting the reference.
 | `reference` | `str` | required | Tag or digest to create/overwrite |
 | `body` | `bytes` | required | Raw manifest JSON bytes |
 | `content_type` | `str` | required | Value for the `Content-Type` header |
+| `expected_digest` | `str \| None` | `None` | Keyword-only strict SHA-256/SHA-512 payload identity |
 
-**Returns:** `str` — the `Docker-Content-Digest` response header value.
+**Returns:** `str` — the `Docker-Content-Digest` response header value for legacy
+callers, or the verified `expected_digest` when supplied.
 
 **Behaviour:**
 
 1. Build path `"/v2/{repo}/manifests/{reference}"`.
 2. Call `client.put(path, headers={"Content-Type": content_type}, data=body)`.
 3. Pass response to `_raise_for_manifest_error`.
-4. Return `Docker-Content-Digest` header value.
+4. With `expected_digest`, verify the submitted bytes and any digest reference
+   locally before PUT, require `201 Created`, and validate every present
+   `Docker-Content-Digest` against those exact bytes. A valid digest using the
+   other supported algorithm is accepted; empty/malformed/mismatched headers
+   are rejected. An absent header is allowed with the verified submitted payload.
+   The final response must identify a prepared PUT carrying those exact bytes.
+   Requests' 301/302/303 method/body-changing redirects therefore fail;
+   preserving 307/308 redirects remain supported. Missing final-request evidence
+   also fails strict mode (including in custom client/test doubles).
+5. Close the owned response on success/failure, preserving an active error if
+   cleanup also fails. The client remains caller-owned. Omitting the argument
+   preserves the existing any-2xx/header return behavior.
+
+Strict acknowledgement failures raise `ManifestError`; malformed strict inputs
+raise `ValueError` before network work. Transport exceptions propagate. Receipt
+of an error or loss of the response does not imply a remote rollback.
 
 **Decorator:** `@track_time`
 

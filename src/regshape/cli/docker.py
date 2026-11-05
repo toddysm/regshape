@@ -18,6 +18,7 @@ from regshape.cli.formatting import emit_error, emit_json
 from regshape.cli.progress import ProgressDisplay
 from regshape.libs.docker import export_image, list_images, push_image
 from regshape.libs.errors import (
+    ArtifactError,
     AuthError,
     BlobError,
     DockerError,
@@ -209,7 +210,7 @@ def export_cmd(ctx, image, output, platform, as_json):
 )
 @click.option(
     "--chunk-size",
-    type=int,
+    type=click.IntRange(min=1),
     default=65536,
     metavar="BYTES",
     help="Chunk size in bytes for chunked uploads.",
@@ -220,7 +221,8 @@ def push_cmd(ctx, image, dest, platform, force, chunked, chunk_size, as_json, no
     """Push a Docker image, showing indeterminate preparation then per-blob progress.
 
     JSON, noninteractive stderr and --no-progress suppress animation without
-    changing export, upload protocols or the result schema.
+    changing export, upload protocols or the result schema. Invalid destinations
+    and strict local snapshot/native-platform failures produce an error, not success.
     """
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
@@ -239,7 +241,8 @@ def push_cmd(ctx, image, dest, platform, force, chunked, chunk_size, as_json, no
                 chunk_size=chunk_size,
                 transfer_callback=progress.observe,
             )
-    except (DockerError, LayoutError, AuthError, BlobError, ManifestError, OSError) as exc:
+    except (ArtifactError, DockerError, LayoutError, AuthError, BlobError,
+            ManifestError, OSError, ValueError) as exc:
         emit_error("docker push", str(exc))
 
     if as_json:

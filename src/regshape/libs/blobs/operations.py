@@ -77,11 +77,17 @@ def head_blob(
     :raises AuthError: On authentication failure.
     :raises BlobError: On a non-2xx registry response.
     :raises requests.exceptions.RequestException: On transport errors.
+
+    The response is owned and closed on success/failure; cleanup preserves an
+    active primary error. Only HTTP 200 confirms presence; status_code 404
+    identifies a missing blob, and other statuses remain explicit failures.
     """
     path = f"/v2/{repo}/blobs/{digest}"
-    response = client.head(path)
-    _raise_for_blob_error(response, client.config.registry, repo, digest)
-    return _blob_info_from_response(response, digest)
+    with ClosingResponse(client.head(path)) as response:
+        _raise_for_blob_error(response, client.config.registry, repo, digest)
+        if response.status_code != 200:
+            raise BlobError("Blob existence requires HTTP 200 OK", status_code=response.status_code)
+        return _blob_info_from_response(response, digest)
 
 
 @track_time
@@ -414,30 +420,33 @@ def upload_blob_stream(
     :raises BlobError: On size/replay/integrity or registry failures.
     :raises AuthError: On authentication failure.
     :raises requests.exceptions.RequestException: On transport failures.
+
+    Owns each POST/PUT response, closing before success is reported and preserving
+    primary transfer/observer failures if response cleanup also fails.
     """
     with _TransferProgress(
         digest, TransferDirection.UPLOAD, progress_callback, total_size,
     ) as progress:
         with _UploadBody(source, progress) as body:
-            response = client.post(f"/v2/{repo}/blobs/uploads/")
-            _raise_for_upload_error(response, client.config.registry, session_id=None)
-            session = BlobUploadSession.from_location(response.headers.get("Location", ""))
+            with ClosingResponse(client.post(f"/v2/{repo}/blobs/uploads/")) as response:
+                _raise_for_upload_error(response, client.config.registry, session_id=None)
+                session = BlobUploadSession.from_location(response.headers.get("Location", ""))
             path, params = _split_upload_path(session.upload_path)
             params.append(("digest", digest))
-            response = client.put(
+            with ClosingResponse(client.put(
                 path, data=body, params=params,
                 headers={"Content-Type": content_type, "Content-Length": str(len(body))},
-            )
-            body.raise_if_failed()
-            _raise_for_upload_error(response, client.config.registry, session_id=session.session_id)
-            _require_upload_commit(response, "Streamed")
-            if response.request is not None and len(body) and response.request.body is not body:
-                raise BlobError("Streamed upload redirect removed the counted request body")
-            progress.check_complete()
-            progress.emit(TransferPhase.VERIFYING)
-            confirmed = response.headers.get("Docker-Content-Digest", "")
-            if confirmed and confirmed != digest:
-                raise BlobError("Registry confirmed a different digest for the streamed upload")
+            )) as response:
+                body.raise_if_failed()
+                _raise_for_upload_error(response, client.config.registry, session_id=session.session_id)
+                _require_upload_commit(response, "Streamed")
+                if response.request is not None and len(body) and response.request.body is not body:
+                    raise BlobError("Streamed upload redirect removed the counted request body")
+                progress.check_complete()
+                progress.emit(TransferPhase.VERIFYING)
+                confirmed = response.headers.get("Docker-Content-Digest", "")
+                if confirmed and confirmed != digest:
+                    raise BlobError("Registry confirmed a different digest for the streamed upload")
         progress.complete()
         return confirmed or digest
 
@@ -511,17 +520,17 @@ def _upload_blob_chunks(
     """Upload buffered chunks, advancing progress only after accepted responses.
 
     The caller owns source and the observer lifecycle. This helper preserves
-    upload-session query values and performs final digest confirmation.
+    upload-session query values and performs final digest confirmation. Each
+    response is closed before advancing success, without masking primary errors.
     """
     registry = client.config.registry
 
     # --- Step 1: initiate upload session ---
     init_path = f"/v2/{repo}/blobs/uploads/"
-    init_response = client.post(init_path)
-    _raise_for_upload_error(init_response, registry, session_id=None)
-
-    location = init_response.headers.get("Location", "")
-    session = BlobUploadSession.from_location(location)
+    with ClosingResponse(client.post(init_path)) as init_response:
+        _raise_for_upload_error(init_response, registry, session_id=None)
+        location = init_response.headers.get("Location", "")
+        session = BlobUploadSession.from_location(location)
     progress.emit(TransferPhase.TRANSFERRING)
 
     # --- Step 2: PATCH loop ---
@@ -532,7 +541,7 @@ def _upload_blob_chunks(
         progress.check_increment(len(chunk))
         start = session.offset
         end = start + len(chunk) - 1
-        patch_response = client.patch(
+        with ClosingResponse(client.patch(
             session.upload_path,
             data=chunk,
             headers={
@@ -540,28 +549,25 @@ def _upload_blob_chunks(
                 "Content-Length": str(len(chunk)),
                 "Content-Type": "application/octet-stream",
             },
-        )
-        _raise_for_upload_error(
-            patch_response, registry, session_id=session.session_id
-        )
-        session.offset += len(chunk)
-        progress.advance(len(chunk))
-        # Update upload path if the registry rotates the session URL.
-        new_location = patch_response.headers.get("Location", "")
-        if new_location:
-            try:
+        )) as patch_response:
+            _raise_for_upload_error(
+                patch_response, registry, session_id=session.session_id
+            )
+            # A present rotated URL must be usable; do not silently reuse a stale one.
+            new_location = patch_response.headers.get("Location", "")
+            if new_location:
                 updated = BlobUploadSession.from_location(new_location)
                 session.upload_path = updated.upload_path
                 session.session_id = updated.session_id
-            except BlobError:
-                pass  # keep existing path if the new Location is unparseable
+        session.offset += len(chunk)
+        progress.advance(len(chunk))
 
     progress.check_complete()
     progress.emit(TransferPhase.COMMITTING)
     # --- Step 3: completing PUT ---
     _put_base, _put_params = _split_upload_path(session.upload_path)
     _put_params.append(("digest", digest))
-    put_response = client.put(
+    with ClosingResponse(client.put(
         _put_base,
         data=b"",
         params=_put_params,
@@ -569,17 +575,16 @@ def _upload_blob_chunks(
             "Content-Type": content_type,
             "Content-Length": "0",
         },
-    )
-    _raise_for_upload_error(put_response, registry, session_id=session.session_id)
-    _require_upload_commit(put_response, "Chunked")
-
-    progress.emit(TransferPhase.VERIFYING)
-    confirmed = put_response.headers.get("Docker-Content-Digest", "")
-    if confirmed and confirmed != digest:
-        raise BlobError(
-            f"Digest mismatch: expected {digest}, registry confirmed {confirmed}",
-            f"registry={registry} repo={repo}",
-        )
+    )) as put_response:
+        _raise_for_upload_error(put_response, registry, session_id=session.session_id)
+        _require_upload_commit(put_response, "Chunked")
+        progress.emit(TransferPhase.VERIFYING)
+        confirmed = put_response.headers.get("Docker-Content-Digest", "")
+        if confirmed and confirmed != digest:
+            raise BlobError(
+                f"Digest mismatch: expected {digest}, registry confirmed {confirmed}",
+                f"registry={registry} repo={repo}",
+            )
     return confirmed or digest
 
 

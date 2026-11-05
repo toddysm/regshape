@@ -7,8 +7,10 @@ CLI tests use the Click test runner.
 """
 
 import gzip
+import inspect
 import io
 import json
+import sys
 from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
 
@@ -28,6 +30,9 @@ from regshape.libs.layout.operations import (
 )
 from regshape.libs.models.mediatype import OCI_IMAGE_LAYER_TAR_GZIP
 
+pytestmark = pytest.mark.skipif(
+    sys.platform not in ("linux", "darwin"), reason="Push requires native safe artifact snapshots",
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -35,6 +40,9 @@ from regshape.libs.models.mediatype import OCI_IMAGE_LAYER_TAR_GZIP
 
 
 def _runner():
+    """Capture stderr separately on minimum Click 8.1 and current versions."""
+    if "mix_stderr" in inspect.signature(CliRunner).parameters:
+        return CliRunner(mix_stderr=False)
     return CliRunner()
 
 
@@ -95,11 +103,12 @@ class TestPushLayout:
     def test_push_uploads_all_blobs_and_manifest(
         self, mock_head, mock_upload, mock_push_manifest, tmp_path
     ):
+        """A genuine HTTP 404 uploads each unique flat-layout blob and its root."""
         layout_dir = _build_layout(tmp_path)
         client = _mock_client()
 
         # All blobs are new (HEAD returns 404)
-        mock_head.side_effect = BlobError("not found", "404")
+        mock_head.side_effect = BlobError("not found", "404", status_code=404)
         mock_upload.return_value = "sha256:confirmed"
         mock_push_manifest.return_value = "sha256:manifest_confirmed"
 
@@ -157,10 +166,11 @@ class TestPushLayout:
     def test_push_chunked_mode(
         self, mock_head, mock_upload_chunked, mock_push_manifest, tmp_path
     ):
+        """The verified plan preserves the chunked upload selection and size."""
         layout_dir = _build_layout(tmp_path)
         client = _mock_client()
 
-        mock_head.side_effect = BlobError("not found", "404")
+        mock_head.side_effect = BlobError("not found", "404", status_code=404)
         mock_upload_chunked.return_value = "sha256:confirmed"
         mock_push_manifest.return_value = "sha256:manifest_confirmed"
 
@@ -177,10 +187,11 @@ class TestPushLayout:
     def test_push_uses_ref_name_annotation(
         self, mock_head, mock_upload, mock_push_manifest, tmp_path
     ):
+        """A valid source annotation remains the exact remote publication tag."""
         layout_dir = _build_layout(tmp_path, ref_name="v1.0")
         client = _mock_client()
 
-        mock_head.side_effect = BlobError("not found", "404")
+        mock_head.side_effect = BlobError("not found", "404", status_code=404)
         mock_upload.return_value = "sha256:confirmed"
         mock_push_manifest.return_value = "sha256:manifest_confirmed"
 
@@ -197,10 +208,11 @@ class TestPushLayout:
     def test_push_tag_override_wins(
         self, mock_head, mock_upload, mock_push_manifest, tmp_path
     ):
+        """A single root accepts an explicit valid destination override."""
         layout_dir = _build_layout(tmp_path, ref_name="v1.0")
         client = _mock_client()
 
-        mock_head.side_effect = BlobError("not found", "404")
+        mock_head.side_effect = BlobError("not found", "404", status_code=404)
         mock_upload.return_value = "sha256:confirmed"
         mock_push_manifest.return_value = "sha256:manifest_confirmed"
 
@@ -212,11 +224,12 @@ class TestPushLayout:
         assert call_args[0][2] == "prod"
 
     def test_push_fails_on_invalid_layout(self, tmp_path):
+        """Missing snapshot metadata fails locally without invoking the client."""
         layout_dir = tmp_path / "bad"
         layout_dir.mkdir()
         client = _mock_client()
 
-        with pytest.raises(LayoutError):
+        with pytest.raises(FileNotFoundError):
             push_layout(layout_dir, client, "myrepo/myimage")
 
     def test_push_fails_on_empty_index(self, tmp_path):
@@ -258,16 +271,18 @@ class TestPushLayout:
     def test_push_progress_callback_receives_events(
         self, mock_head, mock_upload, mock_push_manifest, tmp_path
     ):
+        """Real 404 metadata retains legacy start/done/document callback names."""
         layout_dir = _build_layout(tmp_path)
         client = _mock_client()
 
-        mock_head.side_effect = BlobError("not found", "404")
+        mock_head.side_effect = BlobError("not found", "404", status_code=404)
         mock_upload.return_value = "sha256:confirmed"
         mock_push_manifest.return_value = "sha256:manifest_confirmed"
 
         events = []
 
         def cb(event, **kwargs):
+            """Record legacy callback names without depending on typed progress."""
             events.append(event)
 
         push_layout(layout_dir, client, "myrepo/myimage",
@@ -283,15 +298,17 @@ class TestPushLayout:
     def test_push_result_has_correct_summary(
         self, mock_head, mock_upload, mock_push_manifest, tmp_path
     ):
+        """A missing and an existing blob retain flat summary counts."""
         layout_dir = _build_layout(tmp_path)
         client = _mock_client()
 
-        # First blob exists, second is new
+        # First blob is missing, second exists.
         call_count = [0]
         def head_side_effect(*args, **kwargs):
+            """Return genuine missing metadata once, then confirmed presence."""
             call_count[0] += 1
             if call_count[0] == 1:
-                raise BlobError("not found", "404")
+                raise BlobError("not found", "404", status_code=404)
             return MagicMock()
 
         mock_head.side_effect = head_side_effect
@@ -316,8 +333,9 @@ class TestPushCLI:
     """Tests for the layout push CLI command."""
 
     @patch("regshape.cli.layout.RegistryClient")
-    @patch("regshape.cli.layout.push_layout")
+    @patch("regshape.cli.layout.execute_layout_push")
     def test_push_basic(self, mock_push, mock_client_cls, tmp_path):
+        """After real local planning the command executes once and prints its summary."""
         layout_dir = _build_layout(tmp_path)
         mock_push.return_value = PushResult(
             layout_path=str(layout_dir),
@@ -337,8 +355,9 @@ class TestPushCLI:
         assert "Push complete" in result.stderr
 
     @patch("regshape.cli.layout.RegistryClient")
-    @patch("regshape.cli.layout.push_layout")
+    @patch("regshape.cli.layout.execute_layout_push")
     def test_push_json_output(self, mock_push, mock_client_cls, tmp_path):
+        """The planned executor result retains the existing flat JSON wire keys."""
         layout_dir = _build_layout(tmp_path)
         from regshape.libs.layout.operations import BlobPushReport, ManifestPushReport
         mock_push.return_value = PushResult(
@@ -414,8 +433,9 @@ class TestPushCLI:
         assert result.exit_code != 0
 
     @patch("regshape.cli.layout.RegistryClient")
-    @patch("regshape.cli.layout.push_layout")
+    @patch("regshape.cli.layout.execute_layout_push")
     def test_push_layout_error_exits_1(self, mock_push, mock_client_cls, tmp_path):
+        """A domain failure from execution emits no success record."""
         layout_dir = _build_layout(tmp_path)
         mock_push.side_effect = LayoutError("invalid", "test")
 
@@ -427,8 +447,9 @@ class TestPushCLI:
         assert result.exit_code == 1
 
     @patch("regshape.cli.layout.RegistryClient")
-    @patch("regshape.cli.layout.push_layout")
+    @patch("regshape.cli.layout.execute_layout_push")
     def test_push_with_force_flag(self, mock_push, mock_client_cls, tmp_path):
+        """Forward force to execution after completing local verification."""
         layout_dir = _build_layout(tmp_path)
         mock_push.return_value = PushResult(
             layout_path=str(layout_dir),
@@ -451,8 +472,9 @@ class TestPushCLI:
         assert call_kwargs["force"] is True
 
     @patch("regshape.cli.layout.RegistryClient")
-    @patch("regshape.cli.layout.push_layout")
+    @patch("regshape.cli.layout.execute_layout_push")
     def test_push_with_chunked_flags(self, mock_push, mock_client_cls, tmp_path):
+        """Forward chunked mode and size without bypassing the shared plan."""
         layout_dir = _build_layout(tmp_path)
         mock_push.return_value = PushResult(
             layout_path=str(layout_dir),
@@ -476,6 +498,7 @@ class TestPushCLI:
         assert call_kwargs["chunk_size"] == 1048576
 
     def test_dry_run_rejects_tag_override_with_multiple_manifests(self, tmp_path):
+        """Multi-root override errors belong on stderr on minimum/current Click alike."""
         layout_dir = _build_multi_manifest_layout(tmp_path)
 
         result = _runner().invoke(regshape, [
@@ -485,4 +508,4 @@ class TestPushCLI:
             "--dry-run",
         ])
         assert result.exit_code != 0
-        assert "tag override" in result.output.lower() or "multiple" in result.output.lower()
+        assert "tag override" in result.stderr.lower()

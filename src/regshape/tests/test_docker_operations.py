@@ -471,10 +471,21 @@ class TestExportImage:
 # ---------------------------------------------------------------------------
 
 
+def _export_for_push(image_ref, output_path, *, platform=None):
+    """Create real flat-layout bytes at the mocked daemon boundary for strict push planning."""
+    from regshape.tests.test_layout_push import _build_layout
+
+    return _build_layout(output_path.parent)
+
+
 class TestPushImage:
-    @patch("regshape.libs.docker.operations.push_layout")
+    """Docker export is mocked; real local planning precedes the mocked publisher."""
+
+    @patch("regshape.libs.docker.operations.execute_layout_push")
     @patch("regshape.libs.docker.operations.export_image")
     def test_push_calls_export_and_push_layout(self, mock_export, mock_push_layout):
+        """Forward upload settings and an already verified tagged plan to execution."""
+        mock_export.side_effect = _export_for_push
         mock_push_result = MagicMock()
         mock_push_layout.return_value = mock_push_result
 
@@ -497,16 +508,18 @@ class TestPushImage:
         mock_push_layout.assert_called_once()
         push_kwargs = mock_push_layout.call_args[1]
         assert push_kwargs["repo"] == "myrepo/nginx"
-        assert push_kwargs["tag_override"] == "v1"
+        assert push_kwargs["plan"].tag_override == "v1"
         assert push_kwargs["force"] is True
         assert push_kwargs["chunked"] is True
         assert push_kwargs["chunk_size"] == 131072
 
         assert result is mock_push_result
 
-    @patch("regshape.libs.docker.operations.push_layout")
+    @patch("regshape.libs.docker.operations.execute_layout_push")
     @patch("regshape.libs.docker.operations.export_image")
     def test_push_passes_platform_to_export(self, mock_export, mock_push_layout):
+        """Preserve Docker platform selection independently of full exported-graph planning."""
+        mock_export.side_effect = _export_for_push
         mock_push_layout.return_value = MagicMock()
 
         push_image(
@@ -518,9 +531,11 @@ class TestPushImage:
         call_kwargs = mock_export.call_args[1]
         assert call_kwargs["platform"] == "linux/arm64"
 
-    @patch("regshape.libs.docker.operations.push_layout")
+    @patch("regshape.libs.docker.operations.execute_layout_push")
     @patch("regshape.libs.docker.operations.export_image")
     def test_push_uses_insecure_for_transport_config(self, mock_export, mock_push_layout):
+        """Construct transport after local validation with the requested insecure setting."""
+        mock_export.side_effect = _export_for_push
         mock_push_layout.return_value = MagicMock()
 
         push_image(
@@ -533,9 +548,11 @@ class TestPushImage:
         client = push_kwargs["client"]
         assert client.config.insecure is True
 
-    @patch("regshape.libs.docker.operations.push_layout")
+    @patch("regshape.libs.docker.operations.execute_layout_push")
     @patch("regshape.libs.docker.operations.export_image")
     def test_push_cleans_up_temp_dir_on_success(self, mock_export, mock_push_layout, tmp_path):
+        """Remove the exported directory after the verified snapshot is released."""
+        mock_export.side_effect = _export_for_push
         import os
         mock_push_layout.return_value = MagicMock()
 
@@ -543,6 +560,7 @@ class TestPushImage:
         original_mkdtemp = tempfile.mkdtemp
 
         def tracking_mkdtemp(**kwargs):
+            """Record only caller-owned Docker export directories for cleanup assertions."""
             d = original_mkdtemp(**kwargs)
             created_dirs.append(d)
             return d
@@ -553,9 +571,10 @@ class TestPushImage:
         assert len(created_dirs) == 1
         assert not os.path.exists(created_dirs[0])
 
-    @patch("regshape.libs.docker.operations.push_layout")
+    @patch("regshape.libs.docker.operations.execute_layout_push")
     @patch("regshape.libs.docker.operations.export_image")
     def test_push_cleans_up_temp_dir_on_failure(self, mock_export, mock_push_layout):
+        """A daemon failure still cleans its caller-owned temporary export directory."""
         import os
         mock_export.side_effect = DockerError("export failed", "test")
 
@@ -563,6 +582,7 @@ class TestPushImage:
         original_mkdtemp = tempfile.mkdtemp
 
         def tracking_mkdtemp(**kwargs):
+            """Record the failed export's temporary directory without altering creation."""
             d = original_mkdtemp(**kwargs)
             created_dirs.append(d)
             return d
