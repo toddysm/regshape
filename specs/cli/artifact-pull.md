@@ -1,6 +1,6 @@
 # Complete artifact download and round-trip: requirements and engineering design
 
-- **Status:** Draft revision 2; specification/breakdown publication authorized, not implementation or merge.
+- **Status:** Draft revision 3; specification/breakdown publication authorized, not implementation or merge.
 - **Feature:** [#91](https://github.com/toddysm/regshape/issues/91).
 - **Design item:** [#113](https://github.com/toddysm/regshape/issues/113).
 - **Related, separate capability:** [#112](https://github.com/toddysm/regshape/issues/112), config/layer-position downloads.
@@ -22,6 +22,10 @@ not descriptions of already implemented functionality.
 > `subject` descriptors, without discovering referrers. A subject-bearing artifact
 > can therefore download more content than the initial proposal implied. This
 > material refinement requires owner approval with the rest of the design.
+
+Revision 3 closes review gaps in output-path identity, compressed-input/gzip
+budgets, layout-marker buffering and publication-tag validation. These are
+mandatory safety constraints, not claims that the implementation already exists.
 
 ## Part I: functional requirements
 
@@ -558,8 +562,23 @@ incomplete marker in that exclusively owned directory, move the verified staged
 blob tree and marker metadata, and atomically write `index.json` last. Remove
 the incomplete marker only after all required writes/diagnostics succeed.
 Recursive validation/push reject a marker even if other metadata exists.
+Reservation alone is not protection against path replacement: retain safely
+opened handles to the verified parent and reserved directory. Perform every
+subsequent create/move/rename/marker operation relative to those handles with
+no-follow semantics, never by reopening the absolute output pathname. Verify
+opened objects' type/identity, including the reserved directory's association
+with its parent entry immediately before commit. If that entry was renamed,
+replaced or became a symlink/reparse point, abort without writing through it or
+removing the replacement. Cleanup stays handle-relative to owned objects; if
+the moved directory cannot safely be removed, report it as retained rather than
+guessing a new pathname. Apply equivalent handle/identity protection to sibling
+staging and archive publication. Fail before unsafe filesystem side effects when
+the platform cannot provide the required operations; never silently fall back
+to check-then-open pathname writes.
 There is **no claim of atomic whole-directory visibility**: concurrent readers
 must wait for completion and validate the layout.
+This prevents redirected writes, not another same-privilege process modifying
+caller-owned output after publication.
 
 Track files/directories created by this invocation. On handled failure/cancel,
 remove only owned staged/output entries; do not recursively delete an
@@ -576,7 +595,7 @@ This differs from a download/verification failure and must be documented.
 
 #### D5. Archive contract and safe push source
 
-Output is gzip wrapping POSIX tar with regular OCI files and optional directories.
+Output is a single gzip member wrapping POSIX tar with regular OCI files and optional directories.
 Use deterministic member ordering, no filesystem-owner identities, normalized
 permissions, and gzip timestamp zero. This removes incidental user metadata,
 but byte-identical compressed output across Python/zlib versions is not promised.
@@ -588,8 +607,16 @@ error, not a generic extraction attempt.
 
 Safe import is a two-pass local operation before credentials/registry access:
 
-1. Stream gzip to an owned seekable tar spool, enforce the expanded archive
-   byte cap, and read to EOF to validate truncation/CRC. No unbounded `read()`.
+1. Require a regular source file under the compressed-input byte cap, then
+   enforce that cap again on actual bounded reads (a file can change after stat).
+   Parse the gzip header within its separate byte cap, including optional extra,
+   filename and comment fields and any header checksum, before handing payload
+   bytes to a decoder. Reserved flags or malformed/overlong fields fail.
+   Inflate exactly one member into an owned seekable tar spool, enforcing the
+   expanded archive cap and validating its CRC/trailer. A second member or any
+   bytes after the first member's trailer are rejected, even empty members or
+   zero padding. Do not rely on `gzip.GzipFile`'s automatic concatenated-member
+   handling. No unbounded `read()` or unbounded header scan is permitted.
 2. Preflight raw 512-byte tar headers before invoking any decoder that could
    allocate an extension body. Check checksums, integer sizes and stream bounds;
    reject oversize extension records before reading them. Bound each POSIX
@@ -604,14 +631,24 @@ Safe import is a two-pass local operation before credentials/registry access:
    general `extractall`. Validate exact member lengths, padding/end markers,
    member/metadata counts, the layout graph and every stored object's digest.
    Reject unreferenced archive content and nonzero data after tar end markers.
+   Apply the separate small `oci-layout` marker cap and the wrapper-manifest cap
+   before buffering/parsing either metadata file; neither may use the large
+   archive or content-object budget as permission for a payload-sized JSON read.
 
 Archive output is built completely in sibling staging, closed and verified
-before final publication. Publish the completed regular file with an exclusive
+before final publication. Verify the expected member list and object hashes while
+packing from the verified layout; do not re-import into an additional snapshot.
+The compressed size and gzip header must satisfy the import caps before publication.
+Publish the completed regular file with an exclusive
 hard-link operation, then unlink its staging name; this is a no-replace
 publication primitive, not `os.replace`. If the filesystem cannot provide
 that primitive, fail explicitly without overwriting or copying a success-shaped
 partial file. Document this local-filesystem requirement and test it on supported
-platforms. The directory format remains available on other filesystems.
+platforms. The directory format can be used without hard-link support when its
+own handle-safety requirements can be met.
+The successful hard link is the archive publication boundary. A later unlink/
+diagnostic failure follows D4's post-publication rule: retain the verified output
+and report failure, rather than deleting an artifact another caller can now read.
 
 Directory push also creates a private verified snapshot of reachable files
 before the first registry operation. Read wrapper metadata once; use safe
@@ -622,6 +659,9 @@ closed if safe traversal is unavailable. Reopening original mutable paths after
 verification or hard-linking mutable source files is not a valid snapshot.
 Directory extras such as authoring stage files are ignored, never uploaded;
 archive output includes only the verified closure.
+Read `oci-layout` with at most its cap plus one byte before JSON decoding;
+reject oversize markers even if they contain only valid JSON whitespace. Apply
+this to directory snapshots, recursive validation and archive input alike.
 
 Disk budget: directory pull needs about U unique content bytes plus bounded
 metadata; archive creation needs U + compressed output C; archive push needs
@@ -637,18 +677,21 @@ Proposed `ArtifactLimits` defaults, shared by pull/strict validation/archive/pus
 | Field | Default | Enforcement |
 | --- | --- | --- |
 | `max_manifest_bytes` | 16 MiB | Each root/index/manifest and local wrapper before JSON allocation. |
+| `max_layout_marker_bytes` | 64 KiB | `oci-layout`, including whitespace, before buffering/parsing from directory or archive. |
 | `max_objects` | 100,000 | Unique content addresses before scheduling/storing the next. |
 | `max_edges` | 500,000 | All descriptors, including repeated edges, before traversal expansion. |
 | `max_depth` | 64 | Root depth 0; child depth >64 fails. |
 | `max_total_bytes` | 1 TiB | Sum of distinct stored object bytes; reserve declared sizes and enforce actual counts. |
 | `max_json_depth` | 128 | String-aware nesting precheck before JSON decoding; parser errors remain explicit. |
 | `max_archive_bytes` | 2 TiB | Total expanded tar bytes while spooling, including headers/padding. |
+| `max_archive_input_bytes` | 2 TiB | Entire compressed file, including header/trailer, before and during reads. |
+| `max_gzip_header_bytes` | 64 KiB | Fixed and optional gzip header fields in total; exactly one member is accepted. |
 | `max_archive_entries` | 200,010 | Raw file/directory/extension headers; reject boundary+1. |
 | `max_archive_metadata_bytes` | 64 KiB | Per extension body; aggregate extension bodies <=64 MiB. |
 
 All values must be positive non-boolean integers. Initial CLI exposes
 `--max-manifest-bytes`, `--max-objects`, `--max-depth`, `--max-total-bytes` and
-`--max-archive-bytes` on artifact pull, recursive layout validate and layout push
+`--max-archive-bytes` and `--max-archive-input-bytes` on artifact pull, recursive layout validate and layout push
 (including dry-run); other caps remain documented library-policy limits.
 Raising one cap does not silently raise another. No total is inferred from
 archive compression ratio or untrusted HTTP length. Resource failures identify
@@ -685,6 +728,17 @@ or its digest when untagged. Never invent `latest` for an untagged root. Preserv
 child bytes and annotations; source ref-name belongs to the local wrapper, not
 rewritten root content. A destination tag deliberately replaces that remote tag;
 this is not a conditional compare-and-swap.
+All publication references must be resolved and validated in the local plan
+before constructing a credentialed client or uploading anything. An explicit
+destination tag or present top-level `org.opencontainers.image.ref.name` must be
+a string fully matching ASCII `[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}`. Validate present
+annotations even when a tag override is supplied, so dry-run and real push have
+one interpretation. Reject empty, nonstring, overlong, whitespace/control,
+slash, colon, percent, query and fragment forms; never trim, URL-decode or silently
+sanitize an invalid value into a different tag. This same tag rule applies to
+the new pull source. Digest publication uses the strict digest grammar instead.
+Reports name the exact validated publication reference. Error contexts escape
+control characters and bound displayed untrusted strings.
 
 Strengthen the manifest PUT path for graph publication with an additive
 keyword-only `expected_digest=None`: when supplied, require `201 Created` and
@@ -909,6 +963,9 @@ new strict recursive validation is opt-in standalone but mandatory for push;
 previously accepted incomplete/malformed/size-inconsistent layouts can now fail
 before uploads. Document that safety tightening in release/migration guidance.
 Digest destinations accidentally treated as tags must now fail clearly.
+Invalid ref-name annotations previously interpolated into URLs also fail before
+credentials/uploads, even with an explicit override; valid flat tag names retain
+their established behavior.
 Broader canonical grammar redesign is not included.
 
 New archive input and index support must cover `--path`, `--dry-run`, `--json`,
@@ -1047,13 +1104,22 @@ Required suites/measurements:
 - Exact final layout closure and gzip round-trip; no layer extraction; safe
   member names/types; POSIX extension limits, large size fields, duplicates,
   sparse/global extensions, gzip/tar truncation/CRC/padding/trailing-data errors.
+- Compressed-input cap and gzip header cap at boundary/+1; many empty gzip
+  members before/after a valid archive, overlong filename/comment/extra fields;
+  oversized `oci-layout` padded with whitespace from both directory and archive.
 - Existing output and destination race; symlink/reparse input; mutable source
   after snapshot; unsupported filesystem publication; disk/write/close/cleanup
   faults; cancellation and final stdout failure after durable publication.
+- Rename-and-symlink replacement of a reserved destination/staging parent during
+  publication: no writes outside owned handles, no deletion of replacement paths,
+  failure on identity mismatch and explicit retained-output reporting.
 - Push into a fake destination content store, then pull/verify that store:
   object bytes and root identity must match. Assert every parent is published
   after required children; tag overrides only roots; default ref-name/digest;
   flat/multi-root JSON and dry-run plan parity; no dry-run credentials/network.
+- Invalid ref-name annotations and explicit tags, including `prod#suffix`,
+  `prod?query`, encoded separators, controls, nonstrings and length boundaries:
+  reject before credentials/uploads; valid plan/report/HTTP references agree.
 - 401/auth exchange, retries/429/timeouts, redirected signed downloads,
   authorization stripping, unsupported digest and incomplete/uncertain commits.
 - Visible progress frames for every index, manifest, config and layer; initial
@@ -1070,7 +1136,7 @@ proposal validate unchanged runtime, not the future capability.
 
 ### O. Next actions and approval gate
 
-Publish revision 2 and seven linked children, address design review feedback and
+Publish revision 3 and seven linked children, address design review feedback and
 leave the PR open. Owner approval must cover this exact document and breakdown;
 material changes invalidate approval. Build requires explicit scoped authorization,
 including an In progress inventory transition before implementation. Final docs
