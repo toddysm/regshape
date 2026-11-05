@@ -22,6 +22,7 @@ from regshape.libs._http import (
 )
 from regshape.libs.decorators.timing import track_time
 from regshape.libs.errors import ManifestError
+from regshape.libs.manifests._stream import entity_chunks, reject_redirect
 from regshape.libs.manifests.operations import (
     _BufferedManifestText,
     _manifest_kind,
@@ -213,11 +214,13 @@ def _raise_for_download_error(
     max_bytes: int,
 ) -> None:
     """Bound error-body parsing without swallowing the first transport read failure."""
+    if response.status_code == 206 or "Content-Range" in response.headers:
+        raise ManifestError("Partial manifest responses are not supported")
     if 200 <= response.status_code < 300:
         return
     cap = min(max_bytes, _CHUNK_SIZE)
     payload = bytearray()
-    for chunk in response.iter_content(chunk_size=min(_CHUNK_SIZE, cap + 1)):
+    for chunk in entity_chunks(response, min(_CHUNK_SIZE, cap + 1)):
         if len(payload) + len(chunk) > cap:
             raise ManifestError(
                 "Registry error body exceeds the manifest error-body limit"
@@ -266,6 +269,9 @@ def download_manifest(
     removed where safe; cleanup failures are logged without replacing the primary
     error. A failing RECEIVED observer also removes the owned file. No extra
     HEAD, root refetch, charset conversion, model parsing or body resume occurs.
+    Redirects are rejected before Requests can consume intermediate bodies;
+    partial-range responses are not accepted as complete manifests. Identity,
+    gzip and deflate entity decoding is bounded independently of urllib3.
     """
     progress = _ManifestProgress(progress_callback)
     requested = _validate_inputs(
@@ -276,8 +282,9 @@ def download_manifest(
         with ClosingResponse(
             client.get(
                 f"/v2/{repo}/manifests/{reference}",
-                headers={"Accept": accept},
+                headers={"Accept": accept, "Accept-Encoding": "identity"},
                 stream=True,
+                response_hook=reject_redirect,
             )
         ) as response:
             _raise_for_download_error(response, client, repo, reference, max_bytes)
@@ -304,9 +311,7 @@ def download_manifest(
                 else download_total(response.headers)
             )
             progress.emit(ManifestPhase.TRANSFERRING)
-            for chunk in response.iter_content(
-                chunk_size=min(_CHUNK_SIZE, max_bytes + 1)
-            ):
+            for chunk in entity_chunks(response, min(_CHUNK_SIZE, max_bytes + 1)):
                 if not chunk:
                     continue
                 progress.advance(len(chunk))

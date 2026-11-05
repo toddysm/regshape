@@ -4,6 +4,7 @@ import gzip
 import hashlib
 import io
 import tracemalloc
+import zlib
 from collections.abc import Iterator
 from dataclasses import FrozenInstanceError, dataclass
 from pathlib import Path
@@ -26,6 +27,7 @@ from regshape.libs.manifests import (
     download_manifest,
     get_manifest,
 )
+from regshape.libs.manifests._stream import entity_chunks
 from regshape.libs.progress import ManifestProgress
 from regshape.tests.test_manifest_progress import ACCEPT, REPO, StreamResponse, client
 
@@ -374,7 +376,7 @@ def test_read_failure_and_secondary_cleanup_preserve_primary(
     path = tmp_path / "raw"
     events: list[ManifestProgress] = []
 
-    def chunks(chunk_size: int) -> Iterator[bytes]:
+    def chunks(response: requests.Response, chunk_size: int) -> Iterator[bytes]:
         """Expose partial consumption, then the original failure."""
         yield b"{"
         raise primary
@@ -387,7 +389,7 @@ def test_read_failure_and_secondary_cleanup_preserve_primary(
 
     with (
         patch("requests.request", return_value=response),
-        patch.object(response, "iter_content", side_effect=chunks),
+        patch("regshape.libs.manifests.download.entity_chunks", side_effect=chunks),
         patch.object(response, "close", side_effect=OSError("response close")),
         pytest.raises(type(primary)) as caught,
     ):
@@ -533,19 +535,18 @@ def test_truncated_body_preserves_first_transport_error(
     """Actual urllib3 framing failures propagate once, before tolerant error-body parsing."""
     response = StreamResponse(b"{", status, raw_headers={"Content-Length": "10"})
     failures: list[BaseException] = []
-    original = response.iter_content
 
-    def chunks(chunk_size: int) -> Iterator[bytes]:
+    def chunks(response: requests.Response, chunk_size: int) -> Iterator[bytes]:
         """Record the exact exception produced by the real stream, not a mocked substitute."""
         try:
-            yield from original(chunk_size=chunk_size)
+            yield from entity_chunks(response, chunk_size)
         except requests.RequestException as exc:
             failures.append(exc)
             raise
 
     with (
         patch("requests.request", return_value=response),
-        patch.object(response, "iter_content", side_effect=chunks),
+        patch("regshape.libs.manifests.download.entity_chunks", side_effect=chunks),
         pytest.raises(requests.RequestException) as caught,
     ):
         download_manifest(client(), REPO, "v1", ACCEPT, tmp_path / "raw")
@@ -593,20 +594,19 @@ def test_bounded_success_reads_and_no_json_parsing(tmp_path: Path) -> None:
     """The primitive never needs a complete byte array, valid UTF-8 or valid JSON."""
     payload = b"\xff" * (65536 * 3 + 1)
     response = StreamResponse(payload)
-    original = response.iter_content
     reads = []
 
-    def chunks(chunk_size: int) -> Iterator[bytes]:
+    def chunks(response: requests.Response, chunk_size: int) -> Iterator[bytes]:
         """Assert the requested and yielded chunk bounds throughout a multi-chunk transfer."""
         reads.append(chunk_size)
         assert chunk_size <= 65536
-        for chunk in original(chunk_size):
+        for chunk in entity_chunks(response, chunk_size):
             assert len(chunk) <= 65536
             yield chunk
 
     with (
         patch("requests.request", return_value=response),
-        patch.object(response, "iter_content", side_effect=chunks),
+        patch("regshape.libs.manifests.download.entity_chunks", side_effect=chunks),
     ):
         result = download_manifest(
             client(), REPO, "v1", ACCEPT, tmp_path / "raw", max_bytes=len(payload)
@@ -841,3 +841,177 @@ def test_failed_identity_acquisition_reports_retained_file(
     assert caught.value is primary and path.read_bytes() == b""
     assert "newly created file retained" in caplog.text
     send.assert_not_called()
+
+
+@pytest.mark.parametrize("middleware", [False, True])
+@pytest.mark.parametrize("stage", ["root", "auth-retry", "auth-probe"])
+def test_real_requests_redirect_processing_never_reads_redirect_body(
+    tmp_path: Path,
+    middleware: bool,
+    stage: str,
+) -> None:
+    """The Requests hook rejects before Session's redirect/next-request eager body consumption."""
+    redirect = StreamResponse(
+        b"x" * 1000000, 302, {"Location": "https://other.invalid/private"}
+    )
+    challenge = StreamResponse(
+        b"",
+        401,
+        headers=(
+            {
+                "WWW-Authenticate": 'Bearer realm="https://registry.example.invalid/token"'
+            }
+            if stage == "auth-retry"
+            else {}
+        ),
+    )
+    responses = iter([redirect] if stage == "root" else [challenge, redirect])
+    sent = []
+
+    def send(request: requests.PreparedRequest, **kwargs: object) -> requests.Response:
+        """Only the adapter is mocked; session hooks, redirects and auth retry remain real."""
+        assert kwargs["stream"] is True
+        response = next(responses)
+        response.request = request
+        assert request.url is not None
+        response.url = request.url
+        sent.append(request)
+        return response
+
+    with requests.Session() as session:
+        session.trust_env = False
+        with (
+            patch.object(session.get_adapter("https://"), "send", side_effect=send),
+            patch("requests.request", side_effect=session.request),
+            patch(
+                "regshape.libs.auth.registryauth.authenticate",
+                return_value="synthetic-token",
+            ),
+            patch.object(
+                redirect,
+                "iter_content",
+                side_effect=AssertionError("eager redirect read"),
+            ),
+            pytest.raises(ManifestError, match="do not follow redirects"),
+        ):
+            download_manifest(
+                client(middleware=middleware),
+                REPO,
+                "v1",
+                ACCEPT,
+                tmp_path / "raw",
+                max_bytes=8,
+            )
+    assert redirect.close_calls == 1 and redirect.content_reads == 0
+    assert len(sent) == (1 if stage == "root" else 2)
+    assert not (tmp_path / "raw").exists()
+    challenge.close()
+
+
+@pytest.mark.parametrize(
+    "status,content_range",
+    [(206, None), (206, "bytes 0-3/100"), (200, "bytes 0-3/100")],
+)
+def test_partial_manifest_cannot_return_success(
+    tmp_path: Path, status: int, content_range: str | None
+) -> None:
+    """Unsolicited range responses must never be hashed and returned as complete tag downloads."""
+    response = StreamResponse(
+        b"part",
+        status,
+        headers={"Content-Range": content_range} if content_range else {},
+    )
+    events: list[ManifestProgress] = []
+    with (
+        patch("requests.request", return_value=response),
+        pytest.raises(ManifestError, match="Partial"),
+    ):
+        download_manifest(
+            client(),
+            REPO,
+            "v1",
+            ACCEPT,
+            tmp_path / "raw",
+            progress_callback=events.append,
+        )
+    assert response.content_reads == 0 and response.close_calls == 1
+    assert not (tmp_path / "raw").exists() and events[-1].phase == ManifestPhase.FAILED
+
+
+@pytest.mark.parametrize("status", [200, 500])
+@pytest.mark.parametrize("encoding", ["gzip", "deflate", "raw-deflate"])
+def test_encoded_expansion_is_bounded_before_payload_cap(
+    tmp_path: Path,
+    status: int,
+    encoding: str,
+) -> None:
+    """Both success/error paths cap zlib output before a highly compressed block can expand."""
+    compressor = zlib.compressobj(
+        wbits=31 if encoding == "gzip" else -15 if encoding == "raw-deflate" else 15
+    )
+    block = b"x" * 65536
+    compressed = (
+        b"".join(compressor.compress(block) for _ in range(512)) + compressor.flush()
+    )
+    headers = {"Content-Encoding": "deflate" if encoding == "raw-deflate" else encoding}
+    response = StreamResponse(compressed, status, headers=headers, raw_headers=headers)
+    tracemalloc.start()
+    try:
+        with (
+            patch("requests.request", return_value=response),
+            patch.object(
+                response,
+                "iter_content",
+                side_effect=AssertionError("urllib3 decode invoked"),
+            ),
+            pytest.raises(ManifestError),
+        ):
+            download_manifest(
+                client(), REPO, "v1", ACCEPT, tmp_path / "raw", max_bytes=1024
+            )
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 2 * 1024**2
+    assert response.close_calls == 1 and not (tmp_path / "raw").exists()
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "deflate",
+        "raw-deflate",
+        "gzip-concat",
+        "gzip-truncated",
+        "gzip-corrupt",
+        "unsupported",
+    ],
+)
+def test_bounded_decoder_success_and_errors(tmp_path: Path, variant: str) -> None:
+    """Supported HTTP encodings preserve entity bytes and corrupted/unsupported encodings fail."""
+    payload = b"exact entity " * 12000
+    encoding = "gzip"
+    if "deflate" in variant:
+        encoding = "deflate"
+        compressor = zlib.compressobj(wbits=-15 if variant == "raw-deflate" else 15)
+        wire = compressor.compress(payload) + compressor.flush()
+    elif variant == "gzip-concat":
+        wire = gzip.compress(payload[:100]) + gzip.compress(payload[100:])
+    elif variant == "gzip-truncated":
+        wire = gzip.compress(payload)[:-5]
+    elif variant == "gzip-corrupt":
+        wire = gzip.compress(payload)[:-4] + b"bad!"
+    else:
+        encoding = "br"
+        wire = payload
+    response = StreamResponse(wire, headers={"Content-Encoding": encoding})
+    path = tmp_path / "raw"
+    with patch("requests.request", return_value=response):
+        if variant in ("gzip-truncated", "gzip-corrupt", "unsupported"):
+            with pytest.raises(requests.exceptions.ContentDecodingError):
+                download_manifest(client(), REPO, "v1", ACCEPT, path)
+            assert not path.exists()
+        else:
+            result = download_manifest(client(), REPO, digest(payload), ACCEPT, path)
+            assert path.read_bytes() == payload and result.size == len(payload)
+    assert response.close_calls == 1

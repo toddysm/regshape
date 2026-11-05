@@ -28,6 +28,7 @@ It never calls `requests` directly — all HTTP traffic goes through a
 src/regshape/libs/manifests/
 ├── __init__.py        # Package init; re-exports public symbols
 ├── download.py        # Byte-preserving verified manifest-to-file receive
+├── _stream.py         # Bounded entity decoding and pre-redirect rejection
 └── operations.py      # Public domain operations + private error helper
 ```
 
@@ -164,11 +165,27 @@ without controls. This does not change validation in existing operations.
 
 Successful responses are consumed in requested chunks no larger than 64 KiB,
 written and hashed without decoding, JSON parsing, reserialization or a complete
-in-memory payload. Invalid UTF-8 or non-JSON bytes can be saved if their identity
+in-memory payload. Here "without decoding" means no charset/text decoding:
+HTTP content coding is removed using bounded incremental decoding rather than
+urllib3's version-dependent decompression buffering. The request asks for
+`Accept-Encoding: identity`; gzip (including concatenated members) and wrapped/raw
+deflate are supported if the server still encodes the response. Unsupported or
+stacked encodings, incomplete streams, or corrupt/trailing encoded data fail
+explicitly. Invalid UTF-8 or non-JSON bytes can be saved if their identity
 and size are valid; higher-level graph code is responsible for schema checks.
 Error-body decoding is bounded by the smaller of `max_bytes` and 64 KiB and
 rejects overlarge errors. Framing/read errors propagate before tolerant OCI
 error parsing; bounded error buffering does not change successful payload bytes.
+Unsolicited `206` or `Content-Range` responses fail before consumption: this
+operation neither requests nor assembles partial manifests.
+
+This new primitive rejects redirects in a pre-redirect Requests response hook,
+before Session can eagerly consume an intermediate redirect body. The hook is
+preserved through client middleware, retries and authentication probes in both
+transport modes. This deliberate restriction protects the bounded receive
+contract; use a direct manifest endpoint. Existing decoded manifest/blob requests,
+including their redirect behavior, are unchanged. The optional transport
+`response_hook` keyword is additive and absent from ordinary requests.
 
 Lifecycle is PREPARING, TRANSFERRING, then RECEIVED after digest/size checks,
 response close and file flush/close. Kind comes from the advertised type.
