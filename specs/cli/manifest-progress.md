@@ -1,6 +1,6 @@
 # Manifest GET progress: functional requirements and engineering design
 
-- **Status:** Approved revision 3; library #105 and command #104 merged, final documentation #102 authorized.
+- **Status:** Implemented; approved revision 3, library #105, command #104 and final documentation #102 are merged.
 - **Feature:** [#90](https://github.com/toddysm/regshape/issues/90).
 - **Design item:** [#101](https://github.com/toddysm/regshape/issues/101).
 - **Target:** [0.2](https://github.com/toddysm/regshape/milestone/1); not a release commitment.
@@ -8,15 +8,19 @@
 - **Date / inspected baseline:** 2026-11-04 / `662216f3ff508e83598c9f8af2096e50c682e20c`.
 - **Authorization:** Design artifacts, hosted GitHub Actions, agent-only reviews
   and merging [design PR #106](https://github.com/toddysm/regshape/pull/106).
-  The inventory-start, library and command PRs are merged. Final documentation
-  item #102 is authorized through an open reviewed documentation PR. Its merge,
-  feature close-out, release and branch/worktree cleanup are not authorized.
+  The inventory-start, library, command and final documentation PRs are merged.
+  The owner authorized reviewed inventory close-out and feature closure after
+  that merge. Release and branch/worktree cleanup are not authorized.
 
 This combined product requirements document (PRD) and engineering design document
 (EDD) specifies approved behavior; the [capability inventory](../../docs/project-state.md)
 tracks delivered surfaces. Design approval does not mean release publication.
 Command-line interface (CLI), application programming interface (API), Open
 Container Initiative (OCI), and continuous integration (CI) are abbreviated below.
+
+The design's gap descriptions, estimates and test counts retain the inspected
+pre-implementation baseline. Status, approval and next-action notes reflect
+delivery; the capability inventory records current implementation/test evidence.
 
 ## Part I: functional requirements
 
@@ -313,8 +317,8 @@ hosted checks and final user documentation, provide the delivery gates.
 The owner approved this complete revision and breakdown under
 [#90](https://github.com/toddysm/regshape/issues/90), including merging
 [design PR #106](https://github.com/toddysm/regshape/pull/106).
-Library item #105 is merged; command item #104 is authorized through an open
-reviewed implementation PR. Final user documentation requires later authorization. Shared progress
+Library #105, command #104 and final documentation #102 are merged.
+The owner authorized inventory close-out and feature closure after its merge. Shared progress
 ([#72](https://github.com/toddysm/regshape/issues/72)) and artifact aliases
 ([#87](https://github.com/toddysm/regshape/issues/87)) are merged prerequisites.
 No hard dependency on #91 or #88 is introduced.
@@ -786,7 +790,8 @@ scheduling #90 before #91/#88 does not itself create dependencies.
 
 After delivery, a separately authorized `chore/manifest-get-progress-close-out`
 pull request must move the inventory to Implemented before the feature closes.
-That is not a fifth delivery item or authorization to merge anything now.
+That is not a fifth delivery item. The owner has now authorized that close-out;
+release and branch/worktree cleanup remain outside its scope.
 
 ### PM-7. Test plan and CI
 
@@ -849,11 +854,11 @@ future implementation. Final user docs must be rechecked against delivered code.
 ### O. Next actions and launch gate
 
 Owner approval of revision 3 and the native breakdown is recorded in the feature
-ledger; the design, inventory-start and library PRs are merged. Implement command
-item #104 and leave its implementation PR open for owner review.
-Other delivery work and implementation merges require later authorization. Delivery, user documentation,
-inventory close-out and eventual release are distinct gates; no partner/legal
-integration or regional launch task is introduced.
+ledger; the design, inventory-start, library, command and final documentation
+PRs are merged. Complete the authorized inventory close-out with hosted checks
+and agent review, then close #90 after verifying the inventory on main.
+Eventual release remains a separate gate; no partner/legal integration or
+regional launch task is introduced.
 
 ### P. References
 
