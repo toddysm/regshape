@@ -33,6 +33,15 @@ through [#109](https://github.com/toddysm/regshape/pull/109). Final user documen
 implementation and documentation children are closed and unblocked. This
 inventory close-out records the delivered capability; no release is implied.
 
+Complete artifact download and recursive layout push remain **Planned** under
+[#91](https://github.com/toddysm/regshape/issues/91). The
+[draft functional/engineering specification](../specs/cli/artifact-pull.md)
+covers all-platform tag/digest roots, directory/gzip-tar output, config-inclusive
+progress and nested-index push round-trip; design publication is not runtime
+implementation or final approval. Config/layer-position downloads are separately
+**Planned** under [#112](https://github.com/toddysm/regshape/issues/112), not a
+required child of #91. Both target the open 0.2 milestone.
+
 Tracking is **issues-only** because Project access is unavailable in this
 workspace. The linked issues and pull requests remain authoritative for newer
 changes. Blob/image live-progress design revision 2 remains in its feature issue, not a
@@ -78,6 +87,8 @@ the first version of every operation in that row.
 | Live progress for blob get/upload and layout/Docker push | Implemented | [Feature #72](https://github.com/toddysm/regshape/issues/72), merged [#80](https://github.com/toddysm/regshape/pull/80), [#81](https://github.com/toddysm/regshape/pull/81), [#82](https://github.com/toddysm/regshape/pull/82), [#83](https://github.com/toddysm/regshape/pull/83), [#84](https://github.com/toddysm/regshape/pull/84) | [Lightweight design: #72, revision 2](https://github.com/toddysm/regshape/issues/72) | [Developer reference: transfer callbacks](library/transfer-progress.md), [API reference: blobs](../specs/operations/blobs.md) | [How-to: live transfer progress](guides/live-transfer-progress.md) | 2026-11-03 |
 | Artifact-oriented CLI options with compatible legacy aliases | Implemented | [Feature #87](https://github.com/toddysm/regshape/issues/87), merged [#96](https://github.com/toddysm/regshape/pull/96), [#97](https://github.com/toddysm/regshape/pull/97), [#98](https://github.com/toddysm/regshape/pull/98), [#99](https://github.com/toddysm/regshape/pull/99) | [Functional requirements: artifact options](../specs/cli/artifact-options.md#part-i-functional-requirements) | [Engineering design: artifact options](../specs/cli/artifact-options.md#part-ii-engineering-design), [API source: reference parsers](../src/regshape/libs/refs.py) | [How-to: artifact options and migration](guides/artifact-options.md) | 2026-11-04 |
 | Live progress for manifest/index GET | Implemented | [Feature #90](https://github.com/toddysm/regshape/issues/90), merged [library #108](https://github.com/toddysm/regshape/pull/108), [command #109](https://github.com/toddysm/regshape/pull/109) and [final docs #110](https://github.com/toddysm/regshape/pull/110) | [Approved functional requirements](../specs/cli/manifest-progress.md#part-i-functional-requirements) | [Approved engineering design](../specs/cli/manifest-progress.md#part-ii-engineering-design), [Callback reference](library/transfer-progress.md#manifest-receive-observations), [API reference](../specs/operations/manifests.md#get_manifest) | [How-to: manifest/index download](guides/live-transfer-progress.md#download-a-manifest-or-index), [Command reference](../specs/cli/manifest.md#manifest-get) | 2026-11-05 |
+| Complete artifact download, compressed OCI layout and recursive index push | Planned | [Feature #91](https://github.com/toddysm/regshape/issues/91), [design #113](https://github.com/toddysm/regshape/issues/113) | [Draft functional requirements](../specs/cli/artifact-pull.md#part-i-functional-requirements) | [Draft engineering design](../specs/cli/artifact-pull.md#part-ii-engineering-design) | - | - |
+| Config and zero-based layer-content selection from artifact manifests | Planned | [Feature #112](https://github.com/toddysm/regshape/issues/112) | [Captured requirements](https://github.com/toddysm/regshape/issues/112) | - | - | - |
 
 ## Evidence and important boundaries
 
