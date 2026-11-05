@@ -2,14 +2,17 @@
 
 This reference covers the graph/directory implementation of
 [#115](https://github.com/toddysm/regshape/issues/115) and archive delivery
-[#116](https://github.com/toddysm/regshape/issues/116), under the
-[approved artifact design](../cli/artifact-pull.md). It does not claim delivery
-of recursive push or the artifact command-line interface.
+[#116](https://github.com/toddysm/regshape/issues/116), plus the direct command
+and observation integration of [#118](https://github.com/toddysm/regshape/issues/118),
+under the [approved artifact design](../cli/artifact-pull.md).
+Recursive publication is covered by the [layout push reference](../cli/layout-push.md).
+The full user guide remains the separate [#119](https://github.com/toddysm/regshape/issues/119) item.
 
 ## Python application programming interface
 
 Import `ArtifactError`, `ArtifactFormat`, `ArtifactLimits`, `ArtifactProgress`,
-`ArtifactProgressCallback`, `ArtifactPullResult`, `pull_artifact` and
+`ArtifactProgressCallback`, `ArtifactPhase`, `ArtifactPhaseCallback`,
+`ArtifactPullResult`, `preflight_artifact_pull`, `pull_artifact` and
 `DirectorySnapshot`, `ArchiveSnapshot`, and `snapshot_layout` from `regshape.libs.artifacts`.
 
 ```python
@@ -24,6 +27,13 @@ The client is borrowed and already configured. Repository/reference and registry
 authority validation happens before network or filesystem writes. The output
 parent must exist. Existing destinations, including empty directories and
 symlinks, are never adopted or overwritten.
+
+Command callers use `preflight_artifact_pull(registry, repo, reference, output_path,
+output_format=ArtifactFormat.OCI, limits=None)` **before constructing the client**
+to reject invalid source/policy/destination inputs before credential lookup.
+It also creates/removes a private native-publication probe under the checked
+parent. It makes no registry calls and does not reserve the destination.
+`pull_artifact` repeats checks and holds its own handles to reject later races.
 
 `ArtifactFormat.OCI` writes a directory. `ArtifactFormat.OCI_TAR_GZIP` writes
 a single gzip member containing a POSIX (Portable Operating System Interface)
@@ -108,6 +118,46 @@ role. `source` distinguishes network, embedded and local work.
 succeed. No library code renders a terminal. Observer exceptions propagate
 unchanged, including immutable exceptions and cancellation. Further notifications
 are disabled after an observer raises.
+
+The optional `phase_callback: ArtifactPhaseCallback | None = None` parameter on
+`pull_artifact` announces local work separately: `ArtifactPhase.PACKAGING` before
+archive packing and `ArtifactPhase.PUBLISHING` before directory installation or
+the completed archive's exclusive publication. Directory output has only the
+publication phase. Callbacks run synchronously before that work and may abort it
+with their original exception; neither notification asserts success or carries
+invented network bytes. Completed object observations remain complete during
+these local phases.
+
+### Direct command reference
+
+```text
+regshape artifact pull --artifact registry.example/team/package:stable --output ./new-layout
+regshape artifact pull -a registry.example/team/package:stable -o ./copy.tar.gz --format oci-tar-gzip --json
+```
+
+`--artifact/-a` and `--output/-o` are required. The shared legacy
+`--image-ref/-i` aliases retain their deprecated-in-0.2 wording. Format defaults
+to `oci`, regardless of suffix. `--max-manifest-bytes`, `--max-objects`,
+`--max-depth`, `--max-total-bytes`, `--max-archive-bytes` and
+`--max-archive-input-bytes` expose the corresponding positive integer budgets
+above. Existing telemetry flags and global `--log-file` remain supported.
+Native publication supports Linux/macOS, not Windows, under the trust
+preconditions below.
+
+Interactive stderr uses the shared renderer for one retained row per unique
+index, manifest or blob, including tiny configs; unknown-root kind/digest discovery
+updates the original row. Embedded/local work says `Stored (embedded/local)`
+rather than claiming a network transfer. Packaging/publication are separate
+local rows. `--no-progress`, `--json`, nonterminal stderr and JSON telemetry
+disable every progress row. Width adaptation and routine-redraw throttling are
+shared with existing commands.
+
+The final text or `--json` result is written only after publication, progress
+cleanup, scenario diagnostics and owned telemetry-log close succeed. JSON uses
+the `ArtifactPullResult` field names, the format string and root descriptor wire
+form. A later stdout/diagnostic error exits nonzero and retains complete published
+output; it never rolls publication back. Usage errors exit 2; runtime failures
+and cancellation exit nonzero. No `--part`, `--raw` or `--platform` selector is added.
 
 `ArtifactPullResult` is returned only after complete publication. Its frozen
 fields are `source`, `resolved_reference`, `root`, `output_path`, `output_format`,

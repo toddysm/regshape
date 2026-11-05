@@ -1,4 +1,4 @@
-"""Shared blob/manifest rows, diagnostic coordination and payload-safe terminal handoff."""
+"""Shared blob/manifest/artifact rows, diagnostics and payload-safe terminal handoff."""
 
 import io
 import logging
@@ -14,6 +14,7 @@ from typing import IO, Literal, final
 
 import click
 
+from regshape.libs.artifacts.models import ArtifactPhase, ArtifactProgress
 from regshape.libs.decorators import get_telemetry_config
 from regshape.libs.progress import (
     ManifestKind,
@@ -36,19 +37,30 @@ class _ManifestStage(Enum):
     COMPLETED = "completed"
 
 
-_RowKey = tuple[Literal["blob", "manifest"], str]
-_RowPhase = TransferPhase | _ManifestStage
+class _ArtifactStage(Enum):
+    """Per-object verified storage, not completion of the whole artifact publication."""
+
+    STORED = "stored"
+
+
+_RowKey = tuple[Literal["blob", "manifest", "artifact"], str]
+_RowPhase = TransferPhase | _ManifestStage | _ArtifactStage
 
 _TERMINAL: set[_RowPhase] = {
     TransferPhase.COMPLETED, TransferPhase.SKIPPED,
     TransferPhase.FAILED, TransferPhase.CANCELLED,
     _ManifestStage.COMPLETED,
+    _ArtifactStage.STORED,
 }
 
 
 @dataclass(frozen=True)
 class _Row:
-    """Private rendering state; namespace keys keep blob digests and manifest IDs separate."""
+    """Private rendering state; namespaced keys separate blob and opaque invocation identities.
+
+    Artifact ``kind`` selects numbering without changing identity. ``role`` is
+    descriptive only; ``source`` distinguishes stored local bytes from traffic.
+    """
 
     key: _RowKey
     label: str
@@ -58,6 +70,9 @@ class _Row:
     attempt: int = 1
     direction: TransferDirection = TransferDirection.DOWNLOAD
     digest: str | None = None
+    kind: str | None = None
+    role: str | None = None
+    source: str = "network"
 
     @property
     def is_blob(self) -> bool:
@@ -65,8 +80,26 @@ class _Row:
         return self.key[0] == "blob"
 
 
-def _row(event: TransferProgress | ManifestProgress) -> _Row:
+def _row(event: TransferProgress | ManifestProgress | ArtifactProgress) -> _Row:
     """Normalize observations without fabricating a digest or weakening public event types."""
+    if isinstance(event, ArtifactProgress):
+        artifact_phases: dict[str, _RowPhase] = {
+            "preparing": TransferPhase.PREPARING,
+            "transferring": TransferPhase.TRANSFERRING,
+            "received": _ManifestStage.RECEIVED,
+            "verifying": TransferPhase.VERIFYING,
+            "stored": _ArtifactStage.STORED,
+            "skipped": TransferPhase.SKIPPED,
+            "failed": TransferPhase.FAILED,
+            "cancelled": TransferPhase.CANCELLED,
+        }
+        return _Row(
+            ("artifact", event.transfer_id),
+            "Manifest" if event.kind == "unknown" else event.kind.title(),
+            artifact_phases[event.phase], event.bytes_completed, event.total_bytes,
+            attempt=event.attempt, digest=event.digest, kind=event.kind,
+            role=event.role, source=event.source,
+        )
     if isinstance(event, TransferProgress):
         return _Row(
             ("blob", event.digest), "Blob", event.phase,
@@ -74,7 +107,7 @@ def _row(event: TransferProgress | ManifestProgress) -> _Row:
             event.attempt, event.direction, event.digest,
         )
     if not isinstance(event, ManifestProgress):
-        raise TypeError("Progress display requires a blob or manifest observation")
+        raise TypeError("Progress display requires a blob, manifest or artifact observation")
     phases: dict[ManifestPhase, _RowPhase] = {
         ManifestPhase.PREPARING: TransferPhase.PREPARING,
         ManifestPhase.TRANSFERRING: TransferPhase.TRANSFERRING,
@@ -234,7 +267,7 @@ class _ManifestOutput:
 
 @final
 class ProgressDisplay:
-    """Render sequential transfers with one row per blob digest or manifest invocation.
+    """Render sequential transfers with one row per blob digest or stable document/object identity.
 
     Rendering is automatic only on an interactive stderr stream, disabled for
     explicit structured output, structured telemetry, or ``disabled=True``.
@@ -264,7 +297,7 @@ class ProgressDisplay:
         self._event: _Row | None = None
         self._indices: dict[_RowKey, int] = {}
         self._finished: dict[_RowKey, _RowPhase] = {}
-        self._row_counts: dict[Literal["blob", "manifest"], int] = {"blob": 0, "manifest": 0}
+        self._row_counts: dict[str, int] = {}
         self._started: float | None = None
         self._last_draw = float("-inf")
         self._visible = False
@@ -413,17 +446,42 @@ class ProgressDisplay:
                 raise
         self._preparation = None
 
-    def observe(self, event: TransferProgress | ManifestProgress) -> None:
-        """Update a sequential blob or manifest row without finalizing manifest receipt.
+    def observe(self, event: TransferProgress | ManifestProgress | ArtifactProgress) -> None:
+        """Adapt all transfer kinds into the same renderer and diagnostic lifecycle.
 
         Blob deduplication remains digest-based. Manifest identity is opaque and
         independent of advertised kind; callers explicitly process/write/finish
-        the active manifest. Concurrent transfers raise RuntimeError.
+        the active standalone manifest. Artifact identities survive kind/digest
+        discovery and finalize only on verified storage, including tiny configs.
+        Embedded/local observations never acquire network rate or percentage.
+        Concurrent transfers raise RuntimeError.
         """
         self._observe_row(_row(event))
 
+    def artifact_phase(self, phase: ArtifactPhase) -> None:
+        """Announce local packaging/publication separately after all object rows settle.
+
+        A new phase completes the previous local phase; the caller completes the
+        final one only after publication and required diagnostics return.
+        """
+        if self._event is not None:
+            self._finish_diagnostic()
+            if self._event.phase not in _TERMINAL:
+                raise RuntimeError("Artifact phase requires all object rows to be stored")
+            self._draw(force=True)
+            self._finish_transfer_row()
+        self.finish_preparation()
+        self.prepare({
+            ArtifactPhase.PACKAGING: "Packaging OCI archive",
+            ArtifactPhase.PUBLISHING: "Publishing artifact",
+        }[phase])
+
     def _observe_row(self, event: _Row) -> None:
-        """Reuse the shared redraw and finalization lifecycle for a normalized row."""
+        """Reuse shared redraw/finalization, assigning artifact kind numbers on discovery.
+
+        Unknown-root numbering never consumes a real manifest/index ordinal.
+        The existing row key and cursor survive that reclassification.
+        """
         if event.key in self._finished:
             return
         if self._preparation is not None:
@@ -437,9 +495,12 @@ class ProgressDisplay:
             self._draw(force=True)
             self._finish_transfer_row()
             previous = None
-        if event.key not in self._indices:
-            self._row_counts[event.key[0]] += 1
-            self._indices[event.key] = self._row_counts[event.key[0]]
+        if event.key not in self._indices or (
+            previous is not None and event.key[0] == "artifact" and previous.kind != event.kind
+        ):
+            group = f"artifact:{event.kind}" if event.key[0] == "artifact" else event.key[0]
+            self._row_counts[group] = self._row_counts.get(group, 0) + 1
+            self._indices[event.key] = self._row_counts[group]
             self._started = None
         if event.phase == TransferPhase.TRANSFERRING and self._started is None:
             self._started = self.clock()
@@ -448,7 +509,7 @@ class ProgressDisplay:
         force = (
             previous is None or previous.phase != event.phase
             or previous.attempt != event.attempt or previous.label != event.label
-            or previous.total_bytes != event.total_bytes
+            or previous.total_bytes != event.total_bytes or previous.digest != event.digest
         )
         self._event = event
         try:
@@ -528,6 +589,8 @@ class ProgressDisplay:
         """Describe logical bytes and state without treating a full byte count as success."""
         index = self._indices[event.key]
         prefix = f"{event.label} {index}"
+        if event.role is not None:
+            prefix += f" ({event.role})"
         if event.is_blob and self.total_blobs is not None:
             prefix += f"/{self.total_blobs}"
         if self.show_counts and event.is_blob:
@@ -537,7 +600,10 @@ class ProgressDisplay:
             prefix += f" [{completed} done/{skipped} skipped]"
         labels: dict[_RowPhase, str] = {
             TransferPhase.PREPARING: "Preparing",
-            TransferPhase.TRANSFERRING: "Downloading" if event.direction == TransferDirection.DOWNLOAD else "Uploading",
+            TransferPhase.TRANSFERRING: (
+                f"Storing ({event.source})" if event.source != "network"
+                else ("Downloading" if event.direction == TransferDirection.DOWNLOAD else "Uploading")
+            ),
             TransferPhase.RETRYING: f"Retrying attempt {event.attempt}",
             TransferPhase.VERIFYING: "Verifying",
             TransferPhase.COMMITTING: "Committing",
@@ -549,6 +615,9 @@ class ProgressDisplay:
             _ManifestStage.PROCESSING: "Processing",
             _ManifestStage.WRITING: "Writing",
             _ManifestStage.COMPLETED: "Downloaded",
+            _ArtifactStage.STORED: (
+                "Downloaded" if event.source == "network" else f"Stored ({event.source})"
+            ),
         }
         state = labels[event.phase]
         width = max(0, self.columns() - 1)
@@ -563,9 +632,14 @@ class ProgressDisplay:
             prefix = f"#{index}"
             if event.phase == TransferPhase.SKIPPED:
                 state = "Skipped"
+        if event.key[0] == "artifact" and len(f"{prefix} {state} {count}".rstrip()) > width:
+            state = {
+                "Downloading": "Pulling", "Downloaded": "Stored",
+                "Verifying": "Verify", "Preparing": "Prepare",
+            }.get(state, state)
         text = f"{prefix} {state} {count}".rstrip()
         extras: list[str] = []
-        if event.phase == TransferPhase.TRANSFERRING and event.total_bytes:
+        if event.phase == TransferPhase.TRANSFERRING and event.total_bytes and event.source == "network":
             ratio = event.bytes_completed / event.total_bytes
             filled = int(ratio * 12)
             bar = f" [{'#' * filled}{'-' * (12 - filled)}] {ratio:.0%}"
@@ -580,7 +654,7 @@ class ProgressDisplay:
             short_digest = f" {algorithm}:{digest[:4]}..."
             if len(text + short_digest) <= width:
                 text = prefix + short_digest + text[len(prefix):]
-        if event.phase == TransferPhase.TRANSFERRING:
+        if event.phase == TransferPhase.TRANSFERRING and event.source == "network":
             elapsed = self.clock() - self._started if self._started is not None else 0
             if elapsed > 0 and event.bytes_completed:
                 rate = event.bytes_completed / elapsed

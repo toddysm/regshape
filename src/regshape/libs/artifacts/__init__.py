@@ -4,19 +4,22 @@ from regshape.libs.artifacts.archive import ArchiveSnapshot
 from regshape.libs.artifacts.models import (
     ArtifactFormat,
     ArtifactLimits,
+    ArtifactPhase,
+    ArtifactPhaseCallback,
     ArtifactProgress,
     ArtifactProgressCallback,
     ArtifactPullResult,
 )
 from regshape.libs.artifacts.operations import (
     DirectorySnapshot,
+    preflight_artifact_pull,
     pull_artifact,
     snapshot_layout,
 )
 from regshape.libs.errors import ArtifactError
 
 __all__ = [
-    "ArchiveSnapshot", "ArtifactError", "ArtifactFormat", "ArtifactLimits", "ArtifactProgress",
-    "ArtifactProgressCallback", "ArtifactPullResult",
-    "DirectorySnapshot", "pull_artifact", "snapshot_layout",
+    "ArchiveSnapshot", "ArtifactError", "ArtifactFormat", "ArtifactLimits",
+    "ArtifactPhase", "ArtifactPhaseCallback", "ArtifactProgress", "ArtifactProgressCallback", "ArtifactPullResult",
+    "DirectorySnapshot", "preflight_artifact_pull", "pull_artifact", "snapshot_layout",
 ]
