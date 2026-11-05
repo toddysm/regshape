@@ -176,6 +176,8 @@ and size are valid; higher-level graph code is responsible for schema checks.
 Error-body decoding is bounded by the smaller of `max_bytes` and 64 KiB and
 rejects overlarge errors. Framing/read errors propagate before tolerant OCI
 error parsing; bounded error buffering does not change successful payload bytes.
+The raw reader explicitly enables urllib3 wire-framing length enforcement even
+on versions that default it off; a truncated framed body cannot become success.
 Unsolicited `206` or `Content-Range` responses fail before consumption: this
 operation neither requests nor assembles partial manifests.
 

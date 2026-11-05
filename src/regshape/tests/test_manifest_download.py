@@ -534,6 +534,7 @@ def test_truncated_body_preserves_first_transport_error(
 ) -> None:
     """Actual urllib3 framing failures propagate once, before tolerant error-body parsing."""
     response = StreamResponse(b"{", status, raw_headers={"Content-Length": "10"})
+    response.raw.enforce_content_length = False
     failures: list[BaseException] = []
 
     def chunks(response: requests.Response, chunk_size: int) -> Iterator[bytes]:

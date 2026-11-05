@@ -26,6 +26,8 @@ def reject_redirect(response: requests.Response, **kwargs: object) -> requests.R
 
 def _wire_chunks(response: requests.Response, chunk_size: int) -> Iterator[bytes]:
     """Read encoded bytes without urllib3 decoding, retaining Requests' exception taxonomy."""
+    # urllib3 1.26 disables framing enforcement by default, unlike 2.x.
+    response.raw.enforce_content_length = True
     try:
         yield from response.raw.stream(chunk_size, decode_content=False)
     except ProtocolError as error:
