@@ -103,6 +103,8 @@ no-follow, handle-relative filesystem operations. Unsupported platforms fail
 closed before writes; there is no pathname-write fallback. Source path components
 must not be symlinks. This currently excludes ordinary Windows Python filesystem
 operations; callers must handle the explicit unsupported-platform error.
+Parent (`..`) components are rejected before normalization rather than letting
+a preceding symlink disappear from the no-follow walk.
 
 Private sibling staging owns an explicit file/directory identity ledger.
 Publication exclusively reserves the destination, creates `.regshape-incomplete`,

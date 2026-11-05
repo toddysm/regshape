@@ -191,8 +191,7 @@ def _publish(
         destination.move_file(".index-pending", destination, "index.json")
         staging.verify()
         destination.verify()
-        destination.unlink(INCOMPLETE)
-        destination.retain()
+        destination.complete(INCOMPLETE)
 
 
 def pull_artifact(
@@ -296,6 +295,7 @@ def pull_artifact(
                 }, separators=(",", ":")).encode("utf-8")
                 if len(wrapper) > policy.max_manifest_bytes:
                     raise ArtifactError("Generated wrapper exceeds max_manifest_bytes")
+                parse_document(wrapper, policy, media_type=OCI_INDEX)
                 _publish(parent, staging, output.name, wrapper)
                 result = ArtifactPullResult(
                     source=f"{registry}/{repo}{'@' if ':' in reference else ':'}{reference}",

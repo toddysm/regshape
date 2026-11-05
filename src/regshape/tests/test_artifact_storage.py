@@ -158,6 +158,46 @@ def test_publication_order_and_marker_visibility(tmp_path: Path) -> None:
     assert (output / "index.json").exists() and not (output / INCOMPLETE).exists()
 
 
+def test_cancel_immediately_after_marker_removal_retains_publication(tmp_path: Path) -> None:
+    """Cancellation at the unlink-to-retain gap cannot delete an already readable complete layout."""
+    original = SafeDirectory.unlink
+    cancellation = KeyboardInterrupt()
+
+    def interrupt(directory: SafeDirectory, name: str) -> None:
+        """Raise immediately after the successful completion-marker removal syscall."""
+        original(directory, name)
+        if name == INCOMPLETE:
+            raise cancellation
+
+    with patch.object(SafeDirectory, "unlink", interrupt), pytest.raises(KeyboardInterrupt) as caught:
+        pull_artifact(Registry(document(children=[])), "repo", "moving", tmp_path / "out")
+    assert caught.value is cancellation
+    assert not (tmp_path / "out" / INCOMPLETE).exists()
+    validate_layout(tmp_path / "out", recursive=True)
+
+
+@pytest.mark.parametrize("operation", ["pull", "validate", "snapshot"])
+def test_parent_components_are_rejected_before_normalization(tmp_path: Path, operation: str) -> None:
+    """A symlink followed by dot-dot must not vanish during lexical path normalization."""
+    registry = Registry(document(children=[]))
+    local = tmp_path / "local"
+    local.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    (local / "jump").symlink_to(other, target_is_directory=True)
+    path = local / "jump" / ".." / "selected"
+    with pytest.raises(ArtifactError, match="Parent path components"):
+        if operation == "pull":
+            pull_artifact(registry, "repo", "moving", path)
+        elif operation == "validate":
+            validate_layout(path, recursive=True)
+        else:
+            with DirectorySnapshot(path):
+                pytest.fail("Unsafe source accepted")
+    assert not registry.calls and not list(other.iterdir())
+    assert [item.name for item in local.iterdir()] == ["jump"]
+
+
 @pytest.mark.parametrize("filename", ["oci-layout", ".index-pending"])
 def test_publication_write_failure_removes_owned_output(tmp_path: Path, filename: str) -> None:
     """A failed metadata write has no successful output/result and cleans only its reservation."""
@@ -455,6 +495,45 @@ def test_close_failure_after_blob_receipt_prevents_success(tmp_path: Path) -> No
     ):
         get_blob(registry, "repo", address(raw), "out", max_bytes=10, output_dir_fd=directory.fd)
     assert not list(tmp_path.iterdir())
+
+
+def test_invalid_blob_metadata_cleans_before_completion(tmp_path: Path) -> None:
+    """Malformed response metadata fails within ownership contexts, never after completed output."""
+    raw = b"blob"
+    registry = Registry(b"", {address(raw): raw})
+    registry.headers_by_reference[address(raw)] = {"Content-Type": ""}
+    events = []
+    with SafeDirectory.open(tmp_path) as directory, pytest.raises(ValueError):
+        get_blob(
+            registry, "repo", address(raw), "out", max_bytes=10, output_dir_fd=directory.fd,
+            progress_callback=events.append,
+        )
+    assert not list(tmp_path.iterdir())
+    assert all(event.phase.value != "completed" for event in events)
+    assert registry.responses[0].close_calls == 1
+
+
+@pytest.mark.parametrize("headers,total", [
+    ({"Content-Length": "4"}, 4),
+    ({"Content-Length": "invalid"}, None),
+    ({"Content-Length": "4", "Transfer-Encoding": "chunked"}, None),
+])
+def test_bounded_blob_progress_uses_comparable_header_total(
+    tmp_path: Path, headers: dict, total: int | None,
+) -> None:
+    """Without a declared size, bounded progress retains the existing comparable-header contract."""
+    raw = b"blob"
+    registry = Registry(b"", {address(raw): raw})
+    registry.headers_by_reference[address(raw)] = headers
+    events = []
+    with SafeDirectory.open(tmp_path) as directory:
+        get_blob(
+            registry, "repo", address(raw), "out", max_bytes=10, output_dir_fd=directory.fd,
+            progress_callback=events.append,
+        )
+    assert events[-1].phase.value == "completed"
+    assert all(event.total_bytes == total for event in events if event.phase.value != "preparing")
+    assert (tmp_path / "out").read_bytes() == raw
 
 
 def test_blob_observer_and_secondary_close_preserve_frozen_failure(tmp_path: Path) -> None:

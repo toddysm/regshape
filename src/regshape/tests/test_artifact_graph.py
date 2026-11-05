@@ -320,6 +320,23 @@ def test_json_depth_boundary_and_string_escaping() -> None:
         strict_json(raw, ArtifactLimits(), len(raw) - 1)
 
 
+@pytest.mark.parametrize("tag,boundary", [(True, 4), (False, 3)])
+def test_generated_wrapper_obeys_json_depth(tmp_path: Path, tag: bool, boundary: int) -> None:
+    """Successful pulls validate under the same depth policy, including generated tag annotations."""
+    root = b'{"schemaVersion":2,"mediaType":"' + OCI_INDEX.encode() + b'","manifests":[]}'
+    registry = Registry(root)
+    reference = "moving" if tag else address(root)
+    with pytest.raises(ArtifactError, match="max_json_depth"):
+        pull_artifact(
+            registry, "repo", reference, tmp_path / "bad",
+            limits=ArtifactLimits(max_json_depth=boundary - 1),
+        )
+    assert not (tmp_path / "bad").exists()
+    policy = ArtifactLimits(max_json_depth=boundary)
+    pull_artifact(registry, "repo", reference, tmp_path / "good", limits=policy)
+    validate_layout(tmp_path / "good", recursive=True, limits=policy)
+
+
 @pytest.mark.parametrize("field", ["max_objects", "max_edges", "max_depth", "max_total_bytes", "max_manifest_bytes"])
 def test_graph_cap_boundary_and_plus_one(tmp_path: Path, field: str) -> None:
     """Exact graph budgets pass; exceeding each independent cap by one fails."""

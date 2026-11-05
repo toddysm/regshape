@@ -250,6 +250,8 @@ def _get_blob_bounded(
                 buffered = _BufferedManifestText(bytes(payload), response.encoding)
                 buffered.status_code = response.status_code
                 _raise_for_blob_error(buffered, client.config.registry, repo, digest)
+            if total_size is None and callback is not None:
+                progress.set_total(_download_total(response.headers))
             progress.emit(TransferPhase.TRANSFERRING)
             hasher = hashlib.new(algorithm)
             for chunk in entity_chunks(response, min(chunk_size, 65536, max_bytes + 1)):
@@ -265,11 +267,12 @@ def _get_blob_bounded(
             if f"{algorithm}:{hasher.hexdigest()}" != digest:
                 raise BlobError("Blob digest verification failed")
             content_type = response.headers.get("Content-Type", _DEFAULT_CONTENT_TYPE)
+            info = BlobInfo(digest=digest, content_type=content_type, size=size)
         output.verify_identity()
         output.close()
         progress.complete()
         output.verify_identity()
-    return BlobInfo(digest=digest, content_type=content_type, size=size)
+    return info
 
 
 def _bounded_blob_redirect(response: requests.Response, **kwargs: object) -> requests.Response:

@@ -102,11 +102,14 @@ class SafeDirectory:
         self.files: dict[str, os.stat_result] = {}
         self.children: dict[str, SafeDirectory] = {}
         self.closed = False
+        self.publication_marker: str | None = None
 
     @classmethod
     def open(cls, path: str | Path) -> "SafeDirectory":
         """Open an existing absolute/relative path componentwise, rejecting symlinks."""
         require_safe_filesystem()
+        if ".." in Path(path).parts:
+            raise ArtifactError("Parent path components are not supported by safe artifact opens")
         path = Path(os.path.abspath(path))
         current = cls(os.open("/", os.O_RDONLY | os.O_DIRECTORY), "/")
         try:
@@ -274,6 +277,16 @@ class SafeDirectory:
         for child in self.children.values():
             child.retain()
 
+    def complete(self, marker: str) -> None:
+        """Remove the completion marker as an irreversible publication boundary.
+
+        Exit checks marker absence too, covering cancellation between the unlink
+        syscall and Python's subsequent ownership-state update.
+        """
+        self.publication_marker = marker
+        self.unlink(marker)
+        self.retain()
+
     def cleanup(self) -> None:
         """Remove registered entries only; unknown/replaced/moved trees remain explicit errors."""
         self.verify()
@@ -320,6 +333,8 @@ class SafeDirectory:
         """Clean only this invocation's uncommitted entries, then close, preserving primary errors."""
         primary = exc
         try:
+            if self.publication_marker is not None and not self.exists(self.publication_marker):
+                self.retain()
             if self.owned:
                 self.cleanup()
         except BaseException as error:  # noqa: BLE001 - cleanup must not mask cancellation/observer failure
