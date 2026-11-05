@@ -311,6 +311,10 @@ callers, or the verified `expected_digest` when supplied.
    `Docker-Content-Digest` against those exact bytes. A valid digest using the
    other supported algorithm is accepted; empty/malformed/mismatched headers
    are rejected. An absent header is allowed with the verified submitted payload.
+   The final response must identify a prepared PUT carrying those exact bytes.
+   Requests' 301/302/303 method/body-changing redirects therefore fail;
+   preserving 307/308 redirects remain supported. Missing final-request evidence
+   also fails strict mode (including in custom client/test doubles).
 5. Close the owned response on success/failure, preserving an active error if
    cleanup also fails. The client remains caller-owned. Omitting the argument
    preserves the existing any-2xx/header return behavior.

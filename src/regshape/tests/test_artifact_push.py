@@ -145,7 +145,9 @@ class ObjectRegistry:
             self.documents.append((reference, data))
             if reference == self.lose_reference:
                 raise requests.ConnectionError("synthetic response lost after commit")
-            return self.response(201, **{"Docker-Content-Digest": digest})
+            response = self.response(201, **{"Docker-Content-Digest": digest})
+            response.request = requests.Request(method, url, data=data).prepare()
+            return response
         query = dict(parse_qsl(urlsplit(url).query))
         query.update(dict(params or {}))
         digest = query["digest"]
@@ -442,6 +444,7 @@ def test_ack_status_digest_and_response_ownership(algorithm: str, report: str, s
     response = StreamResponse(b"", status=status, headers=(
         {} if reported is None else {"Docker-Content-Digest": reported}
     ))
+    response.request = requests.Request("PUT", "https://registry.example/v2/dest/manifests/tag", data=raw).prepare()
     client = MagicMock()
     client.put.return_value = response
     if status == 201 and report in ("same", "other", "missing"):
@@ -472,6 +475,7 @@ def test_ack_cross_algorithm_digest_reference() -> None:
     client = MagicMock()
     raw = b"raw"
     response = StreamResponse(b"", status=201)
+    response.request = requests.Request("PUT", "https://registry.example/v2/dest/manifests/tag", data=raw).prepare()
     client.put.return_value = response
     assert push_manifest(
         client, "dest", address(raw, "sha512"), raw, OCI_MANIFEST, expected_digest=address(raw),
@@ -498,6 +502,7 @@ def test_ack_transport_and_sole_close_failures_propagate() -> None:
     assert caught.value is error
     client.put.side_effect = None
     response = StreamResponse(b"", status=201)
+    response.request = requests.Request("PUT", "https://registry.example/v2/dest/manifests/tag", data=b"raw").prepare()
     client.put.return_value = response
     cleanup = OSError("close failed")
     with patch.object(response, "close", side_effect=cleanup), pytest.raises(OSError) as caught:
@@ -589,3 +594,56 @@ def test_invalid_rotated_upload_location_closes_without_commit(tmp_path: Path) -
         push_layout(source, _client(), "dest", chunked=True, chunk_size=13)
     assert not any(method == "PUT" for method, _ in registry.calls)
     assert all(response.close_calls == 1 for response in registry.responses)
+
+
+@pytest.mark.parametrize("redirect", [301, 302, 303, 307, 308])
+def test_ack_actual_requests_redirects_preserve_method_and_payload(redirect: int) -> None:
+    """Actual Requests redirect handling must not turn a verified publication into a success-shaped GET."""
+    raw = b'{ "schemaVersion": 2 }\n'
+    responses = []
+    sent = []
+
+    def send(adapter, request: requests.PreparedRequest, **kwargs) -> StreamResponse:
+        """Replace only the socket adapter; Requests still builds and follows each redirect."""
+        sent.append(request)
+        response = StreamResponse(b"", status=redirect if len(sent) == 1 else 201, headers=(
+            {"Location": "https://cdn.example/manifest?signature=synthetic"} if len(sent) == 1 else {}
+        ))
+        response.request = request
+        response.url = request.url
+        responses.append(response)
+        return response
+
+    with (
+        patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
+        patch.object(requests.adapters.HTTPAdapter, "send", autospec=True, side_effect=send),
+    ):
+        client = RegistryClient(TransportConfig(registry="registry.example", enable_middleware=False))
+        if redirect in (307, 308):
+            assert push_manifest(
+                client, "dest", "tag", raw, OCI_MANIFEST, expected_digest=address(raw),
+            ) == address(raw)
+        else:
+            with pytest.raises(ManifestError, match="verified payload"):
+                push_manifest(client, "dest", "tag", raw, OCI_MANIFEST, expected_digest=address(raw))
+    assert len(sent) == 2 and sent[0].method == "PUT" and sent[0].body == raw
+    assert (sent[-1].method == "PUT" and sent[-1].body == raw) is (redirect in (307, 308))
+    assert all(response.close_calls == 1 for response in responses)
+
+
+@pytest.mark.parametrize("request_kind", ["missing", "get", "changed-body"])
+def test_ack_requires_final_prepared_request_evidence(request_kind: str) -> None:
+    """Even a matching digest header cannot acknowledge a request that omitted the verified PUT."""
+    raw = b"raw"
+    response = StreamResponse(b"", status=201, headers={"Docker-Content-Digest": address(raw)})
+    if request_kind != "missing":
+        response.request = requests.Request(
+            "GET" if request_kind == "get" else "PUT",
+            "https://registry.example/v2/dest/manifests/tag",
+            data=raw if request_kind == "get" else b"different",
+        ).prepare()
+    client = MagicMock()
+    client.put.return_value = response
+    with pytest.raises(ManifestError, match="verified payload"):
+        push_manifest(client, "dest", "tag", raw, OCI_MANIFEST, expected_digest=address(raw))
+    assert response.close_calls == 1

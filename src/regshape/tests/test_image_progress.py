@@ -93,7 +93,7 @@ class Registry:
         params: list[tuple[str, str]] | dict[str, str] | None = None,
         **kwargs: object,
     ) -> requests.Response:
-        """Validate upload URLs and consume counted bodies before returning commit responses."""
+        """Consume upload bodies and attach prepared manifest PUT evidence to acknowledgements."""
         self.now += 0.2
         path = urlsplit(url).path
         self.calls.append((method, path))
@@ -103,7 +103,9 @@ class Registry:
             assert method == "PUT" and isinstance(data, bytes)
             if self.failure == "manifest":
                 return _response(500)
-            return _response(201, {"Docker-Content-Digest": "sha256:" + hashlib.sha256(data).hexdigest()})
+            response = _response(201, {"Docker-Content-Digest": "sha256:" + hashlib.sha256(data).hexdigest()})
+            response.request = requests.Request(method, url, data=data).prepare()
+            return response
         if method == "HEAD":
             digest = unquote(path.rsplit("/", 1)[1])
             return _response(200 if digest in self.existing else 404, {

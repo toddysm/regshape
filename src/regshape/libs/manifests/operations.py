@@ -185,6 +185,8 @@ def push_manifest(
         When supplied, verify bytes before sending, require 201 Created, and
         verify any reported digest (including a different supported algorithm).
         A digest reference is independently verified against the same bytes.
+        The final response must identify a prepared PUT carrying those exact
+        bytes; method/body-changing redirects or missing request evidence fail.
     :returns: The reported header for legacy callers; with expected_digest,
         the locally verified expected identity, including when no header exists.
     :raises AuthError: On authentication failure.
@@ -212,6 +214,15 @@ def push_manifest(
             return reported
         if response.status_code != 201:
             raise ManifestError("Manifest publication requires HTTP 201 Created")
+        prepared = response.request
+        if (
+            prepared is None or prepared.method != "PUT"
+            or prepared.body != body
+        ):
+            raise ManifestError(
+                "Manifest acknowledgement does not identify a PUT with the verified payload",
+                "a redirect may have changed the method or removed the body",
+            )
         if "Docker-Content-Digest" in response.headers:
             try:
                 algorithm = _digest_algorithm(reported)
