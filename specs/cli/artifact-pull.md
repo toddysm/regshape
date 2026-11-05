@@ -1,6 +1,6 @@
 # Complete artifact download and round-trip: requirements and engineering design
 
-- **Status:** Draft revision 1; specification/breakdown publication authorized, not implementation or merge.
+- **Status:** Draft revision 2; specification/breakdown publication authorized, not implementation or merge.
 - **Feature:** [#91](https://github.com/toddysm/regshape/issues/91).
 - **Design item:** [#113](https://github.com/toddysm/regshape/issues/113).
 - **Related, separate capability:** [#112](https://github.com/toddysm/regshape/issues/112), config/layer-position downloads.
@@ -16,6 +16,12 @@ programming interface (API), product requirements document (PRD), engineering
 design document (EDD), and continuous integration (CI) are abbreviated below.
 All new command shapes, events, limits and output below are **proposed contracts**,
 not descriptions of already implemented functionality.
+
+> **Revision 2 approval note:** Review exposed a gap between excluding subjects
+> and promising a self-contained round-trip. This draft now follows explicit
+> `subject` descriptors, without discovering referrers. A subject-bearing artifact
+> can therefore download more content than the initial proposal implied. This
+> material refinement requires owner approval with the rest of the design.
 
 ## Part I: functional requirements
 
@@ -86,7 +92,7 @@ manifest was fetched.
 | --- | --- | --- |
 | R1 | Must | All four tag/digest x manifest/index cases work; a tag is fetched once per operation, excluding existing request retries/authentication. |
 | R2 | Must | Preserve original content bytes, media types, descriptor metadata and root identity; verify digests and descriptor sizes. |
-| R3 | Must | Traverse all index children recursively, config and layer/content descriptors; deduplicate stored/downloaded content by digest without deleting descriptor edges. |
+| R3 | Must | Traverse all index children recursively, config/layer/content and explicit subject descriptors; deduplicate stored/downloaded content by digest without deleting descriptor edges. |
 | R4 | Must | Default OCI directory and explicit gzip-tar contain the same complete graph; output is not an extracted root filesystem. |
 | R5 | Must | Existing `layout push` accepts both outputs and publishes complete nested indexes with original digests and root-tag semantics. |
 | R6 | Must | One row per unique downloaded index/manifest/config/layer blob, including the initially unresolved root; actual bytes and honest totals. |
@@ -103,7 +109,7 @@ Canonical-reference redesign remains [#88](https://github.com/toddysm/regshape/i
 Credential-setup guidance remains [#86](https://github.com/toddysm/regshape/issues/86).
 
 Non-goals are platform filtering, graph rewriting, registry-to-registry copying,
-automatic subject/referrer discovery, arbitrary external-URL fetching, payload
+referrer discovery, arbitrary external-URL fetching, payload
 extraction/execution, arbitrary archive formats, parallel transfers and partial
 resume. These were not committed requirements cut from this delivery; no
 additional speculative backlog features are created by this specification.
@@ -142,6 +148,8 @@ storage plus annotated documentation is the selected portable contract.
 A digest can identify an index. No host-platform inference is performed. Tag
 resolution uses the fetched root body, not a HEAD followed by a second root GET.
 The object returned by that first successful GET is the chosen version.
+In all four cases, explicit subject descriptors also add their referenced
+manifest/index closure, as specified in D3; referrers discovery is not performed.
 
 #### Command shapes
 
@@ -193,6 +201,7 @@ downloaded-artifact/
       <root-index-hex>       original index, when applicable
       <nested-index-hex>     nested index, when applicable
       <manifest-hex>         original manifest bytes
+      <subject-hex>          explicitly referenced subject, when present
       <config-hex>           config contents, including non-image config
       <layer-0-hex>          original layer/content bytes
     sha512/
@@ -499,12 +508,20 @@ size and interpretation constraints. Different platform/annotation metadata
 on otherwise identical references is allowed; incompatible size/type claims
 fail. Distinct digest algorithms are distinct content addresses, not inferred
 aliases. A visiting-set repeat is a cycle error; a completed-set repeat is reuse.
-Deterministic traversal uses root first, depth-first index order and config
-before layers; observed network object order follows that traversal.
+Deterministic traversal uses root first; within each document, visit its explicit
+subject first when present, then depth-first index order or config before layers.
+Observed network object order follows that traversal.
 
-Required closure is **index-child + manifest-config/layer edges**. Subjects
-remain preserved relationship metadata, but are not traversed; no referrers
-API enumeration occurs. This is not a backup of all signatures/related artifacts.
+Required closure is **index-child + manifest-config/layer + explicit subject
+edges**. A subject descriptor on a manifest or index identifies another supported
+manifest/index in the same repository; fetch it by digest and recurse through
+its content and any further explicit subject. Apply the same size/type/digest,
+deduplication, cycle and resource checks to these edges. Missing or unsupported
+subjects fail the full operation instead of producing a dangling local relationship.
+No referrers API enumeration or reverse-link search occurs: this copies what the
+selected graph explicitly points to, not every signature attached to that graph.
+The subject field and original document bytes remain unchanged.
+
 Descriptor `urls` are preserved but never followed directly. Foreign/non-
 distributable layers are fetched through the registry blob endpoint; if required
 content is only available externally, fail with that reason.
@@ -652,8 +669,10 @@ skip only confirmed existing blobs; only a genuine 404 means missing. Other
 errors propagate. Verify SHA-256/SHA-512 through snapshot and both upload modes;
 remove the coupled SHA-256-only precheck, not the integrity guarantee.
 
-Publish document dependencies in postorder. Every object referenced by another
-document must be acknowledged by digest before that parent is sent. A top-level
+Publish document dependencies in postorder, including subject-before-referring-
+document ordering. Every object referenced by another document must be acknowledged
+by digest before that parent is sent. This makes subject-bearing round-trips
+self-contained without assuming the destination already has the subject. A top-level
 root with no incoming parent reference can be sent once using its final tag
 (the registry stores the same digest), retaining flat-layout request counts.
 A root also used as another root's descendant is first published by digest,
@@ -1019,7 +1038,9 @@ Required suites/measurements:
 - Original JSON whitespace/key ordering/unknown metadata preserved; strict
   UTF-8, omitted/conflicting types, malformed schema and non-image content.
 - Root + nested index + multiple manifests + shared config/layer fixture;
-  SHA-256/SHA-512; inline data; empty indexes/layers; absent subjects/referrers;
+  SHA-256/SHA-512; inline data; empty indexes/layers; absent and explicit subjects;
+  subject-bearing manifest/index round-trips into an empty repository, shared/
+  nested/missing subjects and cycles; zero referrers API discovery requests;
   unsupported required type, external-only blob and repeated-edge contradictions.
 - Bounds at each limit and limit+1, deep JSON/graphs, duplicate-heavy graphs,
   synthetic cycles, bounded reads/heap growth and stream closure on every exit.
@@ -1049,7 +1070,7 @@ proposal validate unchanged runtime, not the future capability.
 
 ### O. Next actions and approval gate
 
-Publish revision 1 and seven linked children, address design review feedback and
+Publish revision 2 and seven linked children, address design review feedback and
 leave the PR open. Owner approval must cover this exact document and breakdown;
 material changes invalidate approval. Build requires explicit scoped authorization,
 including an In progress inventory transition before implementation. Final docs
