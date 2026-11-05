@@ -51,6 +51,7 @@ jobs:
           src/regshape/tests/test_artifact_storage.py
           src/regshape/tests/test_artifact_archive.py
           src/regshape/tests/test_artifact_push.py
+          src/regshape/tests/test_artifact_pull_cli.py
           src/regshape/tests/test_image_progress.py
           src/regshape/tests/test_layout_push.py
 
@@ -68,6 +69,7 @@ jobs:
           python -m pytest -q
           src/regshape/tests/test_artifact_options.py
           src/regshape/tests/test_artifact_cli.py
+          src/regshape/tests/test_artifact_pull_cli.py
           src/regshape/tests/test_refs.py
           src/regshape/tests/test_manifest_cli.py
           src/regshape/tests/test_manifest_cli_progress.py
@@ -101,3 +103,4 @@ jobs:
           src/regshape/tests/test_artifact_archive.py
           src/regshape/tests/test_artifact_push.py
           src/regshape/tests/test_layout_push.py
+          src/regshape/tests/test_artifact_pull_cli.py

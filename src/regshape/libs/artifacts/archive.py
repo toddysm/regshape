@@ -19,7 +19,12 @@ from types import TracebackType
 from typing import BinaryIO, Literal, final
 
 from regshape.libs.artifacts.graph import VerifiedGraph, layout_roots, verify_graph
-from regshape.libs.artifacts.models import ArtifactLimits, digest_parts
+from regshape.libs.artifacts.models import (
+    ArtifactLimits,
+    ArtifactPhase,
+    ArtifactPhaseCallback,
+    digest_parts,
+)
 from regshape.libs.artifacts.storage import CHUNK_SIZE, ContentStore, SafeDirectory
 from regshape.libs.errors import ArtifactError
 
@@ -518,6 +523,7 @@ class _GzipWriter:
 def write_archive(
     store: ContentStore, graph: VerifiedGraph, wrapper: bytes,
     parent: SafeDirectory, name: str, limits: ArtifactLimits,
+    *, phase_callback: ArtifactPhaseCallback | None = None,
 ) -> None:
     """Pack an already verified private closure and exclusively publish one complete regular file.
 
@@ -526,6 +532,8 @@ def write_archive(
     metadata. Temporary disk is existing content U plus compressed output C,
     not an additional tar/snapshot. A successful hard link is irreversible:
     later cleanup/diagnostic failures retain the complete output.
+    The optional observer announces publication only after the packed file closes;
+    its exception propagates before publication without claiming transfer bytes.
     """
     directory = store.directory
     members = [("oci-layout", len(_MARKER)), ("index.json", len(wrapper))]
@@ -577,4 +585,6 @@ def write_archive(
             writer.write(bytes(-size % _BLOCK))
         writer.write(2 * _ZERO)
         writer.finish()
+    if phase_callback is not None:
+        phase_callback(ArtifactPhase.PUBLISHING)
     directory.publish_file("output.tar.gz", parent, name)

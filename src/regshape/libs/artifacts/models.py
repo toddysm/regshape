@@ -29,6 +29,17 @@ class ArtifactFormat(str, Enum):
     OCI_TAR_GZIP = "oci-tar-gzip"
 
 
+class ArtifactPhase(str, Enum):
+    """Local work after object storage, separate from per-object network observations."""
+
+    PACKAGING = "packaging"
+    PUBLISHING = "publishing"
+
+
+ArtifactPhaseCallback = Callable[[ArtifactPhase], None]
+"""Synchronous local-phase observer; exceptions abort before the announced work."""
+
+
 @dataclass(frozen=True)
 class ArtifactLimits:
     """Independent byte/count/depth caps shared by strict artifact operations.

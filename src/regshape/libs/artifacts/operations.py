@@ -32,6 +32,8 @@ from regshape.libs.artifacts.graph import (
 from regshape.libs.artifacts.models import (
     ArtifactFormat,
     ArtifactLimits,
+    ArtifactPhase,
+    ArtifactPhaseCallback,
     ArtifactProgress,
     ArtifactProgressCallback,
     ArtifactPullResult,
@@ -61,9 +63,8 @@ def validate_tag(value: str) -> str:
     return value
 
 
-def _registry(client: RegistryClient) -> str:
-    """Validate the borrowed client's registry authority without credentials or network calls."""
-    registry = client.config.registry
+def _registry(registry: str) -> str:
+    """Validate a registry authority without constructing a credential-resolving client."""
     if (
         not isinstance(registry, str)
         or any(c.isspace() or ord(c) < 32 for c in registry)
@@ -81,6 +82,65 @@ def _registry(client: RegistryClient) -> str:
     except ValueError as error:
         raise ValueError("Invalid registry port") from error
     return registry
+
+
+def _pull_inputs(
+    registry: str, repo: str, reference: str, output_path: str | Path,
+    output_format: ArtifactFormat, limits: ArtifactLimits | None,
+) -> tuple[Path, ArtifactFormat, ArtifactLimits]:
+    """Normalize pull policy/path and reject invalid inputs before any filesystem mutation.
+
+    :returns: Absolute destination, explicit format and validated positive budgets.
+    :raises ValueError: For invalid source, path or policy inputs.
+    :raises ArtifactError: For unsupported formats/platforms or impossible metadata caps.
+    """
+    policy = limits if limits is not None else ArtifactLimits()
+    if not isinstance(policy, ArtifactLimits):
+        raise ValueError("limits must be ArtifactLimits")  # noqa: TRY004 - public input contract
+    _validate_inputs(repo, reference, ACCEPT, None, None, policy.max_manifest_bytes)
+    _registry(registry)
+    try:
+        output_format = ArtifactFormat(output_format)
+    except (ValueError, TypeError) as error:
+        raise ArtifactError("Unsupported artifact output format") from error
+    if output_format == ArtifactFormat.OCI_TAR_GZIP:
+        require_archive_publication()
+        if policy.max_gzip_header_bytes < 10:
+            raise ArtifactError("Gzip header exceeds max_gzip_header_bytes")
+    if len(b'{"imageLayoutVersion":"1.0.0"}') > policy.max_layout_marker_bytes:
+        raise ArtifactError("Generated oci-layout exceeds max_layout_marker_bytes")
+    require_safe_filesystem()
+    output = Path(output_path).absolute()
+    if output.name in ("", ".", "..") or "\x00" in str(output) or "\\" in str(output):
+        raise ValueError("Output must name a new directory or archive")
+    if ".." in output.parts:
+        raise ArtifactError("Parent path components are not supported by safe artifact opens")
+    return output, output_format, policy
+
+
+def preflight_artifact_pull(
+    registry: str, repo: str, reference: str, output_path: str | Path, *,
+    output_format: ArtifactFormat = ArtifactFormat.OCI,
+    limits: ArtifactLimits | None = None,
+) -> None:
+    """Validate a pull before credential lookup, without reserving the destination.
+
+    Source/format/budgets are checked first. The destination must be absent under
+    an existing safe parent. A temporary private namespace probes native
+    no-replace support and trust/ACL policy, then is removed. No registry calls
+    occur. This is not a reservation: :func:`pull_artifact` repeats all checks and
+    retains its own handles throughout publication to reject subsequent races.
+
+    :raises ValueError: For invalid source, policy or destination syntax.
+    :raises ArtifactError: For an existing destination or unsafe/unsupported storage.
+    :raises OSError: For filesystem acquisition/probe/cleanup failures.
+    """
+    output, _, _ = _pull_inputs(registry, repo, reference, output_path, output_format, limits)
+    with SafeDirectory.open(output.parent) as parent:
+        if parent.exists(output.name):
+            raise ArtifactError("Artifact destination already exists")
+        with SafeDirectory.private_namespace(parent):
+            pass
 
 
 class _Observation:
@@ -201,6 +261,7 @@ def pull_artifact(
     output_format: ArtifactFormat = ArtifactFormat.OCI,
     limits: ArtifactLimits | None = None,
     progress_callback: ArtifactProgressCallback | None = None,
+    phase_callback: ArtifactPhaseCallback | None = None,
 ) -> ArtifactPullResult:
     """Pull every platform/subject/config/layer into a new OCI directory or gzip-tar.
 
@@ -222,28 +283,18 @@ def pull_artifact(
     Linux/Darwin native no-replace operations. Callers must exclude hostile
     same-user/privileged access to the private namespace for its entire lifetime;
     permissions cannot establish that caller-controlled trust precondition.
+
+    :param phase_callback: Optional synchronous packaging/publication notification,
+        distinct from object bytes. Exceptions propagate unchanged before the
+        announced local work and trigger owned cleanup.
     """
-    policy = limits if limits is not None else ArtifactLimits()
-    if not isinstance(policy, ArtifactLimits):
-        raise ValueError("limits must be ArtifactLimits")  # noqa: TRY004 - public input contract
     observers = _Observers(progress_callback)
-    _validate_inputs(repo, reference, ACCEPT, None, None, policy.max_manifest_bytes)
-    registry = _registry(client)
-    try:
-        output_format = ArtifactFormat(output_format)
-    except (ValueError, TypeError) as error:
-        raise ArtifactError("Unsupported artifact output format") from error
-    if output_format == ArtifactFormat.OCI_TAR_GZIP:
-        require_archive_publication()
-        if policy.max_gzip_header_bytes < 10:
-            raise ArtifactError("Gzip header exceeds max_gzip_header_bytes")
-    marker = b'{"imageLayoutVersion":"1.0.0"}'
-    if len(marker) > policy.max_layout_marker_bytes:
-        raise ArtifactError("Generated oci-layout exceeds max_layout_marker_bytes")
-    require_safe_filesystem()
-    output = Path(output_path).absolute()
-    if output.name in ("", ".", ".."):
-        raise ValueError("Output must name a new directory or archive")
+    if phase_callback is not None and not callable(phase_callback):
+        raise TypeError("Artifact phase callback must be callable")
+    registry = client.config.registry
+    output, output_format, policy = _pull_inputs(
+        registry, repo, reference, output_path, output_format, limits,
+    )
     try:
         with SafeDirectory.open(output.parent) as parent:
             if parent.exists(output.name):
@@ -309,9 +360,16 @@ def pull_artifact(
                     raise ArtifactError("Generated wrapper exceeds max_manifest_bytes")
                 parse_document(wrapper, policy, media_type=OCI_INDEX)
                 if output_format == ArtifactFormat.OCI:
+                    if phase_callback is not None:
+                        phase_callback(ArtifactPhase.PUBLISHING)
                     _publish(parent, staging, output.name, wrapper)
                 else:
-                    write_archive(store, graph, wrapper, parent, output.name, policy)
+                    if phase_callback is not None:
+                        phase_callback(ArtifactPhase.PACKAGING)
+                    write_archive(
+                        store, graph, wrapper, parent, output.name, policy,
+                        phase_callback=phase_callback,
+                    )
                 result = ArtifactPullResult(
                     source=f"{registry}/{repo}{'@' if ':' in reference else ':'}{reference}",
                     resolved_reference=f"{registry}/{repo}@{root.digest}",
