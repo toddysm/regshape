@@ -92,6 +92,10 @@ Explicit destination tags and present source ref-name annotations must fully
 match ASCII `[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}`, even with an override.
 Digest destinations, query/fragment/percent forms, controls and invalid tags
 are rejected before credential resolution. Tags are not trimmed or decoded.
+An authority port delimiter requires a nonempty numeric port:
+`registry.example:/repo` and `[::1]:/repo` are rejected before credentials.
+Bracketed Internet Protocol version 6 (IPv6) literals remain supported with
+or without a port, including `[::]/repo` and `[::1]:5000/repo`.
 
 ---
 

@@ -17,10 +17,12 @@ import requests
 from regshape.cli.main import regshape
 from regshape.libs.artifacts import ArtifactFormat, pull_artifact
 from regshape.libs.artifacts.graph import OCI_INDEX, OCI_MANIFEST, REF_NAME
+from regshape.libs.docker.operations import push_image
 from regshape.libs.errors import ArtifactError, AuthError, BlobError, ManifestError
 from regshape.libs.layout.operations import (
     LayoutPushPlan,
     execute_layout_push,
+    parse_push_destination,
     push_layout,
 )
 from regshape.libs.manifests import push_manifest
@@ -38,8 +40,8 @@ from regshape.tests.test_layout_push import _runner
 
 @pytest.fixture(autouse=True)
 def native_push(request: pytest.FixtureRequest) -> None:
-    """Skip native snapshot cases on Windows, never the explicit guards or pure acknowledgement tests."""
-    independent = request.node.name.startswith(("test_ack_", "test_unsupported_platform"))
+    """Skip native snapshots on Windows, not destination preflight, guards or acknowledgements."""
+    independent = request.node.name.startswith(("test_ack_", "test_destination_", "test_unsupported_platform"))
     if not independent and sys.platform not in ("linux", "darwin"):
         pytest.skip("Strict push requires Linux/Darwin native safe snapshots")
 
@@ -283,6 +285,79 @@ def test_invalid_destinations_precede_client(tmp_path: Path, destination: str, d
         ])
     assert result.exit_code == 2
     client.assert_not_called()
+
+
+@pytest.mark.parametrize("destination", [
+    "registry.example:/repo", "[::1]:/repo",
+    "[2001:db8::]:/team/repo:tag", "localhost:/team/repo:tag",
+])
+def test_destination_empty_port_parser_rejects(destination: str) -> None:
+    """A trailing authority delimiter is not an omitted port, even when urlsplit returns None."""
+    with pytest.raises(ValueError, match="Invalid push destination"):
+        parse_push_destination(destination)
+
+
+@pytest.mark.parametrize("registry", [
+    "registry.example", "registry.example:5000", "[::1]", "[::1]:5000",
+    "[2001:db8::]", "[2001:db8::]:65535", "[::]",
+])
+@pytest.mark.parametrize("tag", [None, "valid_tag.1"])
+def test_destination_valid_authorities_preserve_grammar(registry: str, tag: str | None) -> None:
+    """Bare/bracketed authorities and nonempty ports retain exact repository and optional-tag parsing."""
+    destination = f"{registry}/team/repo" + (f":{tag}" if tag else "")
+    assert parse_push_destination(destination) == (registry, "team/repo", tag)
+
+
+@pytest.mark.parametrize("destination", [
+    "registry.example:/repo", "[::1]:/repo",
+    "[2001:db8::]:/team/repo:tag", "localhost:/team/repo:tag",
+])
+@pytest.mark.parametrize("command", ["layout", "dry-run", "docker"])
+def test_destination_empty_port_commands_precede_credentials(
+    tmp_path: Path, destination: str, command: str,
+) -> None:
+    """Both push commands reject malformed ports before snapshots, daemon work, credentials or network."""
+    with (
+        patch("regshape.cli.layout.LayoutPushPlan") as plan,
+        patch("regshape.libs.docker.operations.export_image") as export,
+        patch("regshape.libs.transport.client.resolve_credentials") as credentials,
+        patch("regshape.libs.decorators.call_details.requests.request") as network,
+    ):
+        args = (
+            ["docker", "push", "--image", "example:latest"] if command == "docker" else
+            ["layout", "push", "--path", str(tmp_path)]
+        )
+        result = _runner().invoke(regshape, [
+            *args, "--dest", destination, "--no-progress",
+            *(["--dry-run"] if command == "dry-run" else []),
+        ])
+    assert result.exit_code == (1 if command == "docker" else 2)
+    assert "Invalid push destination" in result.stderr
+    assert not result.stdout
+    plan.assert_not_called()
+    export.assert_not_called()
+    credentials.assert_not_called()
+    network.assert_not_called()
+
+
+@pytest.mark.parametrize("destination", [
+    "registry.example:/repo", "[::1]:/repo",
+    "[2001:db8::]:/team/repo:tag", "localhost:/team/repo:tag",
+])
+def test_destination_empty_port_library_precedes_work(destination: str) -> None:
+    """The public Docker push library rejects malformed authorities before any preparation or client."""
+    with (
+        patch("regshape.libs.docker.operations.export_image") as export,
+        patch("regshape.libs.docker.operations.tempfile.mkdtemp") as temporary,
+        patch("regshape.libs.transport.client.resolve_credentials") as credentials,
+        patch("regshape.libs.decorators.call_details.requests.request") as network,
+        pytest.raises(ValueError, match="Invalid push destination"),
+    ):
+        push_image("example:latest", destination)
+    export.assert_not_called()
+    temporary.assert_not_called()
+    credentials.assert_not_called()
+    network.assert_not_called()
 
 
 def test_root_aliases_require_early_digest_and_final_tag(tmp_path: Path) -> None:

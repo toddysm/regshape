@@ -922,6 +922,8 @@ def parse_push_destination(destination: str) -> tuple[str, str, str | None]:
 
     Digest destinations are rejected. An omitted tag returns None, not latest;
     callers that historically default to latest (Docker push) can do so explicitly.
+    A port delimiter requires a nonempty numeric port; bracketed IPv6 literals
+    with no port remain valid, including literals ending in compressed zeroes.
     Invalid input raises ValueError without echoing untrusted reference text.
     """
     if not isinstance(destination, str) or any(
@@ -934,6 +936,7 @@ def parse_push_destination(destination: str) -> tuple[str, str, str | None]:
         if (
             not authority.hostname or authority.username is not None
             or authority.password is not None or authority.path
+            or authority.netloc.endswith(":")
         ):
             raise ValueError("Invalid registry authority")
         _ = authority.port
