@@ -39,6 +39,8 @@ Exact received bytes are stored under their verified SHA-256 or SHA-512 address.
 Unknown fields and descriptor metadata stay in those bytes; documents are never
 reserialized. One generated wrapper descriptor identifies the original root.
 Only a tag source adds `org.opencontainers.image.ref.name` to that wrapper.
+When the root declares `artifactType`, its validated classification is also
+retained on the wrapper descriptor and `ArtifactPullResult.root`.
 
 Each descriptor occurrence is checked, even when its object was already
 downloaded. Different size, media type or document/blob interpretation fails.

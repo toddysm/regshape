@@ -94,6 +94,19 @@ class Edge:
     data: str | None = None
 
 
+def _artifact_type(value: dict[str, Any]) -> str | None:
+    """Validate optional artifact classification without discarding it or requiring a plugin."""
+    if "artifactType" not in value:
+        return None
+    artifact_type = value["artifactType"]
+    if (
+        not isinstance(artifact_type, str) or not artifact_type
+        or any(ord(char) < 33 or ord(char) == 127 for char in artifact_type)
+    ):
+        raise ArtifactError("artifactType must be a nonempty media type")
+    return artifact_type
+
+
 def descriptor(value: Any, *, document: bool, role: str | None = None) -> Edge:
     """Validate integrity/interpretation fields without coercion or path normalization."""
     if not isinstance(value, dict):
@@ -113,6 +126,7 @@ def descriptor(value: Any, *, document: bool, role: str | None = None) -> Edge:
         raise ArtifactError("Descriptor mediaType must be a nonempty media type")
     if document and media_type not in DOCUMENT_TYPES:
         raise ArtifactError("Unsupported required manifest/index media type")
+    _artifact_type(value)
     if "data" in value and not isinstance(value["data"], str):
         raise ArtifactError("Embedded descriptor data must be base64 text")
     if "urls" in value and (
@@ -152,11 +166,20 @@ def embedded_bytes(edge: Edge, limits: ArtifactLimits) -> bytes | None:
     return decoded
 
 
+@dataclass(frozen=True)
+class ParsedDocument:
+    """Validated document interpretation and ordered edges, retaining artifact classification."""
+
+    media_type: str
+    children: tuple[Edge, ...]
+    artifact_type: str | None
+
+
 def parse_document(
     raw: bytes, limits: ArtifactLimits, *, media_type: str | None = None,
     header: str = "",
-) -> tuple[str, tuple[Edge, ...]]:
-    """Resolve agreeing declarations and strict schema-2 shape; return subject-first edges."""
+) -> ParsedDocument:
+    """Resolve declarations/shape and artifact classification, returning subject-first edges."""
     document = strict_json(raw, limits, limits.max_manifest_bytes)
     declarations = [media_type] if media_type is not None else []
     if "mediaType" in document:
@@ -171,6 +194,7 @@ def parse_document(
     effective = declarations[0]
     if type(document.get("schemaVersion")) is not int or document["schemaVersion"] != 2:
         raise ArtifactError("schemaVersion must be integer 2")
+    artifact_type = _artifact_type(document)
     children: list[Edge] = []
     if "subject" in document:
         children.append(descriptor(document["subject"], document=True))
@@ -187,7 +211,7 @@ def parse_document(
             raise ArtifactError("Graph exceeds max_edges")
         children.append(descriptor(document.get("config"), document=False, role="config"))
         children.extend(descriptor(value, document=False, role="layer") for value in document["layers"])
-    return effective, tuple(children)
+    return ParsedDocument(effective, tuple(children), artifact_type)
 
 
 @dataclass(frozen=True)
@@ -286,7 +310,8 @@ def verify_graph(
         children: tuple[Edge, ...] = ()
         media_type = edge.media_type
         if raw is not None:
-            media_type, children = parse_document(raw, limits, media_type=media_type, header=header)
+            parsed = parse_document(raw, limits, media_type=media_type, header=header)
+            media_type, children = parsed.media_type, parsed.children
         edges += len(children)
         if edges > limits.max_edges:
             raise ArtifactError("Graph exceeds max_edges")
@@ -317,13 +342,13 @@ def layout_roots(directory: SafeDirectory, limits: ArtifactLimits) -> tuple[byte
     if marker.get("imageLayoutVersion") != "1.0.0":
         raise ArtifactError("Unsupported imageLayoutVersion")
     raw = directory.read_bytes("index.json", limits.max_manifest_bytes)
-    _, roots = parse_document(raw, limits, media_type=OCI_INDEX)
+    parsed = parse_document(raw, limits, media_type=OCI_INDEX)
     # Wrapper subjects would not be published as artifact roots and have no
     # defined authoring semantics. Reject rather than silently changing meaning.
     wrapper = strict_json(raw, limits, limits.max_manifest_bytes)
     if "subject" in wrapper:
         raise ArtifactError("Local wrapper subjects are unsupported")
-    return raw, roots
+    return raw, parsed.children
 
 
 def validate_directory(path: str, limits: ArtifactLimits) -> VerifiedGraph:

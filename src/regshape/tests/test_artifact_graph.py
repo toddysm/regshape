@@ -142,6 +142,33 @@ def test_empty_documents_and_docker_types(tmp_path: Path, root_type: str) -> Non
     validate_layout(tmp_path / "out", recursive=True)
 
 
+@pytest.mark.parametrize("index_root", [True, False])
+def test_root_artifact_type_preserved_in_wrapper_and_result(tmp_path: Path, index_root: bool) -> None:
+    """Non-image root classification survives both generated metadata and the returned descriptor."""
+    body = json.loads(document(children=[] if index_root else None, config=edge(b"config")))
+    body["artifactType"] = "application/vnd.example.attestation"
+    root = json.dumps(body, indent=4).encode()
+    result = pull_artifact(
+        Registry(root, {address(b"config"): b"config"}), "repo", "moving", tmp_path / "out",
+    )
+    assert result.root.artifact_type == body["artifactType"]
+    wrapper = json.loads((tmp_path / "out" / "index.json").read_bytes())
+    assert wrapper["manifests"][0]["artifactType"] == body["artifactType"]
+    assert (tmp_path / "out" / "blobs" / address(root).replace(":", "/")).read_bytes() == root
+    validate_layout(tmp_path / "out", recursive=True)
+
+
+@pytest.mark.parametrize("value", [None, 42, False, {}, "", "bad\nvalue", "bad value"])
+def test_invalid_root_artifact_type_rejected(tmp_path: Path, value: object) -> None:
+    """Known artifactType metadata is validated instead of silently dropped from a successful result."""
+    body = json.loads(document(children=[]))
+    body["artifactType"] = value
+    root = json.dumps(body).encode()
+    with pytest.raises(ArtifactError, match="artifactType"):
+        pull_artifact(Registry(root), "repo", "moving", tmp_path / "out")
+    assert not list(tmp_path.iterdir())
+
+
 def test_sha512_and_different_reported_root_algorithm(tmp_path: Path) -> None:
     """SHA-512 paths and two root digest algorithms are verified against the same entity."""
     config = b"sha512 config"
@@ -396,6 +423,20 @@ def test_source_reference_preflight(tmp_path: Path, reference: str) -> None:
     registry = Registry(document(children=[]))
     with pytest.raises(ValueError):
         pull_artifact(registry, "repo", reference, tmp_path / "out")
+    assert not registry.calls and not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("authority", [
+    "registry.example?", "registry.example#", "registry.example/path",
+    "registry.example\\path", "user:password@registry.example",
+    "https://registry.example", "registry.example%2fother", "registry.example:invalid",
+])
+def test_registry_authority_preflight(tmp_path: Path, authority: str) -> None:
+    """Even empty query/fragment delimiters are rejected before writes or registry access."""
+    registry = Registry(document(children=[]))
+    registry.config.registry = authority
+    with pytest.raises(ValueError):
+        pull_artifact(registry, "repo", "moving", tmp_path / "out")
     assert not registry.calls and not list(tmp_path.iterdir())
 
 

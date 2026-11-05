@@ -60,12 +60,16 @@ def validate_tag(value: str) -> str:
 def _registry(client: RegistryClient) -> str:
     """Validate the borrowed client's registry authority without credentials or network calls."""
     registry = client.config.registry
-    if not isinstance(registry, str) or any(c.isspace() or ord(c) < 32 for c in registry):
+    if (
+        not isinstance(registry, str)
+        or any(c.isspace() or ord(c) < 32 for c in registry)
+        or any(c in registry for c in "/\\?#%@")
+    ):
         raise ValueError("Invalid registry authority")
     parsed = urlsplit("//" + registry)
     if (
         not parsed.hostname or parsed.username is not None or parsed.password is not None
-        or parsed.path or parsed.query or parsed.fragment or "%" in registry
+        or parsed.path or parsed.query or parsed.fragment
     ):
         raise ValueError("Registry must be an authority without URL/userinfo components")
     try:
@@ -242,11 +246,11 @@ def pull_artifact(
                     progress_callback=observers.root.manifest, output_dir_fd=staging.fd,
                 )
                 staging.register(root_file)
-                media_type, _ = parse_document(
+                parsed_root = parse_document(
                     staging.read_bytes(root_file, policy.max_manifest_bytes), policy,
                     header=received.media_type,
                 )
-                root = Edge(received.digest, received.size, media_type, True)
+                root = Edge(received.digest, received.size, parsed_root.media_type, True)
                 observers.root.digest = root.digest
                 observers.rows[root.digest] = observers.root
                 store.promote(root_file, root.digest)
@@ -280,7 +284,10 @@ def pull_artifact(
                     (root,), store, policy, acquire=acquire,
                     observe=observers.observe, embedded_missing=True,
                 )
-                root_descriptor = Descriptor(root.media_type, root.digest, root.size)
+                root_descriptor = Descriptor(
+                    root.media_type, root.digest, root.size,
+                    artifact_type=parsed_root.artifact_type,
+                )
                 if ":" not in reference:
                     root_descriptor.annotations = {REF_NAME: validate_tag(reference)}
                 wrapper = json.dumps({
