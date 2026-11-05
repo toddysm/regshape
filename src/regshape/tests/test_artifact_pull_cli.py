@@ -7,9 +7,11 @@ command guards remain executable.
 """
 
 import base64
+import errno
 import io
 import json
 import logging
+import os
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -35,6 +37,8 @@ from regshape.libs.artifacts import (
     snapshot_layout,
 )
 from regshape.libs.artifacts.graph import OCI_INDEX, OCI_MANIFEST
+from regshape.libs.artifacts.native import NativeFilesystem
+from regshape.libs.artifacts.storage import SafeDirectory, SafeFile
 from regshape.libs.errors import ArtifactError
 from regshape.libs.transport import RegistryClient, TransportConfig
 from regshape.tests.artifact_fixtures import (
@@ -923,3 +927,116 @@ def test_conflicting_aliases_do_not_construct_a_client(runner: CliRunner, tmp_pa
     assert result.exit_code == 2 and "Conflicting reference options" in result.stderr
     credentials.assert_not_called()
     assert not list(tmp_path.iterdir())
+
+
+class StorageWriteFault:
+    """Borrow a real binary file and fail only its write boundary; delegate cleanup unchanged."""
+
+    def __init__(self, stream: Any, error: OSError) -> None:
+        """Retain the real opened file and exact simulated disk failure."""
+        self.stream, self.error = stream, error
+
+    def write(self, data: bytes) -> int:
+        """Simulate a full disk without accepting any payload bytes."""
+        raise self.error
+
+    def __getattr__(self, name: str) -> Any:
+        """Expose the real file's identity, flush and close for production cleanup."""
+        return getattr(self.stream, name)
+
+
+@_NATIVE
+@pytest.mark.parametrize("stage", ["receive", "metadata", "packaging", "publication"])
+@pytest.mark.parametrize("structured", [False, True])
+def test_operation_owned_filesystem_errors_use_command_diagnostics(
+    runner: CliRunner, tmp_path: Path, stage: str, structured: bool,
+) -> None:
+    """Real command execution formats disk faults while owned cleanup removes incomplete output."""
+    root, objects = _graph("simple", "sha256")
+    console, registry = ArtifactConsole(), ObjectRegistry(root, objects)
+    primary = OSError(errno.ENOSPC, "synthetic disk full")
+    real_fdopen = os.fdopen
+    real_create = SafeDirectory.create_file
+    real_move = NativeFilesystem.move
+
+    def fdopen(fd: int, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+        """Keep real file acquisition/identity, injecting failure only at received-body writes."""
+        stream = real_fdopen(fd, mode, *args, **kwargs)
+        return StorageWriteFault(stream, primary) if stage == "receive" and mode == "wb" else stream
+
+    def create_file(directory: SafeDirectory, name: str) -> SafeFile:
+        """Fail selected metadata/archive file creation without replacing the graph or publication operation."""
+        if (stage == "metadata" and name == "oci-layout") or (stage == "packaging" and name == "output.tar.gz"):
+            raise primary
+        return real_create(directory, name)
+
+    def move(native: NativeFilesystem, source_fd: int, source: str, target_fd: int, target: str) -> None:
+        """Leave native probes intact and fail only installation of the final caller-selected name."""
+        if stage == "publication" and target == "out":
+            raise primary
+        real_move(native, source_fd, source, target_fd, target)
+
+    options = ["--json"] if structured else []
+    if stage == "packaging":
+        options += ["--format", "oci-tar-gzip"]
+    with (
+        patch("os.fdopen", side_effect=fdopen),
+        patch.object(SafeDirectory, "create_file", new=create_file),
+        patch.object(NativeFilesystem, "move", new=move),
+    ):
+        result, send = _invoke(runner, console, registry, tmp_path / "out", options)
+    assert send.called and result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert f"Error [{_SOURCE}]: [Errno {errno.ENOSPC}] synthetic disk full" in console.err.text
+    assert "Traceback" not in console.err.text and console.out.text == ""
+    assert not list(tmp_path.iterdir())
+
+
+@_NATIVE
+@pytest.mark.parametrize("options", [[], ["--json"], ["--no-progress"], ["--telemetry-format", "json"]])
+def test_signed_redirect_transport_failure_never_prints_query_credentials(
+    runner: CliRunner, tmp_path: Path, wire: WireAdapter, options: list[str],
+) -> None:
+    """Requests failures from an actual signed redirect emit only a safe type, never their raw URL message."""
+    config = b"{}"
+    root = document(config=edge(config))
+    signed_url = CDN + "/config?signature=synthetic-signed-secret"
+    wire.reply(BASE + "/v2/source/manifests/moving", 200, root)
+    wire.reply(BASE + "/v2/source/blobs/" + address(config), 307, headers={"Location": signed_url})
+
+    def failed_connection(request: requests.PreparedRequest) -> WireResponse:
+        """Fail at the HTTP adapter boundary with the sensitive URL Requests exceptions can carry."""
+        raise requests.exceptions.SSLError(f"synthetic TLS connection failure for {request.url}")
+
+    wire.routes[CDN + "/config"] = failed_connection
+    console, output, log_path = ArtifactConsole(), tmp_path / "out", tmp_path / "telemetry.log"
+    with (
+        _console_streams(runner, console),
+        patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
+        patch("regshape.cli.artifact.ProgressDisplay", side_effect=console.artifact_display),
+    ):
+        result = runner.invoke(regshape, [
+            "--log-file", str(log_path), "artifact", "pull", "-a", _SOURCE,
+            "-o", str(output), "--time-scenarios", *options,
+        ])
+    assert result.exit_code == 1 and isinstance(result.exception, SystemExit)
+    assert f"Error [{_SOURCE}]: Transport failed (SSLError)" in console.err.text
+    assert console.out.text == "" and not output.exists()
+    diagnostics = console.err.text + log_path.read_text()
+    assert "synthetic-signed-secret" not in diagnostics and signed_url not in diagnostics
+    assert "Traceback" not in diagnostics
+    assert any(_origin(item.url) == _origin(CDN) for item in wire.sent)
+    assert not list(tmp_path.glob(".regshape-*"))
+
+
+@_NATIVE
+def test_request_exception_from_progress_sink_preserves_identity(runner: CliRunner, tmp_path: Path) -> None:
+    """The operation error formatter must not capture a same-typed error raised by the observer sink."""
+    root, objects = _graph("simple", "sha256")
+    console, registry = ArtifactConsole(), ObjectRegistry(root, objects)
+    primary = requests.ConnectionError("synthetic observer sink failure")
+    console.err.failure = primary
+    console.err.failure_when = lambda text: "Downloading" in text
+    result, _ = _invoke(runner, console, registry, tmp_path / "out")
+    assert result.exit_code == 1 and result.exception is primary
+    assert console.out.text == "" and not list(tmp_path.iterdir())

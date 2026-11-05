@@ -19,6 +19,8 @@ from regshape.cli.progress import ProgressDisplay
 from regshape.libs.artifacts import (
     ArtifactFormat,
     ArtifactLimits,
+    ArtifactPhase,
+    ArtifactProgress,
     ArtifactPullResult,
     preflight_artifact_pull,
     pull_artifact,
@@ -31,6 +33,39 @@ from regshape.libs.refs import parse_artifact_ref
 from regshape.libs.transport import RegistryClient, TransportConfig
 
 _DEFAULTS = ArtifactLimits()
+
+
+class _ArtifactCommandFailure(Exception):
+    """Carry a safe expected-operation diagnostic through renderer/scenario cleanup."""
+
+
+class _ArtifactObservers:
+    """Forward observations to the shared renderer and identify caller-owned sink errors.
+
+    Filesystem errors from the operation are formatted by the command; errors
+    thrown by these synchronous callbacks must retain their original identity.
+    """
+
+    def __init__(self, display: ProgressDisplay) -> None:
+        """Borrow one display and start with no failed callback."""
+        self.display = display
+        self.error: BaseException | None = None
+
+    def observe(self, event: ArtifactProgress) -> None:
+        """Forward object bytes/states without wrapping an observer exception."""
+        try:
+            self.display.observe(event)
+        except BaseException as error:
+            self.error = error
+            raise
+
+    def phase(self, event: ArtifactPhase) -> None:
+        """Forward local phases while distinguishing their sink from operation-owned I/O."""
+        try:
+            self.display.artifact_phase(event)
+        except BaseException as error:
+            self.error = error
+            raise
 
 
 def _result_data(result: ArtifactPullResult) -> dict[str, Any]:
@@ -158,7 +193,7 @@ def pull(
             flush_telemetry()
             progress.finish_preparation()
         return result
-    except (ArtifactError, AuthError, BlobError, ManifestError, requests.RequestException) as error:
+    except _ArtifactCommandFailure as error:
         emit_error(image_ref, str(error))
         raise AssertionError("emit_error must exit") from error
 
@@ -168,13 +203,30 @@ def _pull_with_progress(
     ctx: click.Context, registry: str, repo: str, reference: str, output: str,
     output_format: ArtifactFormat, limits: ArtifactLimits, progress: ProgressDisplay,
 ) -> ArtifactPullResult:
-    """Construct the client only after preflight and keep scenario diagnostics inside the display."""
-    client = RegistryClient(TransportConfig(
-        registry=registry, insecure=ctx.obj.get("insecure", False) if ctx.obj else False,
-    ))
-    result = pull_artifact(
-        client, repo, reference, output, output_format=output_format, limits=limits,
-        progress_callback=progress.observe, phase_callback=progress.artifact_phase,
-    )
+    """Format expected operation failures while retaining callback/diagnostic error identity.
+
+    Client creation follows preflight. Only the operation boundary catches
+    filesystem/domain errors; scenario, final-display and result sinks remain
+    outside it. Transport exception messages can contain signed redirect queries,
+    so their command diagnostic includes only the exception type.
+    """
+    observers = _ArtifactObservers(progress)
+    try:
+        client = RegistryClient(TransportConfig(
+            registry=registry, insecure=ctx.obj.get("insecure", False) if ctx.obj else False,
+        ))
+        result = pull_artifact(
+            client, repo, reference, output, output_format=output_format, limits=limits,
+            progress_callback=observers.observe, phase_callback=observers.phase,
+        )
+    except (ArtifactError, AuthError, BlobError, ManifestError, OSError) as error:
+        if observers.error is error:
+            raise
+        message = (
+            f"Transport failed ({type(error).__name__})"
+            if isinstance(error, requests.RequestException)
+            else str(error)
+        )
+        raise _ArtifactCommandFailure(message) from error
     progress.finish_preparation()
     return result

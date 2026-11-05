@@ -158,6 +158,11 @@ the `ArtifactPullResult` field names, the format string and root descriptor wire
 form. A later stdout/diagnostic error exits nonzero and retains complete published
 output; it never rolls publication back. Usage errors exit 2; runtime failures
 and cancellation exit nonzero. No `--part`, `--raw` or `--platform` selector is added.
+Operation-owned filesystem failures use the normal `Error [source]: ...`
+diagnostic after incomplete-output cleanup. Transport failures report only
+`Transport failed (<exception type>)` alongside the source, not raw exception
+messages that may contain signed redirect queries. Observer and post-publication
+diagnostic/result sink exceptions retain their original identity.
 
 `ArtifactPullResult` is returned only after complete publication. Its frozen
 fields are `source`, `resolved_reference`, `root`, `output_path`, `output_format`,
