@@ -2,8 +2,8 @@
 
 <!-- doc-type: overview -->
 
-Artifact runtime delivery reconciled on **2026-11-05 (UTC)** against
-[main at 17eb279](https://github.com/toddysm/regshape/commit/17eb27959570d804ff24f5eda205cfdbbe846ca7).
+Complete artifact delivery reconciled on **2026-11-06 (UTC)** against
+[main at 2b2a4d9](https://github.com/toddysm/regshape/commit/2b2a4d9ebb1c32e373da0ba99c96b9f496f02338).
 The original baseline was captured on 2026-10-30 at
 [ed17d2e](https://github.com/toddysm/regshape/commit/ed17d2eef64da73528998e5c0917dff4e91820c5);
 unchanged capability evidence is retained below, while live progress and
@@ -33,7 +33,7 @@ through [#109](https://github.com/toddysm/regshape/pull/109). Final user documen
 implementation and documentation children are closed and unblocked. This
 inventory close-out records the delivered capability; no release is implied.
 
-Complete artifact download and recursive layout push are **In progress** under
+Complete artifact download and recursive layout push are **Implemented** under
 [#91](https://github.com/toddysm/regshape/issues/91). The
 [approved functional/engineering specification](../specs/cli/artifact-pull.md)
 covers all-platform tag/digest roots, directory/gzip-tar output, config-inclusive
@@ -45,11 +45,12 @@ delivery are merged through [#122](https://github.com/toddysm/regshape/pull/122)
 [#125](https://github.com/toddysm/regshape/pull/125), and
 [#126](https://github.com/toddysm/regshape/pull/126). The final
 [user workflow](guides/artifact-pull.md), [command reference](../specs/cli/artifact.md),
-and [library reference](../specs/operations/artifacts.md) belong to
-[documentation #119](https://github.com/toddysm/regshape/issues/119).
-The feature remains **In progress** until that child merges and the parent
-completes the separate inventory closeout; this documentation update does not
-mark it Implemented or released. Native operations require Linux/macOS with
+and [library reference](../specs/operations/artifacts.md) merged through
+[final documentation #127](https://github.com/toddysm/regshape/pull/127),
+closing [#119](https://github.com/toddysm/regshape/issues/119). All seven required
+design, implementation and documentation children are closed and unblocked.
+This inventory close-out records completion, not release publication.
+Native operations require Linux/macOS with
 compatible filesystems and a trusted private namespace; Windows fails closed.
 Config/layer-position downloads are separately
 **Planned** under [#112](https://github.com/toddysm/regshape/issues/112), not a
@@ -61,7 +62,7 @@ changes. Blob/image live-progress design revision 2 remains in its feature issue
 separate design document. All five required implementation/documentation items
 are closed and no longer dependency-blocked.
 
-**Implemented does not mean released.** Live progress and artifact options target the open
+**Implemented does not mean released.** Live progress, artifact options and complete-artifact operations target the open
 [0.2 milestone](https://github.com/toddysm/regshape/milestone/1); this work did
 not publish a release or change the package version.
 
@@ -100,7 +101,7 @@ the first version of every operation in that row.
 | Live progress for blob get/upload and layout/Docker push | Implemented | [Feature #72](https://github.com/toddysm/regshape/issues/72), merged [#80](https://github.com/toddysm/regshape/pull/80), [#81](https://github.com/toddysm/regshape/pull/81), [#82](https://github.com/toddysm/regshape/pull/82), [#83](https://github.com/toddysm/regshape/pull/83), [#84](https://github.com/toddysm/regshape/pull/84) | [Lightweight design: #72, revision 2](https://github.com/toddysm/regshape/issues/72) | [Developer reference: transfer callbacks](library/transfer-progress.md), [API reference: blobs](../specs/operations/blobs.md) | [How-to: live transfer progress](guides/live-transfer-progress.md) | 2026-11-03 |
 | Artifact-oriented CLI options with compatible legacy aliases | Implemented | [Feature #87](https://github.com/toddysm/regshape/issues/87), merged [#96](https://github.com/toddysm/regshape/pull/96), [#97](https://github.com/toddysm/regshape/pull/97), [#98](https://github.com/toddysm/regshape/pull/98), [#99](https://github.com/toddysm/regshape/pull/99) | [Functional requirements: artifact options](../specs/cli/artifact-options.md#part-i-functional-requirements) | [Engineering design: artifact options](../specs/cli/artifact-options.md#part-ii-engineering-design), [API source: reference parsers](../src/regshape/libs/refs.py) | [How-to: artifact options and migration](guides/artifact-options.md) | 2026-11-04 |
 | Live progress for manifest/index GET | Implemented | [Feature #90](https://github.com/toddysm/regshape/issues/90), merged [library #108](https://github.com/toddysm/regshape/pull/108), [command #109](https://github.com/toddysm/regshape/pull/109) and [final docs #110](https://github.com/toddysm/regshape/pull/110) | [Approved functional requirements](../specs/cli/manifest-progress.md#part-i-functional-requirements) | [Approved engineering design](../specs/cli/manifest-progress.md#part-ii-engineering-design), [Callback reference](library/transfer-progress.md#manifest-receive-observations), [API reference](../specs/operations/manifests.md#get_manifest) | [How-to: manifest/index download](guides/live-transfer-progress.md#download-a-manifest-or-index), [Command reference](../specs/cli/manifest.md#manifest-get) | 2026-11-05 |
-| Complete artifact download, compressed OCI layout and recursive index push | In progress | [Feature #91](https://github.com/toddysm/regshape/issues/91), [runtime merged through #126](https://github.com/toddysm/regshape/pull/126), [final docs #119](https://github.com/toddysm/regshape/issues/119) | [Approved functional requirements](../specs/cli/artifact-pull.md#part-i-functional-requirements) | [Approved engineering design](../specs/cli/artifact-pull.md#part-ii-engineering-design), [library reference](../specs/operations/artifacts.md) | [Complete-artifact workflow](guides/artifact-pull.md), [command reference](../specs/cli/artifact.md) | - |
+| Complete artifact download, compressed OCI layout and recursive index push | Implemented | [Feature #91](https://github.com/toddysm/regshape/issues/91), [runtime merged through #126](https://github.com/toddysm/regshape/pull/126), [final docs #127](https://github.com/toddysm/regshape/pull/127) | [Approved functional requirements](../specs/cli/artifact-pull.md#part-i-functional-requirements) | [Approved engineering design](../specs/cli/artifact-pull.md#part-ii-engineering-design), [API reference](../specs/operations/artifacts.md) | [How-to: complete-artifact workflow](guides/artifact-pull.md), [command reference](../specs/cli/artifact.md) | 2026-11-06 |
 | Config and zero-based layer-content selection from artifact manifests | Planned | [Feature #112](https://github.com/toddysm/regshape/issues/112) | [Captured requirements](https://github.com/toddysm/regshape/issues/112) | - | - | - |
 
 ## Evidence and important boundaries
@@ -227,7 +228,30 @@ The [manifest workflow](guides/live-transfer-progress.md#download-a-manifest-or-
 documents tag/digest, raw, part and file variants, exact row snapshots and
 recovery. Raw output is decoded text, not byte-exact export. Fetching a manifest
 or index does not recursively download its referenced content; full-artifact
-download remains separate [#91](https://github.com/toddysm/regshape/issues/91) work.
+download is separately implemented under [#91](https://github.com/toddysm/regshape/issues/91).
+
+### Complete artifact downloads and round trips
+
+`artifact pull` resolves a tag once or verifies a digest root, preserves original
+manifest/index bytes, and downloads the complete all-platform graph including
+explicit subjects, configuration and layer/content blobs. Shared addresses are
+stored once; reverse referrer discovery and arbitrary external descriptor-URL
+fetches are not performed. The default output is an OCI directory; explicit
+`oci-tar-gzip` output packages the same layout without extracting payloads.
+
+The shared display includes every unique index, manifest and config/layer blob.
+Local packaging/publication is separate from network progress. Suppression and
+structured-output rules preserve stdout/file data. `layout validate --recursive`
+and `layout push` use verified directory/archive snapshots; publication sends
+dependencies and subjects before parents, with root aliases last. These are not
+resume, parallel transfer or registry transaction/rollback features.
+
+Safe native operations require supported Linux/macOS filesystems and the
+documented trusted-private namespace. Windows fails closed. Completed publication
+does not promise power-loss durability; partial remote uploads are not deleted
+on failure. See the [complete workflow and recovery guidance](guides/artifact-pull.md)
+and [API contracts](../specs/operations/artifacts.md) for precise limits,
+input/profile requirements, trust boundaries and compatibility notes.
 
 ### Artifact-oriented options and migration
 
@@ -249,7 +273,7 @@ matrix, old/new spellings, errors and Python usage. This does not implement
 full artifact pull ([#91](https://github.com/toddysm/regshape/issues/91)),
 canonical-reference redesign ([#88](https://github.com/toddysm/regshape/issues/88)),
 or manifest GET progress ([#90](https://github.com/toddysm/regshape/issues/90)).
-Full artifact pull is In progress; canonical-reference redesign remains Planned. Manifest
+Full artifact pull is separately Implemented; canonical-reference redesign remains Planned. Manifest
 GET progress is now separately Implemented under #90; it was not part of the
 artifact-option work.
 
@@ -271,20 +295,26 @@ text in that tracker should not be read as reopening already closed work.
 ## Validation baseline and maintenance
 
 The [test workflow](../.github/workflows/tests.yml) covers Python 3.10, 3.11,
-and 3.12. The final manifest-documentation head
-`690720ee0244e492cd6dd60d05909912a14a90d8` passed
-**2,122 tests per version**, plus **455 minimum-Click 8.1.0 compatibility tests**
-on Python 3.10, in [run 41936151901](https://github.com/toddysm/regshape/actions/runs/41936151901),
+and 3.12. The final artifact-documentation head
+`ecb06871fb0285bf1f5c55b9c308e76988c33041` passed
+**3,140 tests per version**, plus **1,302 minimum-Click 8.1.0 compatibility tests**
+and **1,469 legacy Requests/urllib3 tests** on Python 3.10, in
+[run 42135118482](https://github.com/toddysm/regshape/actions/runs/42135118482),
 with successful Python/Actions CodeQL analyses and current-head agent review.
 Its signed merge has the same tree as the tested head. The existing auth-command
 Click deprecation warning remains unrelated to this feature.
+The same run passed **674 macOS filesystem/command tests** and **266 Windows
+parser/unsupported-platform tests**, with **408 native-operation skips** on
+Windows. Those skips do not establish native Windows support.
 
 Focused production type checks and lint/security baseline comparisons found no
 new findings. Documentation validation checked links, command help, callback
 signatures, exact display snapshots, and executable examples with mocked
-transport. Final manifest documentation verified 146 local links/anchors,
-11 mocked command examples, one standalone observer example and nine exact
-progress/error/cancellation snapshots; 321 targeted local tests also passed.
+transport. Final artifact documentation verified **216 local links/anchors**,
+seven Python and 41 Bash snippets, mocked directory/archive round trips,
+help/signatures/result shapes and actual renderer captures; **414 scoped local
+tests** also passed. Independent security review during graph delivery verified
+the redirected-challenge credential fix; it is not blanket registry/OS certification.
 No documentation builder or Markdown linter is configured. The tests
 mock registry and Docker boundaries; they do not certify every live registry
 or daemon.
