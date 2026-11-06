@@ -1,6 +1,6 @@
 # Complete artifact download and round-trip: requirements and engineering design
 
-- **Status:** Revision 4 publication refinement approved; runtime delivery merged through [#126](https://github.com/toddysm/regshape/pull/126). Final documentation is [#119](https://github.com/toddysm/regshape/issues/119); feature remains In progress pending documentation and separate inventory closeout.
+- **Status:** Implemented; revision 4 publication refinement approved, runtime delivery merged through [#126](https://github.com/toddysm/regshape/pull/126), and final documentation [#119](https://github.com/toddysm/regshape/issues/119) merged through [#127](https://github.com/toddysm/regshape/pull/127). All seven required children are closed.
 - **Feature:** [#91](https://github.com/toddysm/regshape/issues/91).
 - **Design item:** [#113](https://github.com/toddysm/regshape/issues/113).
 - **Related, separate capability:** [#112](https://github.com/toddysm/regshape/issues/112), config/layer-position downloads.
@@ -19,16 +19,17 @@
   trust/platform/filesystem boundaries. The exact final revision-4 file hash has
   **not** separately been reviewed/approved by the owner; retain the revision-3
   hash as historical evidence, not as the hash of this revised text.
-  Delivery continues with hosted checks and agent-only reviews. Parent-controlled
-  protected merges remain required; no release, #112 work or branch cleanup is
-  authorized by this refinement.
+  Delivery completed through hosted checks, agent-only reviews and protected
+  merges. The owner authorized final inventory close-out and feature closure
+  after its verified merge; no release, #112 work or branch cleanup is included.
 
 Open Container Initiative (OCI), command-line interface (CLI), application
 programming interface (API), product requirements document (PRD), engineering
 design document (EDD), and continuous integration (CI) are abbreviated below.
 The text below retains the original requirements/design baseline and its
 prospective language. Runtime items [#114](https://github.com/toddysm/regshape/issues/114)
-through [#118](https://github.com/toddysm/regshape/issues/118) are now merged.
+through [#118](https://github.com/toddysm/regshape/issues/118), and final
+documentation [#119](https://github.com/toddysm/regshape/issues/119), are now merged.
 Use the [delivered command reference](artifact.md),
 [library reference](../operations/artifacts.md), and
 [user workflow](../../docs/guides/artifact-pull.md) for current behavior and
@@ -442,8 +443,9 @@ or resumable transfer engine.
 Part I and #91 capture owner requirements, including the later required archive
 and nested-index push scope. #90 is merged and closed. #112 remains independent;
 #88 is not a new hard dependency. The owner approved revision 3, its limits and interface details and the native
-breakdown. Design #120 is merged; starting Build with #114 is authorized.
-Later implementation merges and delivery items retain their separate gates.
+breakdown. Design #120, all runtime children and final documentation are merged.
+The authorized inventory close-out records completion before feature closure;
+release remains a separate gate.
 
 ### C. Current gaps
 
@@ -1208,14 +1210,12 @@ Markdown linter exists; none is claimed.
 ### O. Next actions and approval gate
 
 Revision 3 and its seven linked children were owner-approved; design #120 and
-raw-manifest delivery #122 are merged. The owner subsequently approved full
+all runtime/documentation deliveries #122-#127 are merged. The owner approved full
 delivery and the [revision-4 publication refinement](https://github.com/toddysm/regshape/issues/91#issuecomment-6666694366).
-Complete #115 with fresh exact-head checks and agent reviews, then continue the
-authorized child sequence. The parent controls protected merges and Epic state;
-this worker cannot merge. Historical revision-3 approval is not an assertion
+Merge the authorized inventory close-out after exact-head checks/reviews, verify
+Implemented on main, then close #91. Historical revision-3 approval is not an assertion
 that the exact final revision-4 text/hash received separate owner review.
-Further material changes require renewed approval. Final docs and inventory
-close-out remain mandatory. No launch, release, package bump, #112 work or branch
+Further material changes require renewed approval. No launch, release, package bump, #112 work or branch
 cleanup is authorized here.
 
 ### P. References
