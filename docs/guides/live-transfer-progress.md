@@ -2,7 +2,7 @@
 
 <!-- doc-type: how-to -->
 
-RegShape displays live progress for Open Container Initiative (OCI) manifest
+RegShape displays live progress for complete-artifact pulls, Open Container Initiative (OCI) manifest
 downloads, blob downloads and uploads, layout pushes, and Docker pushes. Progress is automatic
 on an interactive standard-error terminal; it does not require telemetry flags.
 
@@ -19,8 +19,10 @@ examples; blob-only progress support does not establish manifest support.
   [`regshape auth login`](../../specs/cli/auth.md). Other commands resolve the
   stored credentials automatically.
 - Use an empty working directory for the example files.
-- Output files can contain sensitive artifact metadata. Use new filenames:
-  `--output` overwrites existing files, and failed writes are not rolled back.
+- Output files can contain sensitive artifact metadata. Standalone manifest/blob
+  `--output` can overwrite files, and failed writes are not rolled back.
+  Complete `artifact pull` instead requires a new destination; see its
+  [distinct storage prerequisites and recovery](artifact-pull.md).
 - The shell examples use a Bash-compatible shell and `cmp` for local verification.
 - Docker access is needed only for `docker push`; a completed local layout is
   needed only for `layout push`.
@@ -34,8 +36,9 @@ Use a test repository when trying the examples.
 
 This task saves or inspects **one** manifest/index body while showing its
 Hypertext Transfer Protocol (HTTP) response consumption. It does not recursively
-fetch an index's child manifests, configuration or layer blobs. Full-artifact
-download is [separate work](https://github.com/toddysm/regshape/issues/91).
+fetch an index's child manifests, configuration or layer blobs. For the complete
+graph, use the [artifact pull workflow](artifact-pull.md), including
+[config-inclusive captured progress](artifact-pull.md#progress-captured-screens-not-an-overall-percentage).
 No Docker daemon is required for these registry requests.
 
 ### Save and verify the result

@@ -1,5 +1,7 @@
 # RegShape
 
+<!-- doc-type: overview -->
+
 ![GitHub issues](https://img.shields.io/github/issues-raw/toddysm/regshape?link=https%3A%2F%2Fgithub.com%2Ftoddysm%2Fregshape%2Fissues)
 ![GitHub pull requests](https://img.shields.io/github/issues-pr-raw/toddysm/regshape?link=https%3A%2F%2Fgithub.com%2Ftoddysm%2Fregshape%2Fpulls)
 
@@ -14,8 +16,8 @@
   </sub>
 </p>
 
-RegShape (from **REG**istry re**SHAPE**) is a CLI tool and a Python library for
-manipulating artifacts in an [OCI](https://opencontainers.org) registry. While
+RegShape (from **REG**istry re**SHAPE**) is a command-line interface (CLI) tool and a Python library for
+manipulating artifacts in an [Open Container Initiative (OCI)](https://opencontainers.org) registry. While
 there are many other tools that can do this (see
 [ORAS](https://oras.land),
 [regclient](https://github.com/regclient/regclient), or Google's
@@ -94,8 +96,16 @@ affected commands and unchanged Docker/blob options.
 
 ## Documentation
 
+Development builds targeting 0.2 also support
+[complete artifact download, offline verification, and round-trip push](docs/guides/artifact-pull.md),
+including all platforms and directory/gzip-tar output. **These operations require
+Linux/macOS, a supported filesystem, and a trusted private namespace; Windows
+fails closed.** See the guide's prerequisites before running them. This is not
+a release announcement or the separate planned config/layer-position selector.
+
 ### Guides
 
+- [Complete Artifact Download and Round-trip](docs/guides/artifact-pull.md)
 - [Creating OCI Layouts](docs/guides/create-oci-layout.md)
 - [Docker Desktop Integration](docs/guides/docker-desktop-integration.md)
 - [Live Transfer Progress](docs/guides/live-transfer-progress.md)
@@ -112,6 +122,7 @@ affected commands and unchanged Docker/blob options.
 
 | Command | Spec |
 |---------|------|
+| Artifact Pull | [specs/cli/artifact.md](specs/cli/artifact.md) |
 | Auth | [specs/cli/auth.md](specs/cli/auth.md) |
 | Blob | [specs/cli/blob.md](specs/cli/blob.md) |
 | Catalog | [specs/cli/catalog.md](specs/cli/catalog.md) |
@@ -127,6 +138,7 @@ affected commands and unchanged Docker/blob options.
 
 - [Models](specs/models/) — Blob, Catalog, Error, Manifest, Referrer, Tags
 - [Operations](specs/operations/) — Blobs, Catalog, Manifests, Referrers, Tags
+- [Complete Artifact Library](specs/operations/artifacts.md) — pull, observations, limits, and snapshots
 
 ## Contributing
 

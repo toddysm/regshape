@@ -2,8 +2,8 @@
 
 <!-- doc-type: overview -->
 
-Manifest progress reconciled on **2026-11-05 (UTC)** against
-[main at 79b3c25](https://github.com/toddysm/regshape/commit/79b3c2537cbcf1c19f862c7a9ca3f5d710f2b2b1).
+Artifact runtime delivery reconciled on **2026-11-05 (UTC)** against
+[main at 17eb279](https://github.com/toddysm/regshape/commit/17eb27959570d804ff24f5eda205cfdbbe846ca7).
 The original baseline was captured on 2026-10-30 at
 [ed17d2e](https://github.com/toddysm/regshape/commit/ed17d2eef64da73528998e5c0917dff4e91820c5);
 unchanged capability evidence is retained below, while live progress and
@@ -38,9 +38,20 @@ Complete artifact download and recursive layout push are **In progress** under
 [approved functional/engineering specification](../specs/cli/artifact-pull.md)
 covers all-platform tag/digest roots, directory/gzip-tar output, config-inclusive
 progress and nested-index push round-trip. Design [#120](https://github.com/toddysm/regshape/pull/120)
-is merged, and the owner authorized starting with
-[raw manifest downloads #114](https://github.com/toddysm/regshape/issues/114).
-The full capability is not implemented or released. Config/layer-position downloads are separately
+is merged. Raw receive, graph, archive, recursive push and command/progress
+delivery are merged through [#122](https://github.com/toddysm/regshape/pull/122),
+[#123](https://github.com/toddysm/regshape/pull/123),
+[#124](https://github.com/toddysm/regshape/pull/124),
+[#125](https://github.com/toddysm/regshape/pull/125), and
+[#126](https://github.com/toddysm/regshape/pull/126). The final
+[user workflow](guides/artifact-pull.md), [command reference](../specs/cli/artifact.md),
+and [library reference](../specs/operations/artifacts.md) belong to
+[documentation #119](https://github.com/toddysm/regshape/issues/119).
+The feature remains **In progress** until that child merges and the parent
+completes the separate inventory closeout; this documentation update does not
+mark it Implemented or released. Native operations require Linux/macOS with
+compatible filesystems and a trusted private namespace; Windows fails closed.
+Config/layer-position downloads are separately
 **Planned** under [#112](https://github.com/toddysm/regshape/issues/112), not a
 required child of #91. Both target the open 0.2 milestone.
 
@@ -89,7 +100,7 @@ the first version of every operation in that row.
 | Live progress for blob get/upload and layout/Docker push | Implemented | [Feature #72](https://github.com/toddysm/regshape/issues/72), merged [#80](https://github.com/toddysm/regshape/pull/80), [#81](https://github.com/toddysm/regshape/pull/81), [#82](https://github.com/toddysm/regshape/pull/82), [#83](https://github.com/toddysm/regshape/pull/83), [#84](https://github.com/toddysm/regshape/pull/84) | [Lightweight design: #72, revision 2](https://github.com/toddysm/regshape/issues/72) | [Developer reference: transfer callbacks](library/transfer-progress.md), [API reference: blobs](../specs/operations/blobs.md) | [How-to: live transfer progress](guides/live-transfer-progress.md) | 2026-11-03 |
 | Artifact-oriented CLI options with compatible legacy aliases | Implemented | [Feature #87](https://github.com/toddysm/regshape/issues/87), merged [#96](https://github.com/toddysm/regshape/pull/96), [#97](https://github.com/toddysm/regshape/pull/97), [#98](https://github.com/toddysm/regshape/pull/98), [#99](https://github.com/toddysm/regshape/pull/99) | [Functional requirements: artifact options](../specs/cli/artifact-options.md#part-i-functional-requirements) | [Engineering design: artifact options](../specs/cli/artifact-options.md#part-ii-engineering-design), [API source: reference parsers](../src/regshape/libs/refs.py) | [How-to: artifact options and migration](guides/artifact-options.md) | 2026-11-04 |
 | Live progress for manifest/index GET | Implemented | [Feature #90](https://github.com/toddysm/regshape/issues/90), merged [library #108](https://github.com/toddysm/regshape/pull/108), [command #109](https://github.com/toddysm/regshape/pull/109) and [final docs #110](https://github.com/toddysm/regshape/pull/110) | [Approved functional requirements](../specs/cli/manifest-progress.md#part-i-functional-requirements) | [Approved engineering design](../specs/cli/manifest-progress.md#part-ii-engineering-design), [Callback reference](library/transfer-progress.md#manifest-receive-observations), [API reference](../specs/operations/manifests.md#get_manifest) | [How-to: manifest/index download](guides/live-transfer-progress.md#download-a-manifest-or-index), [Command reference](../specs/cli/manifest.md#manifest-get) | 2026-11-05 |
-| Complete artifact download, compressed OCI layout and recursive index push | In progress | [Feature #91](https://github.com/toddysm/regshape/issues/91), [merged design #120](https://github.com/toddysm/regshape/pull/120), [first delivery #114](https://github.com/toddysm/regshape/issues/114) | [Approved functional requirements](../specs/cli/artifact-pull.md#part-i-functional-requirements) | [Approved engineering design](../specs/cli/artifact-pull.md#part-ii-engineering-design) | - | - |
+| Complete artifact download, compressed OCI layout and recursive index push | In progress | [Feature #91](https://github.com/toddysm/regshape/issues/91), [runtime merged through #126](https://github.com/toddysm/regshape/pull/126), [final docs #119](https://github.com/toddysm/regshape/issues/119) | [Approved functional requirements](../specs/cli/artifact-pull.md#part-i-functional-requirements) | [Approved engineering design](../specs/cli/artifact-pull.md#part-ii-engineering-design), [library reference](../specs/operations/artifacts.md) | [Complete-artifact workflow](guides/artifact-pull.md), [command reference](../specs/cli/artifact.md) | - |
 | Config and zero-based layer-content selection from artifact manifests | Planned | [Feature #112](https://github.com/toddysm/regshape/issues/112) | [Captured requirements](https://github.com/toddysm/regshape/issues/112) | - | - | - |
 
 ## Evidence and important boundaries
