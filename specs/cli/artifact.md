@@ -50,8 +50,12 @@ Source tags must fully match ASCII `[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}`.
 Digests use `sha256:` plus 64 or `sha512:` plus 128 lowercase hex characters.
 References must embed a registry and nonempty repository; URL schemes,
 credentials/userinfo, traversal, backslashes, whitespace/controls, queries,
-fragments, and percent forms are rejected, not sanitized. A registry port must
-be numeric and nonempty; bracketed Internet Protocol version 6 (IPv6) is supported.
+fragments, and percent forms are rejected, not sanitized. A nonempty registry
+port must be numeric and within the parser's port range; bracketed Internet
+Protocol version 6 (IPv6) is supported. Pull preflight currently accepts an empty
+port delimiter, such as `registry.example:/repo:tag` or `[::1]:/repo:tag`;
+do not rely on it rejecting those spellings. In contrast,
+[push destination validation](layout-push.md#reference-resolution) rejects them.
 Destination paths reject parent components and symlinks. Preflight precedes
 credential lookup, but does not reserve the destination; publication repeats
 ownership/collision checks.
@@ -111,8 +115,11 @@ For the captured fixture these counts are respectively `3`, `2`, `2`, `7`,
 are distinct addresses; identical bytes under different algorithms are not
 silently treated as one object.
 
-The result is emitted **after** durable publication, renderer/scenario
+The result is emitted **after** completed publication, renderer/scenario
 diagnostics, and owned log close. Object completion is not artifact completion.
+This is not a crash-durability guarantee: publication does not synchronize files
+and containing directories with `fsync`. A host crash or power loss can therefore
+lose or damage output even after a successful command.
 No terminal controls are written to stdout. Usage failures exit 2; operation
 failure/cancellation exits nonzero (normally 1) without a success result.
 Errors after publication, including stdout/log failure, leave complete output

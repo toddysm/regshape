@@ -328,7 +328,8 @@ Readers must wait for successful completion and validate the output. Directory
 installation is no-replace, but there is **no atomic whole-directory visibility
 guarantee**. Recursive validation/push reject `.regshape-incomplete`. After
 publication, the output is caller-owned; later modification is outside the
-operation's safety guarantee.
+operation's safety guarantee. Publication is not `fsync`-backed crash durability:
+host crash or power loss can lose or damage even successfully published output.
 
 For development builds containing this change, push now always performs strict
 recursive validation. Previously accepted incomplete, malformed, or
