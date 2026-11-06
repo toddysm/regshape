@@ -1,12 +1,17 @@
 # Complete artifact directory/archive downloads and verification
 
-This reference covers the graph/directory implementation of
-[#115](https://github.com/toddysm/regshape/issues/115) and archive delivery
-[#116](https://github.com/toddysm/regshape/issues/116), plus the direct command
-and observation integration of [#118](https://github.com/toddysm/regshape/issues/118),
-under the [approved artifact design](../cli/artifact-pull.md).
+<!-- doc-type: reference -->
+
+This reference covers the delivered complete-artifact library in development
+builds targeting 0.2 (tested Python 3.10–3.12), under the
+[approved artifact design](../cli/artifact-pull.md). It does not assert release
+availability. **Native storage supports Linux/macOS on compatible filesystems;
+Windows is unsupported and fails closed.** The
+[private-namespace trust contract](#safe-storage-and-snapshot-consumers) is a
+prerequisite, not a same-user sandbox.
 Recursive publication is covered by the [layout push reference](../cli/layout-push.md).
-The full user guide remains the separate [#119](https://github.com/toddysm/regshape/issues/119) item.
+See the [complete workflow and executable mock-safe example](../../docs/guides/artifact-pull.md)
+and [command reference](../cli/artifact.md).
 
 ## Python application programming interface
 
@@ -15,18 +20,35 @@ Import `ArtifactError`, `ArtifactFormat`, `ArtifactLimits`, `ArtifactProgress`,
 `ArtifactPullResult`, `preflight_artifact_pull`, `pull_artifact` and
 `DirectorySnapshot`, `ArchiveSnapshot`, and `snapshot_layout` from `regshape.libs.artifacts`.
 
-```python
-result = pull_artifact(
-    client, "team/package", "stable", "/existing/parent/new-layout",
-    limits=ArtifactLimits(max_total_bytes=20 * 1024**3),
-    progress_callback=events.append,
-)
+### Signatures and caller ownership
+
+```text
+pull_artifact(
+    client: RegistryClient, repo: str, reference: str, output_path: str | Path, *,
+    output_format: ArtifactFormat = ArtifactFormat.OCI,
+    limits: ArtifactLimits | None = None,
+    progress_callback: ArtifactProgressCallback | None = None,
+    phase_callback: ArtifactPhaseCallback | None = None,
+) -> ArtifactPullResult
+
+preflight_artifact_pull(
+    registry: str, repo: str, reference: str, output_path: str | Path, *,
+    output_format: ArtifactFormat = ArtifactFormat.OCI,
+    limits: ArtifactLimits | None = None,
+) -> None
+
+snapshot_layout(path: str | Path, *, limits: ArtifactLimits | None = None)
+    -> DirectorySnapshot | ArchiveSnapshot
 ```
 
 The client is borrowed and already configured. Repository/reference and registry
 authority validation happens before network or filesystem writes. The output
 parent must exist. Existing destinations, including empty directories and
 symlinks, are never adopted or overwritten.
+`repo` is the repository within the client's registry; `reference` is a tag or
+full digest, not a complete registry URL. `limits=None` selects `ArtifactLimits()`.
+Callbacks must be callable or `None`; invalid observers raise `TypeError` before
+effects. The library never renders progress.
 
 Command callers use `preflight_artifact_pull(registry, repo, reference, output_path,
 output_format=ArtifactFormat.OCI, limits=None)` **before constructing the client**
@@ -37,14 +59,11 @@ parent. It makes no registry calls and does not reserve the destination.
 
 `ArtifactFormat.OCI` writes a directory. `ArtifactFormat.OCI_TAR_GZIP` writes
 a single gzip member containing a POSIX (Portable Operating System Interface)
-tar archive of exactly the same verified closure at its root:
-
-```python
-result = pull_artifact(
-    client, "team/package", "stable", "/existing/parent/new-layout.tar.gz",
-    output_format=ArtifactFormat.OCI_TAR_GZIP,
-)
-```
+tar archive of exactly the same verified closure at its root. Use the enum,
+not a filename extension, to select it. The
+[runnable example](../../docs/guides/artifact-pull.md#try-the-workflow-without-a-registry)
+constructs the client, callbacks, budgets and safe temporary outputs for both
+formats without credentials or network access.
 
 The archive contains `oci-layout`, `index.json`, then digest paths in lexical
 order; no enclosing directory, payload extraction, credentials or staging files.
@@ -62,7 +81,8 @@ traversed. Subjects precede index/config/layer children. No reverse referrers
 discovery or direct fetching of descriptor URLs occurs. Content must be
 available from the registry or valid embedded descriptor data.
 
-Exact received bytes are stored under their verified SHA-256 or SHA-512 address.
+Exact received bytes are stored under their verified Secure Hash Algorithm
+(SHA-256 or SHA-512) address.
 Unknown fields and descriptor metadata stay in those bytes; documents are never
 reserialized. One generated wrapper descriptor identifies the original root.
 Only a tag source adds `org.opencontainers.image.ref.name` to that wrapper.
@@ -95,6 +115,9 @@ integer. Defaults:
 | `max_archive_entries` | 200,010 |
 | `max_archive_metadata_bytes` | 64 KiB |
 
+KiB, MiB and TiB mean kibibytes (1024 bytes), mebibytes (1024² bytes), and
+tebibytes (1024⁴ bytes). These are independent policy caps, not available-space
+guarantees. Boolean, zero, negative and noninteger values raise `ValueError`.
 Archive limits apply independently: input bytes include gzip header/trailer;
 expanded bytes include every tar header/padding/end byte; entries include raw
 directory and extension headers. Gzip headers include all optional fields and
@@ -114,6 +137,22 @@ root has one stable `transfer_id` before its digest/type is known. Every unique
 address has one identity; shared config/layer roles retain the first encountered
 role. `source` distinguishes network, embedded and local work.
 
+| `ArtifactProgress` field | Type / default | Contract |
+| --- | --- | --- |
+| `transfer_id` | `str`, required | Nonempty stable invocation/object identity; root keeps it across kind/digest discovery |
+| `kind` | `str`, required | `unknown`, `index`, `manifest`, `blob` |
+| `phase` | `str`, required | `preparing`, `transferring`, `received`, `verifying`, `stored`, `skipped`, `failed`, `cancelled` |
+| `digest` | `str \| None`, required | Unknown initially, otherwise strict lowercase SHA-256/SHA-512 address |
+| `role` | `str \| None`, required | `config`, `layer`, or `None`; first encountered role, not identity |
+| `bytes_completed` | `int`, required | Nonnegative absolute bytes in the current attempt |
+| `total_bytes` | `int \| None`, required | Nonnegative total or unknown; count cannot exceed a present total |
+| `attempt` | `int = 1` | At least one; boolean counters are invalid |
+| `source` | `str = "network"` | `network`, `embedded`, or `local` |
+
+`ArtifactProgressCallback = Callable[[ArtifactProgress], None]`.
+Invalid event values raise `ValueError`. Counters are not deltas or aggregate
+artifact totals; embedded/local counts are not network bytes.
+
 `received` is not `stored`: parsing, integrity checks and safe storage still must
 succeed. No library code renders a terminal. Observer exceptions propagate
 unchanged, including immutable exceptions and cancellation. Further notifications
@@ -127,8 +166,13 @@ publication phase. Callbacks run synchronously before that work and may abort it
 with their original exception; neither notification asserts success or carries
 invented network bytes. Completed object observations remain complete during
 these local phases.
+`ArtifactPhase` is a string enum (`PACKAGING = "packaging"`,
+`PUBLISHING = "publishing"`), and
+`ArtifactPhaseCallback = Callable[[ArtifactPhase], None]`. These additive hooks
+do not change `ManifestProgress`, `TransferProgress`, or standalone blob/manifest
+semantics. See the [callback reference](../../docs/library/transfer-progress.md).
 
-### Direct command reference
+### Command integration
 
 ```text
 regshape artifact pull --artifact registry.example/team/package:stable --output ./new-layout
@@ -143,6 +187,8 @@ to `oci`, regardless of suffix. `--max-manifest-bytes`, `--max-objects`,
 above. Existing telemetry flags and global `--log-file` remain supported.
 Native publication supports Linux/macOS, not Windows, under the trust
 preconditions below.
+The [canonical command reference](../cli/artifact.md) includes exact source
+validation, option defaults, human output order, and JSON field types.
 
 Interactive stderr uses the shared renderer for one retained row per unique
 index, manifest or blob, including tiny configs; unknown-root kind/digest discovery
@@ -171,6 +217,11 @@ fields are `source`, `resolved_reference`, `root`, `output_path`, `output_format
 existing mutable `Descriptor` value type. Counts are unique addresses except
 reused references. Byte counts exclude generated metadata and unsuccessful
 attempts; downloaded bytes also exclude embedded data.
+`source`, `resolved_reference`, and absolute `output_path` are strings;
+`output_format` is `ArtifactFormat`; all counters are integers. JSON uses
+`root.to_dict()` (camel-case descriptor wire keys) and `output_format.value`.
+The [exact field table](../cli/artifact.md#completed-output) includes all
+thirteen fields; there is no partial result on failure.
 
 ## Safe storage and snapshot consumers
 
@@ -257,7 +308,7 @@ After exit the private files/handles are unavailable.
 `graph.roots` contains normalized graph edges, **not** complete original root
 descriptor metadata. Consumers needing platform/annotation/tag/unknown fields
 must interpret the bounded original `wrapper_bytes`, not reconstruct them from
-normalized edges. This is the source contract for the subsequent push delivery.
+normalized edges. This is the source contract used by recursive push.
 
 Import first spools one gzip member with bounded compressed reads and bounded
 deflate output. It verifies the optional header checksum, trailer cyclic
@@ -320,7 +371,23 @@ regshape layout validate --path ./layout.tar.gz --recursive --max-archive-input-
 Available limits are `--max-manifest-bytes`, `--max-objects`, `--max-depth`,
 `--max-total-bytes`, `--max-archive-bytes` and `--max-archive-input-bytes`.
 Without `--recursive`, supplying any limit is a usage error and archive input is
-rejected. The artifact pull command and recursive push are separate deliveries.
+rejected. Pull and push use the strict recursive rules; the shallow default
+does not establish complete-artifact integrity.
+
+### Error contract
+
+Invalid source/policy syntax raises `ValueError`; invalid callback types
+raise `TypeError`. Graph, archive-profile and storage-policy failures raise
+`ArtifactError`, as does an unsupported output format. Invalid destination
+syntax may raise `ValueError`; unsafe parent components raise `ArtifactError`.
+Transport/authentication/manifest/blob errors retain their
+existing exception classes; filesystem operations may raise `OSError`.
+Synchronous observer exceptions and cancellation propagate unchanged.
+Cleanup preserves the primary failure, reporting secondary failures/retained
+storage rather than claiming successful removal. After publication, a close,
+diagnostic, or caller-output failure leaves the complete artifact intact.
+Consumers must distinguish that boundary rather than retrying into an existing
+destination or assuming a nonzero command exit means no output exists.
 
 ## Additive receive hooks
 

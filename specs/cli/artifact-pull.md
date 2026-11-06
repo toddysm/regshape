@@ -1,6 +1,6 @@
 # Complete artifact download and round-trip: requirements and engineering design
 
-- **Status:** Revision 4 publication refinement approved; revised text/implementation under pull-request review.
+- **Status:** Revision 4 publication refinement approved; runtime delivery merged through [#126](https://github.com/toddysm/regshape/pull/126). Final documentation is [#119](https://github.com/toddysm/regshape/issues/119); feature remains In progress pending documentation and separate inventory closeout.
 - **Feature:** [#91](https://github.com/toddysm/regshape/issues/91).
 - **Design item:** [#113](https://github.com/toddysm/regshape/issues/113).
 - **Related, separate capability:** [#112](https://github.com/toddysm/regshape/issues/112), config/layer-position downloads.
@@ -26,8 +26,15 @@
 Open Container Initiative (OCI), command-line interface (CLI), application
 programming interface (API), product requirements document (PRD), engineering
 design document (EDD), and continuous integration (CI) are abbreviated below.
-All new command shapes, events, limits and output below are **approved design contracts**,
-not descriptions of already implemented functionality.
+The text below retains the original requirements/design baseline and its
+prospective language. Runtime items [#114](https://github.com/toddysm/regshape/issues/114)
+through [#118](https://github.com/toddysm/regshape/issues/118) are now merged.
+Use the [delivered command reference](artifact.md),
+[library reference](../operations/artifacts.md), and
+[user workflow](../../docs/guides/artifact-pull.md) for current behavior and
+captured output. Section 7A remains explicitly illustrative design output,
+not a captured implementation transcript. This delivery-status update does not
+change technical contracts or replace the historical approval/hash evidence.
 
 > **Revision 2 approval note:** Review exposed a gap between excluding subjects
 > and promising a self-contained round-trip. The approved design follows explicit
@@ -37,7 +44,8 @@ not descriptions of already implemented functionality.
 
 Revision 3 closes review gaps in output-path identity, compressed-input/gzip
 budgets, layout-marker buffering and publication-tag validation. These are
-mandatory safety constraints, not claims that the implementation already exists.
+mandatory safety constraints; implementation status is recorded above rather
+than inferred from this original design wording.
 
 > **Revision 4 approval note:** `mkdir` followed by `stat/open` in an exposed
 > namespace cannot prove creation ownership: replacement before the first

@@ -12,6 +12,14 @@ that include it, not necessarily the latest published package. The project
 requires Python 3.10 or newer; confirm the installed function signatures expose
 the keywords below.
 
+For complete-artifact downloads, use the additive
+[`ArtifactProgress` and `ArtifactPhase` callbacks](../../specs/operations/artifacts.md#observations-and-result).
+They preserve one root identity across discovery, include config blobs, and
+separate network object observations from local packaging/publication. They do
+not change the standalone events below. The
+[mock-safe round-trip example](../guides/artifact-pull.md#try-the-workflow-without-a-registry)
+shows both callbacks.
+
 ## Imports and supported operations
 
 ```python

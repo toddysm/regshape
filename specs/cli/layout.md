@@ -1,5 +1,7 @@
 # CLI: `layout`
 
+<!-- doc-type: reference -->
+
 ## Overview
 
 The `layout` command group creates and manages
@@ -8,8 +10,12 @@ on the local filesystem. An OCI Image Layout is a directory that stores
 manifests, configs, and layer blobs content-addressed under `blobs/sha256/`,
 with a top-level `oci-layout` marker and an `index.json` as the entry point.
 
-`layout` operates entirely on the local filesystem — no registry or network
-connection is required.
+Authoring and validation operate on the local filesystem. The separately
+documented [`layout push`](layout-push.md) performs registry operations unless
+`--dry-run` is selected. Development builds targeting 0.2 add
+[complete-artifact directory/archive workflows](../../docs/guides/artifact-pull.md).
+**Recursive validation and push require Linux/macOS, compatible native
+filesystems, and the trusted-private namespace contract; Windows fails closed.**
 
 ### Primary Workflow
 
@@ -33,6 +39,7 @@ regshape layout update config             [OPTIONS]
 regshape layout status                    [OPTIONS]
 regshape layout show                      [OPTIONS]
 regshape layout validate                  [OPTIONS]
+regshape layout push                      [OPTIONS]
 ```
 
 `add`, `annotate`, `generate`, and `update` are subgroups of `layout`.
@@ -817,19 +824,40 @@ regshape layout show --path ./my-image
 
 ### `layout validate`
 
-Validate the structural and content integrity of an OCI Image Layout.
+Validate an OCI layout. The default is the existing shallow check; use
+`--recursive` to verify every reachable index, manifest, config, layer, and
+explicit subject in a directory or supported gzip-tar archive. The recursive
+path creates a private verified snapshot and does not modify the source.
+It requires the [native storage/trust prerequisites](../../docs/guides/artifact-pull.md#before-you-start-supported-storage-and-trust).
 
 #### Options
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--path` | `-p` | path | required | Root directory of an OCI Image Layout to validate |
+| `--path` | `-p` | path | required | Directory, or supported archive with `--recursive` |
+| `--recursive` | | flag | false | Verify the complete graph, not just the shallow structure |
+| `--max-manifest-bytes` | | positive integer | 16777216 | Per-document/wrapper cap |
+| `--max-objects` | | positive integer | 100000 | Unique content addresses |
+| `--max-depth` | | positive integer | 64 | Root depth zero |
+| `--max-total-bytes` | | positive integer | 1099511627776 | Unique content bytes |
+| `--max-archive-bytes` | | positive integer | 2199023255552 | Expanded tar stream |
+| `--max-archive-input-bytes` | | positive integer | 2199023255552 | Compressed gzip input |
+
+Defaults in the table are the effective recursive policy. Supplying any limit
+without `--recursive` is a usage error; archive input without it is rejected.
+There is **no `--json` option** on `layout validate`. Shared telemetry flags
+remain available; see installed `--help`.
 
 #### Behaviour
 
-1. Call `validate_layout(layout)` from `libs/layout/operations.py`.
+1. Call `validate_layout(layout_path, *, recursive=False, limits=None)` from
+   [layout operations](../../src/regshape/libs/layout/operations.py), using
+   recursive policy only when requested.
 2. If no error is raised, print a success message and exit 0.
-3. On `LayoutError`, print the error and exit 1.
+3. On `LayoutError`, `ArtifactError`, or filesystem failure, print the error and
+   exit 1. Recursive validation rejects incomplete markers, missing/corrupt
+   objects, unsafe paths/archives, unsupported required documents, and exhausted
+   budgets; it does not fetch missing content.
 
 #### Output (plain text)
 
@@ -847,13 +875,16 @@ Error: blob sha256:deadbeef... referenced by index.json does not exist
 
 | Code | Meaning |
 |------|---------|
-| 0 | Layout is structurally valid and all digests match |
-| 1 | Structural violation or digest mismatch found |
+| 0 | Selected validation mode succeeded; only recursive mode establishes full closure integrity |
+| 1 | Validation, archive, budget, or filesystem failure |
+| 2 | Invalid command usage, including limits without `--recursive` |
 
 #### Examples
 
 ```bash
 regshape layout validate --path ./my-image
+regshape layout validate --path ./downloaded-layout --recursive
+regshape layout validate --path ./downloaded.tar.gz --recursive --max-depth 64
 ```
 
 ---

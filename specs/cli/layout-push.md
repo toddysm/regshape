@@ -1,5 +1,7 @@
 # CLI: `layout push`
 
+<!-- doc-type: reference -->
+
 ## Overview
 
 The `layout push` command pushes a complete Open Container Initiative (OCI)
@@ -9,6 +11,11 @@ configuration and layer before credentials or network calls. Nested indexes
 retain all platforms; original document bytes and identities are never rewritten.
 See the [complete artifact design](artifact-pull.md#d7-recursive-layout-push-and-existing-surfaces)
 for the approved publication contract.
+This reference describes development builds targeting 0.2, not release
+availability. **Linux/macOS and compatible native filesystems are required;
+Windows fails closed.** Read the
+[private-namespace prerequisites, space budgets, and recovery guidance](../../docs/guides/artifact-pull.md)
+before planning or uploading.
 
 `layout push` is the natural next step after building a layout with the
 `init → add layer → generate config → generate manifest` pipeline. It bridges
@@ -80,7 +87,7 @@ by other regshape commands:
 | `--dest` value | Registry | Repo | Tag / Reference |
 |----------------|----------|------|-----------------|
 | `registry.io/myrepo/myimage` | `registry.io` | `myrepo/myimage` | Taken from the manifest's `org.opencontainers.image.ref.name` annotation; if absent, falls back to the manifest digest |
-| `registry.io/myrepo/myimage:v1.0` | `registry.io` | `myrepo/myimage` | `v1.0` (overrides the annotation for single-manifest layouts) |
+| `registry.io/myrepo/myimage:v1.0` | `registry.io` | `myrepo/myimage` | `v1.0` (overrides the annotation for single-root layouts, including index roots) |
 
 ### Multi-manifest layouts
 
@@ -111,6 +118,9 @@ An absent digest header is allowed after verification of the submitted payload.
 Strict source operations require the Linux/Darwin native safe-filesystem backend
 and a trusted private namespace. Windows fails closed. This is not isolation
 from hostile processes with the same user identity or root privileges.
+The [source snapshot/archive contract](../operations/artifacts.md#safe-storage-and-snapshot-consumers)
+specifies no-follow handles, native operations, independent input/metadata caps,
+and system temporary-parent requirements. The original source is not modified.
 
 Errors do not delete uploaded remote content. A lost final root response reports
 **outcome uncertain**: the registry may already have committed it; explicitly
@@ -132,6 +142,13 @@ predict which blobs already exist:
 ```
 
 Digests and sizes are formatted the same way as in the normal push output.
+
+With `--dry-run --json`, the exact top-level keys are `dry_run` (true),
+`layout_path` (string), `destination` (registry/repository string, without the
+override tag), and `manifests` (ordered publication list). Each publication has
+`digest`, `reference`, `media_type`, and `blobs`; each blob has `digest`, `size`,
+and `media_type`. Index publications have an empty `blobs` list. There are no
+`action`, `status`, or acknowledged `summary` fields in a dry-run result.
 
 ---
 
@@ -171,6 +188,13 @@ counters and legacy callbacks retain their occurrence-based skip semantics,
 including repeated references across manifests; live counters are unique.
 
 ### JSON (`--json`)
+
+The following is an illustrative schema example with abbreviated, non-runnable
+digests. For executable real-operation captures without a registry, use the
+[mock-safe workflow](../../docs/guides/artifact-pull.md#try-the-workflow-without-a-registry).
+`destination` is the registry/repository without a tag; each `reference` records
+the exact tag/digest publication. `manifests` also includes indexes and required
+aliases, in publication order.
 
 ```json
 {
@@ -219,8 +243,9 @@ including repeated references across manifests; live counters are unique.
 
 | Code | Meaning |
 |------|---------|
-| 0 | All manifests and blobs pushed successfully |
+| 0 | All planned document publications acknowledged, or local dry-run completed (not uploaded) |
 | 1 | Validation failure, authentication error, blob upload error, manifest push error, or I/O error |
+| 2 | Invalid command usage or destination syntax |
 
 ---
 
@@ -228,13 +253,16 @@ including repeated references across manifests; live counters are unique.
 
 | Scenario | Message |
 |----------|---------|
-| Layout not valid | `Error: layout validation failed: <details>` |
-| No manifests in index | `Error: index.json contains no manifests; run 'layout generate manifest' first` |
-| Tag supplied with multi-manifest index | `Error: --dest includes a tag but index.json has <N> manifests; omit the tag or push a single-manifest layout` |
-| Auth failure | `Error: authentication failed for <registry>: <details>` |
-| Blob upload failure | `Error: failed to upload blob <digest>: <details>` |
-| Manifest push failure | `Error: failed to push manifest <digest>: <details>` |
-| Missing blob on disk | `Error: blob <digest> referenced by manifest <manifest-digest> not found in layout` |
+| No top-level roots | `index.json contains no manifests` |
+| Tag override with multiple roots | `tag override supplied but index.json has <N> manifests`, with `omit the tag or push a single-root layout` |
+| Digest-qualified/URL-like destination | `Push destination must be registry/repository[:tag], not a digest or URL` |
+| Lost final root response | `Root publication outcome uncertain; verify the destination before retrying` |
+
+These are diagnostic message fragments, not fabricated full terminal captures.
+The command prefixes operation failures with safe destination context through
+its normal error formatter. Graph, archive, budget, authentication and upload
+errors retain their stage-specific detail; do not infer remote rollback from
+any failure message.
 
 ---
 
@@ -300,7 +328,7 @@ regshape layout generate manifest \
   --path ./my-image --ref-name latest
 
 # Validate before pushing
-regshape layout validate --path ./my-image
+regshape layout validate --path ./my-image --recursive
 
 # Push to registry
 regshape layout push \
@@ -315,7 +343,17 @@ regshape layout push \
 The command and library share planning/execution in
 [src/regshape/libs/layout/operations.py](../../src/regshape/libs/layout/operations.py):
 
-### `push_layout(layout_path, client, repo, tag_override, force, chunked, chunk_size, progress_callback, *, transfer_callback=None, limits=None) -> PushResult`
+### `push_layout`
+
+```text
+push_layout(
+    layout_path: str | Path, client: RegistryClient, repo: str,
+    tag_override: str | None = None, force: bool = False,
+    chunked: bool = False, chunk_size: int = 65536, progress_callback=None, *,
+    transfer_callback: ProgressCallback | None = None,
+    limits: ArtifactLimits | None = None,
+) -> PushResult
+```
 
 **Parameters:**
 
@@ -351,6 +389,24 @@ layer-then-config `blobs`, and `root_reference`. The executor borrows the active
 plan/client and does not close either. Use the context's snapshot store, never
 the original input path; exit releases private storage even on observer errors.
 These helpers are available from the operations module for command integration.
+
+```text
+LayoutPushPlan(
+    layout_path: str | Path, tag_override: str | None = None, *,
+    limits: ArtifactLimits | None = None,
+) -> None
+
+execute_layout_push(
+    plan: LayoutPushPlan, client: RegistryClient, repo: str, *,
+    force: bool = False, chunked: bool = False, chunk_size: int = 65536,
+    progress_callback=None, transfer_callback: ProgressCallback | None = None,
+) -> PushResult
+```
+
+`LayoutPushPlan` is a constructor; enter it before constructing a client when
+credential-free local preflight is required. `push_layout` instead borrows an
+already constructed client. See the
+[executable directory/archive example](../../docs/guides/artifact-pull.md#try-the-workflow-without-a-registry).
 
 **Raises:**
 
