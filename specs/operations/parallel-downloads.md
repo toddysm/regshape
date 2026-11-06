@@ -1,6 +1,6 @@
 # Parallel artifact and ranged blob downloads: requirements and engineering design
 
-- **Status:** Draft revision 3; awaiting owner approval. No runtime implementation.
+- **Status:** Draft revision 4; awaiting owner approval. No runtime implementation.
 - **Feature:** [#131](https://github.com/toddysm/regshape/issues/131).
 - **Design item:** [#132](https://github.com/toddysm/regshape/issues/132).
 - **Target:** [0.2](https://github.com/toddysm/regshape/milestone/1), not a release commitment.
@@ -21,7 +21,11 @@ these directions and the two-item split: preserve omitted-option custom-client
 calls, expose a genuine legacy transport path, enable three bounded modern
 retries by default, and separate coordinator, public APIs and renderer work.
 Approval of those directions is not approval to merge this exact revision or
-start runtime implementation. The reopened validator question is unchanged.
+start runtime implementation. Revision 4 adds the owner's confirmed decision
+to abandon an ETag (entity tag)-changed range attempt, fall back once to a full
+download, and surface a warning after the operation finishes. This supersedes
+the previously proposed changed-ETag hard failure; exact-design/merge and
+runtime implementation approval remain separate.
 
 ## Part I: product requirements
 
@@ -80,6 +84,9 @@ corruption. The new downloader identifies missing validators or ignored ranges,
 uses full streaming, and reports a bounded reason summary. The artifact still
 benefits from independent-blob parallelism. The operator does not have to
 misclassify optional metadata as an OCI violation or scrape thousands of notices.
+If an established ETag changes, the downloader discards the ranged attempt and
+verifies a fresh full download. A post-download warning makes that recovery
+visible even with progress disabled or JSON output selected.
 
 **S4 - Automation operator handling a failed copy.** An unattended copy can
 currently leave partial standalone output, and a byte count alone does not say
@@ -119,7 +126,7 @@ retains the original caller retry policy rather than receiving this new default.
 | --- | --- |
 | R1 | Concurrent independent config/layer blobs for complete artifacts, with deduplication and unchanged graph/layout/archive semantics. |
 | R2 | Concurrent ranged downloads of a single blob, shared by artifact pull and blob get, with full size/digest verification. |
-| R3 | OCI/HTTP-compliant negotiation, response validation, consistency and explicit full-stream fallback. |
+| R3 | OCI/HTTP-compliant negotiation, response validation, consistency and explicit full-stream fallback; an ETag change triggers one clean fallback and a user-visible post-download warning. |
 | R4 | One operation-wide concurrency bound; bounded queued work, memory and temporary range storage. |
 | R5 | Default pooled C=4/W=1, sequential scheduling and genuine legacy-transport opt-outs, omitted-option custom-client compatibility, unchanged results/buffer meaning, and shared scoped credentials in pooled mode. |
 | R6 | Public batch/diagnostic SDK access, caller-thread observers, interleaved stable CLI rows, truthful progress, cancellation and ownership-safe cleanup. |
@@ -255,6 +262,49 @@ The summary appears after transfer/cleanup, including failure where available;
 it is never a success indicator. Structured status events remain per blob even
 when CLI notices are coalesced. Diagnostics still appear with `--no-progress`
 and artifact `--json`, on stderr only, without modifying result JSON.
+
+**Changed-ETag recovery has a deferred warning, not just a live fallback notice.**
+After an established ETag changes, discard the old attempt and use D4/D5's
+one-time full-stream fallback. For a successful standalone blob download,
+including verify-only, emit the unchanged JSON result above, flush stdout, and
+then print this literal warning on stderr:
+
+```text
+Warning: ETag changed during ranged download of sha256:facb58ac139bf9fc0e1f8b1f147003236b1b69e84f3a4c94166fa66f18f89932; restarted as a full-stream download and verified the digest.
+```
+
+For a successful artifact pull, emit/flush its unchanged text or JSON result
+after complete graph verification/publication, then print one count-based
+warning per invocation, for example:
+
+```text
+Warning: ETag changed for 2 blobs; restarted them as full-stream downloads and verified their digests.
+```
+
+Do not print this warning while ranges or the replacement download are active.
+Close progress, finish worker/output cleanup, and report the final result before
+the warning. It is always visible at normal verbosity, including `--no-progress`,
+artifact `--json`, redirected output and NO_COLOR; it is not verbose-only or
+conditional on an interactive terminal. Keep it on stderr, never in successful
+JSON or existing result fields. Count unique affected transfers, not parts or
+reused artifact references; retain bounded counters rather than unbounded
+per-blob messages. Existing fallback summaries may include the same count, but
+must not produce another ETag warning or an immediate ETag notice.
+
+On failure/cancellation, retain the original error and exit behavior, and report
+the warning after cleanup/error reporting without asserting successful
+verification. The standalone wording is:
+
+```text
+Warning: ETag changed during ranged download; a full-stream fallback was attempted, but the operation did not complete.
+```
+
+Artifact warnings use the affected-blob count with the same attempted/not-complete
+outcome. Never invoke an already failed observer/diagnostic sink to deliver a
+warning, or replace the original failure with a success-shaped report. Use fixed
+safe text and a validated digest/count; do not include raw ETags, server-controlled
+messages, authenticated URLs or credentials. SDK status delivery is defined in
+PM-2 so integrations can present the same final warning without scraping logs.
 
 Proposed S4/S6 failure examples use the artifact reference above. Exact OS error
 wording may vary; statuses and channel/exception contracts do not:
@@ -439,7 +489,10 @@ ranged parts use private bounded spools and ordered assembly. Only the invoking
 thread calls observers, updates rendering, and promotes/publishes artifact
 storage. HTTP range support is optional under OCI, so capability
 limitations explicitly select a full-stream strategy. Invalid protocol responses
-or corrupt content fail rather than being hidden as capability fallback. A
+or corrupt content fail rather than being hidden as capability fallback.
+A changed ETag abandons the current ranged attempt, selects one clean full
+download, and produces a post-operation warning rather than failing solely on
+validator rotation. A
 strong HTTP validator binds parts before their bytes are combined, and the final
 blob is always verified against its requested content digest. Object downloads
 default to four slots with an explicit sequential escape hatch; existing
@@ -477,6 +530,7 @@ proposes changing default object scheduling while retaining opt-in ranges.
 | OCI Distribution v1.1.1, digests | Digest verification is SHOULD. Docker-Content-Digest is recommended; using it requires verification. | Always verify the requested full digest. Do not require this optional header or mistake a full-object digest header for a chunk hash. |
 | RFC 9110 sections 14 and 15.3.7 | Byte offsets are zero-based/inclusive; Accept-Ranges is advisory; 206 parts carry Content-Range. Invalid Content-Range must not be recombined. | Validate each part and count before accepting it; never put a 200 full body in a range slot. |
 | RFC 9110 section 15.3.7.3 | Partial responses can be combined when they share the same strong validator. | Require the same strong ETag for every part. Strong Last-Modified validation is not implemented in this first version; otherwise use full GET. |
+| RFC 9110 section 13.1.5 | If-Range mismatch causes the server to ignore Range and return the full representation, not a required 412 failure. | A changed established ETag, including a valid late 200, abandons the ranged attempt and selects one clean full GET. Never combine different attempts; verify the requested size/digest and warn after completion. |
 | OCI Image Spec v1.1.1, descriptors/manifest | Descriptors identify raw size/digest; layer arrays retain stack order. | Verify size/digest, preserve bytes and ordering, but allow transfer completion out of order. |
 | OCI Distribution, chunked uploads | Upload session chunks are sent in order using POST/PATCH/PUT. | Not a restriction on download scheduling; no upload code changes. |
 
@@ -487,7 +541,7 @@ Concurrency values, thresholds, queue bounds and retry policy are not OCI mandat
 #### D2. Component boundary and flow
 
 Audience: maintainers deciding how both command paths share one scheduler.
-The diagram shows the **proposed revision-3 pooled runtime**, not the current
+The diagram shows the **proposed revision-4 pooled runtime**, not the current
 runtime. Explicit/compatibility legacy selection bypasses this whole worker
 context and uses the retained serial path described in D6/N.
 Arrows describe work/data flow, not source imports.
@@ -605,28 +659,41 @@ the same numeric N and strong ETag, a range within the request, and exactly the
 declared number of body bytes. Pre-write checks enforce both part and blob caps.
 Parse numeric metadata with bounded decimal length and a 0..2^63-1 client limit
 before arithmetic; reject overflow explicitly rather than allocating from it.
-Unknown units, impossible bounds, contradictory lengths, encoding/validator
+Unknown units, impossible bounds, contradictory lengths, encoding
 changes, oversized/truncated bodies and unsolicited multipart responses fail.
+An observed ETag change follows the explicit strategy fallback below; it does
+not excuse independently malformed headers or an observed invalid body.
 
 A correctly declared strict subrange is permitted by HTTP. Rather than
 mislabeling it as malformed, this version closes/discards the attempt and uses
 full-stream fallback with a specific reason. A 200 after successful probing
-also triggers a single full-stream fallback unless an observed validator change
-already proves inconsistency, in which case it fails. Cancel/drain all old jobs
+also triggers a single full-stream fallback, including when its ETag differs
+from the established validator. Cancel/drain all old jobs
 for that blob before resetting progress, releasing old spool state or writing
 replacement bytes. For a late range-to-full fallback after committed data,
 perform the reset protocol in D5; closing spools alone does not reset a sink or
 hasher. Never mix partial/full attempts. Permit at most one strategy
 fallback per blob; the full receiver does not recursively attempt ranges.
 
-A changed strong ETag remains a deliberate hard failure, not an OCI mandate or
-proof that the final digest would differ. Missing a binding before acceptance
-is a capability limit; losing an established binding mid-transfer invalidates
-the current part set and may indicate stale proxy/storage behavior. Fail early
-rather than automatically hide that inconsistency with another full download.
-An explicit subsequent invocation may succeed after storage/validator rotation.
-This conservative tradeoff can reject a byte-identical object with rotated
-ETags; it is stated for approval rather than justified by the digest URI alone.
+If a subsequent response presents a different ETag from the established strong
+validator, stop that ranged attempt before accepting the response's payload.
+This applies to an otherwise valid 206 and to a valid 200 answering If-Range.
+Select the fixed reason `etag_changed`, run D5's full reset even when some bytes
+already committed, and issue one fresh ordinary full GET without Range or an
+old-validator If-Range/If-Match condition. Close/discard the late response with
+its old attempt; the initial ignored-Range 200 reuse rule remains unchanged.
+The full receiver accepts a new ETag but must verify the originally requested
+size/digest, including compressed stored bytes and verify-only hashing.
+
+An ETag change is not proof of corruption. Byte-identical content with rotated
+ETags can succeed after the clean fallback; wrong replacement bytes still fail
+verification and retain D5's output-cleanup/publication rules. The fallback is
+bounded to one per blob and never re-enters ranges. It is a strategy reset, not
+an extra transport retry budget; ordinary pre-commit full-stream retry limits
+still apply, including explicit zero. Record the reason for the final warning
+in 7A/D7, even if the replacement download or enclosing operation later fails.
+Do not silently conceal the strategy change or report recovery as verified
+until final verification and applicable output/publication have succeeded.
 
 #### D5. Bounded scheduling, assembly and output ownership
 
@@ -823,6 +890,15 @@ success. Bound live state/redraw work and preserve stderr/stdout suppression,
 diagnostic handoff, narrow-terminal cleanup and other renderer consumers.
 Test pooled sequential and original legacy progress as well as combined modes.
 
+The CLI status sink collects `etag_changed` without printing its warning at
+selection time. After the command's final result/error reporting and cleanup,
+render 7A's warning on the caller thread, after flushing successful stdout.
+Keep this sink active with --no-progress/--json; disabling redraws must not
+disable diagnostics. Aggregate one warning for an artifact invocation using
+bounded reason counters; suppress duplicates from range parts and shared blobs.
+Never finalize a row or assert successful recovery merely because fallback was
+selected. Other capability notices keep their existing live/summary behavior.
+
 [Formatting #141](https://github.com/toddysm/regshape/issues/141) consumes #145's
 functional row contract for columns/colors/bars. Its visual work is not a
 prerequisite for #145 or the scheduler; coordinate shared-file edits and test
@@ -834,7 +910,7 @@ against #145 after it lands. There is no reverse dependency or cycle.
 | --- | --- |
 | R1 / S1 | D3 planning/deduplication, D5 scheduler, final graph/publication tests. |
 | R2 / S2 | D4 range protocol, D5 ordered hashing and verify-only sink. |
-| R3 / S3 | D1 standards matrix, D4 capabilities/consistency, PM-5 errors. |
+| R3 / S3 | D1 standards matrix, D4 capabilities/consistency, PM-5 errors, 7A/D7 post-download warning and PM-7 timing/output tests. |
 | R4 | Part I.10 limits, D3 reservations, D5 windows, D6 queue bounds. |
 | R5 | PM-2 pooled/legacy selection, D5 output contracts, D6 custom-client compatibility and auth/pooling. |
 | R6 / S4 / S5 | PM-2 batch/status API, D5 drain/join/ownership, D6 callbacks, D7 renderer. |
@@ -932,9 +1008,17 @@ exception to deliver a final report.
 
 Fixed reason codes are `sequential`, `ranges_disabled`, `range_enabled`,
 `small_blob`, `unknown_size`, `no_strong_validator`, `range_ignored`,
-`nonidentity_encoding`, `short_range`, `http_status`, and `transport_error`.
+`nonidentity_encoding`, `short_range`, `etag_changed`, `http_status`, and `transport_error`.
 Terminal/summary events may use None; the raised domain exception remains the
 failure authority. CLI messages map codes to bounded human-readable notices.
+Emit `fallback` with reason `etag_changed` when the strategy changes, and retain
+that reason on the affected blob's successful `completed` event after cleanup
+and verification. SDK callers can present a post-download warning from these
+typed observations without parsing logs or changing result shapes. If the
+fallback/operation fails, preserve the observed fallback and original failure;
+do not synthesize `completed`. The CLI always collects these statuses for its
+deferred warning, even when progress rendering is disabled, and emits it only
+after the enclosing command finishes, not at per-blob completion during a pull.
 
 Keep existing BlobInfo, ArtifactPullResult, TransferProgress and ArtifactProgress
 fields and singular CLI stdout schemas unchanged. CLI diagnostics consume the
@@ -1000,7 +1084,8 @@ connectivity and TLS settings remain applicable.
 | Missing range support, usable size or strong ETag | Explicit one-time per-blob full-stream fallback under D4. |
 | Unknown HTTP range total or valid shorter range | Capability-limited fallback, not a false protocol-corruption diagnosis. |
 | Auth rejection, 403, missing blob 404 | Preserve AuthError/BlobError taxonomy/status; no capability fallback. |
-| Malformed/contradictory Content-Range, changed ETag, unexpected coding, short/extra body | BlobError; cancel; do not publish or silently retry as full content. |
+| Changed established ETag on an otherwise valid range/late full response | Cancel/drain/join and reset the ranged attempt under D5; one full-stream fallback with reason etag_changed; verify original size/digest and surface 7A's post-operation warning. |
+| Malformed/contradictory Content-Range, unexpected coding, short/extra body | BlobError; cancel; do not publish or silently retry as full content. |
 | 416 | BlobError, except validated zero-size probe selecting full GET; never mark successful from 416 alone. |
 | 429/selected transient 5xx/transport errors | Retry only under the resolved download budget and pre-commit guard; otherwise explicit failure with actionable CLI controls. |
 | Byte/graph limit, disk error, unsafe/replaced path | Existing domain/filesystem error and identity-safe cleanup. |
@@ -1206,6 +1291,7 @@ is required and does not substitute for source contracts.
 | S1 / graph | Default C=4/W=1 overlaps distinct blobs; explicit sequential does not. Shared digest requested once; all graph limits reserve before work; repeated incompatible descriptors fail. |
 | S2 / range | Multiple ranges overlap; reverse completion; one-byte tails; known N skips HEAD and first real part is reused (no extra one-byte probe); exact size/digest and verify-only equivalence. |
 | S3 / HTTP | First 200 reuses the response; 416/empty negotiation, absent/advisory Accept-Ranges, missing HEAD size, 405/501, missing/weak/changed ETag, shorter parts and unknown totals. |
+| ETag fallback | Changed ETag on valid 206 and late If-Range 200 after committed parts; drain old jobs before reset/GET, same transfer ID with incremented attempt, cumulative received/current accepted bytes, one strategy fallback even with retries zero. Byte-identical rotation succeeds; wrong full bytes fail size/digest checks; malformed ranges still fail. Test saved output, verify-only and unpublished artifact staging. |
 | S4 / failures | Invalid bounds/unit/length/coding, multipart, truncation/overrun, hash mismatch, 401/403/404/429/5xx and Retry-After; no invalid success/publication. |
 | S5 / public SDK | Distinct get_blobs entries share one C cap, ordered results, duplicate/colliding sink preflight, fail-fast partial-side-effect contract; typed strategy/fallback/retry/final metrics and exact callback exception identity on caller thread. |
 | S6 / throttling/replay | Default pooled 429 retries succeed within budget; explicit zero disables,
@@ -1215,6 +1301,7 @@ legacy keeps its old policy, and explicit status overrides remain authoritative;
 | Ownership | Observer throws with active writes, full queue/cancellation, disk/short-write/close errors and replaced paths; join before cleanup. Digest mismatch deletes this invocation's invalid output even after overwrite; other partial-output semantics remain, and replacements are not deleted. |
 | Slow trickle | Signal cancellation while an inactivity-safe trickling read remains blocked, assert no new scheduling/unsafe cleanup, release handler and then assert join/cleanup; no bounded whole-read cancellation claim. |
 | Renderer/output | Interleaved rows/chunks/attempt resets never raise the old concurrency RuntimeError; final success is verification-gated; bounded fallback notices/count summary, exact stderr/exit table, no-progress/JSON/NO_COLOR and #141 integration contract. |
+| Post-download warning | No ETag warning during active ranges/fallback or partial artifact completion. After result/error and cleanup, exactly one warning on stderr at normal verbosity; successful stdout flushed first, JSON/result schemas unchanged, --no-progress/--json/NO_COLOR/non-TTY still warn. Count unique affected blobs, not parts/reused references; suppress duplicate notices and raw ETags/URLs/control text. Failures/cancellation never claim successful verification; failed observers are not reinvoked. SDK fallback/completed reasons remain available on the caller thread. |
 | Compatibility | Pooled sequential content/output equivalence and default C=4; omitted-option unsupported custom get_blob/pull_artifact calls stay legacy with one warning, while explicit pooled/batch/status requests fail before effects. Validate legacy/CLI conflicts and unchanged result/output shapes. |
 | Legacy escape | Force the new provider/pool/coordinator constructor to fail and prove explicit legacy singular/artifact root/manifest/blob downloads never invoke it; retain original custom middleware/retry/last_response/progress behavior. New batch/status/override combinations fail before effects. |
 | Round-trip/platform | Multi-platform/subject/shared/inline directory and gzip-tar layouts validate and push; Linux/macOS storage tests remain valid; Windows artifacts still fail closed and standalone blob tests remain portable. |
@@ -1261,7 +1348,8 @@ shaping. Neither benchmark fixtures nor registry trials are invented results.
 - [ ] Record real-registry plus storage-redirect interoperability evidence or approved exception.
 - [ ] Deliver W6 docs for default migration, SDK batch/status APIs, both commands,
       retry defaults/disable controls, custom-client compatibility, true legacy
-      transport escape, scratch placement/cost, fallback and troubleshooting.
+      transport escape, scratch placement/cost, ETag-change recovery with a
+      post-download warning, other fallback reasons and troubleshooting.
 - [ ] Reconcile the capability inventory only after implementation/docs merge.
 - [ ] Obtain separate release authorization; no external partner/legal/cloud
   buildout is identified for this local open-source enhancement.
@@ -1274,6 +1362,7 @@ shaping. Neither benchmark fixtures nor registry trials are invented results.
 - [OCI Image Spec v1.1.1: descriptors](https://github.com/opencontainers/image-spec/blob/v1.1.1/descriptor.md)
 - [OCI Image Spec v1.1.1: manifest ordering](https://github.com/opencontainers/image-spec/blob/v1.1.1/manifest.md)
 - [RFC 9110: ranges](https://www.rfc-editor.org/rfc/rfc9110.html#section-14)
+- [RFC 9110: If-Range](https://www.rfc-editor.org/rfc/rfc9110.html#section-13.1.5)
 - [RFC 9110: partial responses and recombination](https://www.rfc-editor.org/rfc/rfc9110.html#section-15.3.7)
 - [Current artifact workflow](../../docs/guides/artifact-pull.md)
 - [Current blob API](blobs.md) and [blob CLI](../cli/blob.md)
