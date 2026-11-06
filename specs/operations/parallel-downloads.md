@@ -1,6 +1,6 @@
 # Parallel artifact and ranged blob downloads: requirements and engineering design
 
-- **Status:** Draft revision 2; awaiting owner approval. No runtime implementation.
+- **Status:** Draft revision 3; awaiting owner approval. No runtime implementation.
 - **Feature:** [#131](https://github.com/toddysm/regshape/issues/131).
 - **Design item:** [#132](https://github.com/toddysm/regshape/issues/132).
 - **Target:** [0.2](https://github.com/toddysm/regshape/milestone/1), not a release commitment.
@@ -15,12 +15,13 @@ design document (EDD), and continuous integration (CI) are abbreviated below.
 All new APIs, defaults, examples and estimates below are **proposals for review**,
 not descriptions of capabilities already present.
 
-Revision 2 addresses the selected feedback on
-[design PR #140](https://github.com/toddysm/regshape/pull/140). It proposes
-default object parallelism, an explicit sequential escape hatch, public batch
-and diagnostic APIs, shared scoped authentication/connection reuse, renderer
-ownership, and corrected retry/cleanup/cancellation contracts. These material
-changes require renewed review; neither revision has implementation approval.
+Revision 3 addresses the four selected follow-up comments on
+[design PR #140](https://github.com/toddysm/regshape/pull/140). The owner approved
+these directions and the two-item split: preserve omitted-option custom-client
+calls, expose a genuine legacy transport path, enable three bounded modern
+retries by default, and separate coordinator, public APIs and renderer work.
+Approval of those directions is not approval to merge this exact revision or
+start runtime implementation. The reopened validator question is unchanged.
 
 ## Part I: product requirements
 
@@ -103,12 +104,14 @@ and `pull_artifact` calls, as illustrated in 7B.
 **S6 - Operator encountering registry throttling.** The operator's copy begins
 with four slots and the registry returns 429. Today's CLI neither enables
 retries nor exposes a retry option, so advice to "configure retries" is not
-actionable. They now see a safe throttling diagnostic, enable
-`--download-retries 3`, and reduce `--concurrency` to two or use `--sequential`.
-Retry-After controls when another request may be sent. Exhaustion still exits
-nonzero with no verified result; status counters distinguish retries from
-accepted bytes. This is bounded operator-controlled recovery, not automatic
-adaptive concurrency or an unbounded retry loop.
+actionable. Modern downloads now automatically allow three retries before any
+payload commits, honoring Retry-After and cancellation-aware backoff. After
+exhaustion they see a safe diagnostic and can reduce `--concurrency` to two or
+choose another `--download-retries N` budget; zero disables modern retries.
+Exhaustion still exits nonzero with no verified result, and status counters
+separate retry traffic from accepted bytes. This is bounded default resilience,
+not automatic adaptive concurrency or an unbounded retry loop. Legacy transport
+retains the original caller retry policy rather than receiving this new default.
 
 ### 4. Outcomes, priorities and scope
 
@@ -118,7 +121,7 @@ adaptive concurrency or an unbounded retry loop.
 | R2 | Concurrent ranged downloads of a single blob, shared by artifact pull and blob get, with full size/digest verification. |
 | R3 | OCI/HTTP-compliant negotiation, response validation, consistency and explicit full-stream fallback. |
 | R4 | One operation-wide concurrency bound; bounded queued work, memory and temporary range storage. |
-| R5 | Default C=4/W=1, explicit sequential opt-out, unchanged buffer meaning/results/output/verify-only behavior, and shared scoped credentials without per-range renegotiation. |
+| R5 | Default pooled C=4/W=1, sequential scheduling and genuine legacy-transport opt-outs, omitted-option custom-client compatibility, unchanged results/buffer meaning, and shared scoped credentials in pooled mode. |
 | R6 | Public batch/diagnostic SDK access, caller-thread observers, interleaved stable CLI rows, truthful progress, cancellation and ownership-safe cleanup. |
 | R7 | Requirement-mapped tests and comparative performance evidence before release. |
 | R8 | User-facing documentation for both commands, resource costs and recovery. |
@@ -165,9 +168,25 @@ Use `--sequential` to force C=W=1; combining it with an explicitly supplied
 one, rather than silently ignoring an argument. Range-size validation still
 applies in sequential mode, but no ranges are issued.
 
-SDK callers use `DownloadOptions.sequential()` for the same opt-out. Public
-`get_blobs` exposes batch-wide scheduling; `download_status_callback` provides
-typed strategy/fallback/statistics events on all three download operations.
+SDK callers use `DownloadOptions.sequential()` for serial scheduling on the
+modern pooled transport. `--legacy-transport` / `DownloadOptions.legacy()` is the
+separate rollback path for singular blob/artifact downloads: it bypasses the new
+auth provider, pool and coordinator and invokes the retained original serial
+path. It does not promise to undo every shared parser/renderer change.
+
+Existing custom-client get_blob/pull_artifact calls with omitted options use
+that original path when no safe pooled adapter exists, with one safe warning per
+invocation. Explicit pooled policies still require a supported adapter, even
+when a singular W=1 call only needs one GET. Public get_blobs and new status
+callbacks require pooled transport; legacy calls preserve existing progress
+callbacks/results but reject unavailable new metrics before effects.
+
+Modern CLI defaults allow three retries; --download-retries 0 disables them.
+Legacy transport retains the caller's original retry configuration. Its flag
+rejects explicit --sequential, --concurrency, --ranges-per-blob,
+--download-retries or --scratch-dir; range-size remains validated but unused.
+The SDK legacy helper sets C=W=1, transport="legacy", max_retries=None and no
+scratch root. This avoids silently ignoring explicitly requested new features.
 
 `blob get --chunk-size` continues to mean **streaming I/O buffer bytes**, not
 HTTP range size. `--range-size` is separate. Artifact authentication, complete
@@ -282,6 +301,10 @@ serial = get_blob(
     client, "team/app", digest,
     download_options=DownloadOptions.sequential(),
 )
+legacy = get_blob(
+    client, "team/app", digest,
+    download_options=DownloadOptions.legacy(),
+)
 ```
 
 Both batch entries verify without saving. The second digest is 32 MiB of ASCII
@@ -312,8 +335,12 @@ Proposed reproducible 0.2 release gates, not measured results or production SLOs
 | Small/unsupported-range guardrail | <=64 KiB single blob at default W=1, and 128 MiB missing-validator/ignored-range cases at W=2; same host and warm connection policy | p95 elapsed <=1.20x the comparable full-stream baseline; report extra requests/bytes. |
 | Correctness/resource guardrail | Every mode and fault fixture | Exact final size/digest/graph; zero invalid publications; all configured caps respected. |
 
-Use the same authentication/pooling policy in each comparison so repeated token
-exchanges or fresh connections cannot manufacture the speedup. Report
+Use the same authentication/pooling and retry policy in each controlled
+comparison so token exchanges, fresh connections or differing budgets cannot
+manufacture the speedup. DownloadOptions.sequential() is still pooled C=1;
+measure --legacy-transport separately as an end-to-end rollback baseline and
+report its original auth/connection behavior rather than attributing every
+transport improvement to concurrency. Report
 coordinator/worker CPU, hashing/write time, queue wait and scratch I/O to expose
 a coordinator ceiling, including a fast-local-storage/network run without
 artificial per-connection throttling. Gates are reviewed before release, not
@@ -391,9 +418,9 @@ Design PR and this breakdown require owner approval first. Implementation lands
 in dependency order under PM-6 with unit/integration tests. Maintainer preview
 validates the proposed defaults and explicit range mode; 0.2 readiness requires
 checks, docs, measured benchmarks and explicit release approval.
-Default object parallelism in 0.2 is an explicit revision-2 behavior-change
-proposal, with a migration note and sequential opt-out. Range splitting and
-download retries remain explicit; neither becomes silently enabled with C=4.
+Default object parallelism in 0.2 is an explicit revision-3 behavior-change
+proposal, with a migration note and sequential opt-out. Range splitting remains explicit. Pooled downloads intentionally receive the
+new bounded three-retry default; legacy transport keeps its original retry policy.
 There is no cloud-region deployment, private-preview program or inferred ship
 date. No version bump, Git tag, release publication or merge is authorized here.
 
@@ -460,7 +487,9 @@ Concurrency values, thresholds, queue bounds and retry policy are not OCI mandat
 #### D2. Component boundary and flow
 
 Audience: maintainers deciding how both command paths share one scheduler.
-The diagram shows the **proposed revision-2 runtime**, not the current runtime.
+The diagram shows the **proposed revision-3 pooled runtime**, not the current
+runtime. Explicit/compatibility legacy selection bypasses this whole worker
+context and uses the retained serial path described in D6/N.
 Arrows describe work/data flow, not source imports.
 
 ```text
@@ -508,7 +537,9 @@ existing blob/artifact package exports; executor implementation remains private.
 
 #### D3. Artifact graph planning
 
-For the default parallel policy, separate discovery from blob receipt:
+For the pooled parallel policy, separate discovery from blob receipt. Resolve
+the D6 backend before entering this path: legacy transport uses the retained
+original serial acquisition path and never constructs this coordinator/context.
 
 1. Preflight inputs, policy, output and worker-client support before effects.
    Establish the operation's shared transport/auth context before document
@@ -682,11 +713,27 @@ already committed full-stream bodies on a retry.
 
 #### D6. Transport, callbacks and telemetry
 
-Create one operation-owned download transport context before manifest discovery
-or blob work. Resolve credentials once from the borrowed client's snapshot.
-Worker clients isolate request headers, cookies, middleware/cache and
-last_response, but **do not negotiate independent tokens or create a fresh
-connection for every range**.
+Resolve the backend before manifest discovery, worker creation or filesystem
+writes. Existing get_blob/pull_artifact calls with download_options=None choose
+pooled defaults for supported clients, but use the original serial path for a
+subclass/custom middleware without a safe adapter. Emit one sanitized warning
+that custom-client compatibility selected legacy transport; do not silently
+ignore an explicit parallel request. get_blobs is a new API and does not have
+this omitted-option compatibility exception.
+
+Explicit transport="legacy" is valid only for singular blob/artifact operations
+with C=W=1, max_retries=None, scratch_dir=None and no new download_status_callback.
+Call the retained original serial path with its original borrowed client,
+auth/retry/middleware behavior and existing progress/output contracts. Do not
+create the new auth provider, shared adapter, worker clones or coordinator, and
+do not automatically re-enter pooled mode after a legacy failure. Reject new
+batch/status/explicit download-retry features before effects rather than return
+fabricated metrics or silently alter custom middleware.
+
+Only pooled mode creates an operation-owned transport context before root,
+manifest or blob work. Resolve credentials once from the borrowed snapshot.
+Worker clients isolate headers, cookies, middleware/cache and last_response,
+but **do not negotiate independent tokens or create a fresh connection per range**.
 
 The context owns a thread-safe, single-flight auth provider keyed by registry
 origin, credential identity, validated realm/service and repository action
@@ -715,22 +762,21 @@ cloning auth state into unrelated token negotiations. The original client is
 borrowed and never closed or mutated by workers. Document/validate its extension
 hook for explicit custom-client/middleware support without sharing unsafe state.
 
-The built-in implementation supports the exact base RegistryClient and built-in
-middleware. A subclass or configured custom middleware must provide an explicit
-safe fork override; otherwise reject parallel policy with ValueError **before
-network/filesystem effects**. Never silently drop custom middleware or copy it
-unsafely. Custom-client callers can select the documented sequential opt-out; default
-parallel rejection for unsupported customization is an intentional migration
-impact, not a promise that every old caller's scheduling is unchanged.
-Built-in serial downloads still use the scoped auth/pool context with C=1, so
-benchmark baselines do not retain needless token/connection churn. Unsupported
-custom clients may retain their legacy serial singular/artifact path without
-new status observations; requesting the new batch/status contract requires a
-supported adapter and fails preflight otherwise, rather than fabricating stats.
-Worker clients preserve origins, TLS/insecure mode, timeout, auth behavior and
-logging/cache policy; streamed GETs still bypass response caching. The caller's
+The pooled implementation supports the exact base RegistryClient and built-in
+middleware. A subclass or configured custom middleware needs an explicit safe
+fork/adapter. An explicit pooled policy, new get_blobs call or status observer
+without that support raises ValueError before network/filesystem effects, even
+if C=4/W=1 results in only one singular GET. None on the two existing operations
+instead preserves the custom client's original path. Never silently drop or
+copy unsafe customization.
+
+DownloadOptions.sequential() means pooled C=1, not transport rollback; it still
+uses the new scoped auth/pool context and supports new diagnostics. Explicit
+legacy selection bypasses that layer for built-in and custom clients alike.
+Pooled worker clients preserve origins, TLS/insecure mode, timeout, auth and
+logging/cache policy; streamed GETs bypass caching. The borrowed caller's
 last_response is not an authoritative list of parallel responses and is not
-updated by workers. Document this parallel-mode contract.
+mutated by workers. Legacy last_response behavior remains the original client's.
 
 Workers must not inherit the same mutable TelemetryConfig merely through
 copy_context(). Give each task a fresh context/config with isolated metrics and
@@ -763,23 +809,24 @@ close/publication; telemetry close errors cannot leave a success-shaped result.
 
 #### D7. Interleaved CLI rows and formatting ownership
 
-[Coordinator/renderer item #135](https://github.com/toddysm/regshape/issues/135)
-owns removal of the shared renderer's single-active-row RuntimeError and the
-functional multi-row state machine. Before either CLI can enable parallel
-downloads it must accept interleaved rows, keep transfer IDs/row ordinals stable,
-aggregate ranges into the parent blob, and reset attempt/rate/count state on
-retry/fallback without creating a row or finalizing another active object.
-Only verified terminal events finalize that row; a full bar is not success.
-Bound live row state and redraw work by active objects, retaining finished rows
-without unbounded retained event history. Preserve stderr/stdout suppression,
-diagnostic handoff, narrow-terminal cleanup and other renderer consumers.
+[Renderer item #145](https://github.com/toddysm/regshape/issues/145) now owns
+removal of the shared renderer's single-active-row RuntimeError and its
+functional multi-row state machine. [Core #135](https://github.com/toddysm/regshape/issues/135)
+owns immutable progress/event records; [API #144](https://github.com/toddysm/regshape/issues/144)
+owns public batch/status facades. These are separate work items and PRs.
 
-[Formatting item #141](https://github.com/toddysm/regshape/issues/141) consumes
-that event/row contract for colors, columns and square bars. Its behavioral
-integration depends on #135; its visual work is not a prerequisite for the
-download scheduler and must not be used to postpone the required functional
-renderer fix. Coordinate shared-file edits; test the formatting item against
-interleaved/combined events after #135 lands. There is no dependency cycle.
+Before either CLI enables default parallel integration, accept interleaved rows,
+retain transfer IDs/ordinals, aggregate ranges into the parent blob, and reset
+attempt/rate/count state on retry/fallback without duplicating or prematurely
+finalizing rows. Only verified terminal events finalize a row; a full bar is not
+success. Bound live state/redraw work and preserve stderr/stdout suppression,
+diagnostic handoff, narrow-terminal cleanup and other renderer consumers.
+Test pooled sequential and original legacy progress as well as combined modes.
+
+[Formatting #141](https://github.com/toddysm/regshape/issues/141) consumes #145's
+functional row contract for columns/colors/bars. Its visual work is not a
+prerequisite for #145 or the scheduler; coordinate shared-file edits and test
+against #145 after it lands. There is no reverse dependency or cycle.
 
 ### PM-1. Requirements traceability
 
@@ -789,7 +836,7 @@ interleaved/combined events after #135 lands. There is no dependency cycle.
 | R2 / S2 | D4 range protocol, D5 ordered hashing and verify-only sink. |
 | R3 / S3 | D1 standards matrix, D4 capabilities/consistency, PM-5 errors. |
 | R4 | Part I.10 limits, D3 reservations, D5 windows, D6 queue bounds. |
-| R5 | PM-2 default/opt-out interfaces, D5 output contracts, D6 shared auth/pooling. |
+| R5 | PM-2 pooled/legacy selection, D5 output contracts, D6 custom-client compatibility and auth/pooling. |
 | R6 / S4 / S5 | PM-2 batch/status API, D5 drain/join/ownership, D6 callbacks, D7 renderer. |
 | S6 | PM-2 CLI retry controls, PM-5 429 budget/diagnostics and recovery. |
 | R7 | Part I.8 measurements, PM-7 deterministic and hosted tests. |
@@ -807,18 +854,23 @@ Proposed frozen public `DownloadOptions`, exported by blob/artifact packages:
 | concurrency | int = 4 | 1..32, not bool |
 | ranges_per_blob | int = 1 | 1..concurrency, not bool |
 | range_size | int = 8388608 | 65536..67108864 bytes, not bool |
-| max_retries | int or None = None | None inherits transport enablement/budget; otherwise 0..10; reject bool. |
-| scratch_dir | path or None = None | If given, existing caller-trusted temporary root; validate before effects. |
+| max_retries | int or None = None | Pooled None resolves to three unless an explicit caller retry policy applies; integer overrides in 0..10, not bool. Legacy requires None and retains the original client policy. |
+| scratch_dir | path or None = None | Existing caller-trusted temporary root; validate before effects. Legacy requires None. |
+| transport | "pooled" or "legacy" = "pooled" | Legacy requires C=W=1 and the singular/artifact API without new status observers; reject unsupported combinations before effects. |
 
 Add keyword-only `download_options: DownloadOptions | None = None` to existing
 `get_blob` and `pull_artifact`; preserve all existing positional parameters,
 return types, errors, max_bytes/output_dir_fd and progress parameters. **None
-now resolves to C=4/W=1**, not the old sequential default. Add
+resolves to pooled C=4/W=1 for supported clients**; on the two existing operations,
+unsupported custom clients retain their logged original serial path (D6). This
+exception is not available to new get_blobs/status contracts. Add
 `download_status_callback: Callable[[DownloadStatus], None] | None = None`
 to both operations and the new batch operation. Invalid policy/worker support
 raises ValueError before effects; existing digest validation retains BlobError.
-`DownloadOptions.sequential()` returns C=W=1 (other fields at defaults);
-explicit C=W=1 also selects serial scheduling regardless of range_size.
+`DownloadOptions.sequential()` returns pooled C=W=1 with other defaults; explicit
+C=W=1 also means serial pooled scheduling. `DownloadOptions.legacy()` returns
+C=W=1/transport="legacy"/max_retries=None/scratch_dir=None. Legacy has no new
+status callback or batch result metrics; reject those combinations before effects.
 
 Expose public `get_blobs(client, repo, downloads, *, download_options=None,
 progress_callback=None, download_status_callback=None) -> BlobBatchResult`.
@@ -839,15 +891,19 @@ transfers actually completed. Separate manually concurrent calls do not share
 a process-global cap; use one get_blobs invocation for that guarantee.
 
 Both CLI commands expose `--concurrency`, `--ranges-per-blob`, `--range-size`,
-`--sequential`, `--download-retries N`, and `--scratch-dir PATH`.
+`--sequential`, `--legacy-transport`, `--download-retries N`, and `--scratch-dir PATH`.
 Use Click parameter provenance to reject --sequential with either explicitly
 supplied concurrency/ranges-per-blob, rather than confusing the default C=4
 with a user conflict. Validate all relations before credentials/filesystem
 effects. C > 1/W=1 is object parallelism; a standalone single blob still makes
 one full GET. W > 1 enables eligible ranges. `--download-retries` defaults to
-inheritance (zero in today's CLI), but N explicitly enables/sets the download
-budget and reaches the 429 policy in PM-5. Do not claim existing TransportConfig
-already enables retries or already includes 429.
+the resolved pooled default of three, not today's disabled legacy middleware.
+N explicitly sets the budget, including zero to disable, under PM-5. The legacy
+flag selects the SDK legacy helper and rejects explicitly supplied --sequential,
+--concurrency, --ranges-per-blob, --download-retries and --scratch-dir rather than
+silently ignoring them; range-size stays validated/unused. No new auth/pool
+context is initialized for that backend. Existing TransportConfig does not
+already enable the new retry policy or include 429.
 
 Add these frozen SDK observations without changing existing result/progress
 fields:
@@ -883,8 +939,10 @@ failure authority. CLI messages map codes to bounded human-readable notices.
 Keep existing BlobInfo, ArtifactPullResult, TransferProgress and ArtifactProgress
 fields and singular CLI stdout schemas unchanged. CLI diagnostics consume the
 same typed statuses; SDK users never need to scrape logs. Download contexts
-own/close their sessions, shared adapter and auth state; the input client remains
-borrowed and no persistent credentials/cache file is added.
+own/close their pooled sessions, shared adapter and auth state; legacy creates
+none of these new resources. The input client stays borrowed and no persistent
+credentials/cache file is added. Legacy returns existing singular result shapes
+but cannot satisfy new batch/status observations; reject, do not fabricate stats.
 
 No OCI endpoint/version, layout format, descriptor bytes, persisted schema or
 cache-key version changes. New Python symbols/options are additive 0.2 APIs;
@@ -938,7 +996,7 @@ connectivity and TLS settings remain applicable.
 
 | Condition | Required behavior |
 | --- | --- |
-| Invalid options, unsupported client fork | Preflight ValueError / Click parameter error; no side effects. |
+| Invalid options, explicit unsupported pooled/batch/status request | Preflight ValueError / Click parameter error; no side effects. Omitted-options compatibility for existing custom callers uses logged legacy transport, not this error. |
 | Missing range support, usable size or strong ETag | Explicit one-time per-blob full-stream fallback under D4. |
 | Unknown HTTP range total or valid shorter range | Capability-limited fallback, not a false protocol-corruption diagnosis. |
 | Auth rejection, 403, missing blob 404 | Preserve AuthError/BlobError taxonomy/status; no capability fallback. |
@@ -948,14 +1006,27 @@ connectivity and TLS settings remain applicable.
 | Byte/graph limit, disk error, unsafe/replaced path | Existing domain/filesystem error and identity-safe cleanup. |
 | Callback/sink exception, Ctrl-C | Preserve original exception, cancel/drain/join; no more calls into a failed observer. |
 
-Use one retry owner per transaction. Resolve DownloadOptions.max_retries first:
-None inherits enable_retries and RetryConfig (zero if disabled); an integer
-overrides the download budget without changing uploads/other commands. Validate
-the resolved budget in 0..10. Without an explicit RetryConfig, download retry
-statuses are `(429, 500, 502, 503, 504)` with exponential backoff factor 1.
-An explicitly supplied RetryConfig keeps its statuses/backoff authoritative;
-SDK callers must include 429 there if they override the set. Thus the CLI's
-`--download-retries 3` really enables 429 retries despite today's transport defaults.
+Use one retry owner per pooled transaction. Resolve max_retries in this order:
+
+1. An explicit integer DownloadOptions/CLI override wins, including zero.
+2. Otherwise, if the caller enabled transport retries, retain its configured
+   budget (or RetryConfig's default budget when no configuration was supplied).
+3. An explicitly supplied RetryConfig with enable_retries=False retains zero.
+4. Otherwise use the new pooled default of three retries. Thus today's CLI
+   TransportConfig(false, retry_config=None) gets three in pooled mode, not zero.
+
+Validate the resolved budget in 0..10. With no explicit RetryConfig, download
+retry statuses are (429, 500, 502, 503, 504), with exponential backoff factor 1.
+A supplied RetryConfig retains its statuses/backoff; callers overriding the set
+must include 429 themselves. enable_retries=False without an explicit config
+controls the old middleware, not the new default budget: use max_retries=0 or
+--download-retries 0 to disable pooled retries explicitly. This deliberate
+migration applies only to download operations, never uploads/other commands.
+
+Legacy transport bypasses this resolver/coordinator and preserves the original
+borrowed client's enablement, budget, status set and middleware. It rejects
+explicit new download retry overrides rather than mutating a custom client or
+claiming the legacy path now implements the pooled policy.
 
 The coordinator manages at most budget+1 attempts per job; disable child
 RetryMiddleware for these jobs so budgets are not multiplied. With budget zero,
@@ -997,7 +1068,11 @@ Default object parallelism is an **intentional behavioral change**: omitted
 options now permit four in-flight requests and interleaved object progress.
 Document migration to --sequential / DownloadOptions.sequential(), conflict
 rules, registry-load effects and unsupported custom-client parallel adapters.
-Range splitting and retries remain explicit. No positional API, existing
+Range splitting remains explicit; three pooled retries are a deliberate new
+default, with zero disabling them. Omitted-option unsupported custom callers
+retain the original serial transport; explicit pooled requests need an adapter.
+--sequential only limits pooled scheduling, while --legacy-transport bypasses
+the new auth/pool/coordinator. No positional API, existing
 singular result schema or persisted-format change is intended. Preserve
 standalone overwrite and digest-mismatch deletion contracts; concurrent
 public callbacks remain forbidden. CLI renderer support must land before the
@@ -1070,13 +1145,21 @@ their gates. No unrelated telemetry rewrite or legacy documentation sweep.
 
 ### N. Rollback
 
-Use --sequential or DownloadOptions.sequential() (C=W=1) for serial behavior;
-omitting policy now selects C=4 and is **not** an opt-out. A package rollback
-leaves valid OCI layouts/blobs readable because no new persisted format exists.
-Revert code through normal reviewed PRs; this design PR can be reverted as docs.
-Downloaded bytes/remote registry content do not need a data migration. Ordinary
-blob output overwrite remains an existing irreversible caller-selected action;
-do not imply package rollback restores a previous output file.
+--sequential / DownloadOptions.sequential() limits pooled scheduling to C=W=1;
+it is not protection from a defect in the new auth provider or connection pool.
+Use --legacy-transport / DownloadOptions.legacy() on get_blob/pull_artifact to
+invoke the retained original serial transport/acquisition path for the entire
+operation, including root and manifests. No new auth provider, shared adapter,
+worker clone or coordinator is created; original auth/retry/custom middleware
+and progress/result behavior remain. Never silently switch back to pooled mode.
+
+Legacy cannot provide the new get_blobs/status contract; reject those requests
+before effects. A batch caller can temporarily loop over legacy singular calls.
+No new persisted format exists, so package rollback remains available for shared
+parser/renderer or other code regressions that the transport selector cannot
+undo. Omitted options are not a general rollback switch: supported clients use
+pooled defaults, while unsupported existing custom callers get D6 compatibility.
+Rollback does not restore overwritten output files or mutate remote content.
 
 ### PM-6. Engineering phasing, estimates and work breakdown
 
@@ -1089,19 +1172,27 @@ interop, custom-client forking and cleanup race coverage are the long poles.
 | --- | --- | --- | --- |
 | Design #132 | This design and approval gate | None | 1 / 0.5 / 0 |
 | W1 [#134](https://github.com/toddysm/regshape/issues/134) | Policy, scoped single-flight auth and pooled worker clients, including token metadata/instrumented-session hooks | Approved design | 3 / 2 / 0.5 |
-| W2 [#135](https://github.com/toddysm/regshape/issues/135) | Common coordinator/full-stream foundation, worker hash/write, public batch/status API, cancellation, telemetry and functional interleaved renderer | W1 | 3 / 3 / 0.5 |
-| W3 [#136](https://github.com/toddysm/regshape/issues/136) | Ranged receiver, ordered assembly, safe reset/retry and standalone blob CLI controls | W2 | 2 / 2 / 0.5 |
-| W4 [#137](https://github.com/toddysm/regshape/issues/137) | Shared graph planning, parallel artifact integration/CLI and common controls; ranges plug into the common receiver | W2, not range-specific W3 | 3 / 2 / 0.5 |
+| W2a [#135](https://github.com/toddysm/regshape/issues/135) | Core coordinator/full-stream foundation, worker hash/write, cancellation, immutable internal observations and telemetry bridge | W1 | 3 / 3 / 0.5 |
+| W2b [#144](https://github.com/toddysm/regshape/issues/144) | Public batch/status API, policy/backend compatibility validation and export/facade contracts | W2a | 2 / 2 / 0.5 |
+| W2c [#145](https://github.com/toddysm/regshape/issues/145) | Functional interleaved CLI renderer over the core progress/event contract | W2a | 2 / 2 / 0.5 |
+| W3 [#136](https://github.com/toddysm/regshape/issues/136) | Ranged receiver, ordered assembly, safe reset/retry and standalone blob CLI controls | W2a-W2c | 2 / 2 / 0.5 |
+| W4 [#137](https://github.com/toddysm/regshape/issues/137) | Graph planning, parallel artifact integration/CLI and shared controls; ranges plug into the common receiver | W2a-W2c, not range-specific W3 | 3 / 2 / 0.5 |
 | W5 [#138](https://github.com/toddysm/regshape/issues/138) | Fault/compatibility validation, numeric benchmarks/profiling, real-registry matrix and CI selectors | W3, W4 | 2 / 3 / 0.5 |
 | W6 [#139](https://github.com/toddysm/regshape/issues/139) | Final user/API/CLI documentation and capability close-out | W1-W5 | 1 / 0.5 / 0.5 |
 
 These are native sub-issues of the feature and all target milestone 0.2.
-W3 and W4 can proceed independently on W2; W4 must work with full-stream jobs
-without waiting for range-specific W3. Both capabilities still gate the proposed
-0.2 feature release. Splitting R1 into an earlier release requires an explicit
-owner-approved replan, not an engineering dependency masquerading as priority.
-#135 owns baseline renderer functionality; #141 owns its separate visual changes
-and validates against #135's event contract, without blocking the foundation.
+The former W2 estimate did not cover its expanded API/renderer scope adequately.
+W2a/W2b/W2c now mean three separate owned implementation PRs, not one oversized
+PR: seven implementation, seven validation and 1.5 rollout engineer-days in
+aggregate. Estimates are initial judgments, not elapsed delivery promises;
+re-estimate after interface and compatibility spikes instead of hiding overruns.
+W2b and W2c can proceed independently on the core event contract after W2a.
+
+W3/W4 proceed independently once the common API/renderer foundation is ready;
+W4 must work with full-stream jobs before range-specific W3. Both R1 and R2
+still gate proposed 0.2 scope; an R1-only release needs an explicit owner replan.
+#145 owns baseline renderer behavior, #144 the public facades, and #135 the core.
+#141 consumes #145 for separate visual formatting and does not block it.
 Each code item must include current file-purpose and applicable type/callable
 contracts, including private code and test helpers, following the repository's
 Sphinx-style Python convention. This obligation is scoped to new/changed
@@ -1117,13 +1208,15 @@ is required and does not substitute for source contracts.
 | S3 / HTTP | First 200 reuses the response; 416/empty negotiation, absent/advisory Accept-Ranges, missing HEAD size, 405/501, missing/weak/changed ETag, shorter parts and unknown totals. |
 | S4 / failures | Invalid bounds/unit/length/coding, multipart, truncation/overrun, hash mismatch, 401/403/404/429/5xx and Retry-After; no invalid success/publication. |
 | S5 / public SDK | Distinct get_blobs entries share one C cap, ordered results, duplicate/colliding sink preflight, fail-fast partial-side-effect contract; typed strategy/fallback/retry/final metrics and exact callback exception identity on caller thread. |
-| S6 / throttling/replay | CLI retry flag reaches 429, default zero and explicit status overrides, cancellation-aware delay, no nested budgets. Interrupted full GET after a committed prefix never replays/appends, also verify-only; prefix range fallback resets sink/hash/progress/attempt before a clean GET. |
+| S6 / throttling/replay | Default pooled 429 retries succeed within budget; explicit zero disables,
+legacy keeps its old policy, and explicit status overrides remain authoritative; cancellation-aware delay, no nested budgets. Interrupted full GET after a committed prefix never replays/appends, also verify-only; prefix range fallback resets sink/hash/progress/attempt before a clean GET. |
 | Concurrency/resources | Peak requests <= C including auth/probes/redirects; per-blob <= W; pending futures/spools/queue under bounds; stalled earliest range cannot grow scratch without limit. |
 | Auth/pooling | Same-scope root/manifests/blobs/ranges share one valid token negotiation; forced expiry/rejection refreshes once per generation; origin/scope separation and foreign 401 protections; persistent connection reuse and no peer pool closure or instrumentation bypass. |
 | Ownership | Observer throws with active writes, full queue/cancellation, disk/short-write/close errors and replaced paths; join before cleanup. Digest mismatch deletes this invocation's invalid output even after overwrite; other partial-output semantics remain, and replacements are not deleted. |
 | Slow trickle | Signal cancellation while an inactivity-safe trickling read remains blocked, assert no new scheduling/unsafe cleanup, release handler and then assert join/cleanup; no bounded whole-read cancellation claim. |
 | Renderer/output | Interleaved rows/chunks/attempt resets never raise the old concurrency RuntimeError; final success is verification-gated; bounded fallback notices/count summary, exact stderr/exit table, no-progress/JSON/NO_COLOR and #141 integration contract. |
-| Compatibility | Explicit sequential content/output equivalence, default C=4, CLI conflict/provenance validation, exact result fields, stdout cleanliness, source contracts and custom-client preflight. |
+| Compatibility | Pooled sequential content/output equivalence and default C=4; omitted-option unsupported custom get_blob/pull_artifact calls stay legacy with one warning, while explicit pooled/batch/status requests fail before effects. Validate legacy/CLI conflicts and unchanged result/output shapes. |
+| Legacy escape | Force the new provider/pool/coordinator constructor to fail and prove explicit legacy singular/artifact root/manifest/blob downloads never invoke it; retain original custom middleware/retry/last_response/progress behavior. New batch/status/override combinations fail before effects. |
 | Round-trip/platform | Multi-platform/subject/shared/inline directory and gzip-tar layouts validate and push; Linux/macOS storage tests remain valid; Windows artifacts still fail closed and standalone blob tests remain portable. |
 
 Add focused pytest modules for policy/coordinator, range download and graph
@@ -1162,11 +1255,13 @@ shaping. Neither benchmark fixtures nor registry trials are invented results.
 
 - [ ] Owner approves this revision, proposed defaults and linked breakdown.
 - [ ] Separately authorize the first implementation item and its test mode.
+- [ ] Deliver W2a/W2b/W2c in three separate PRs and re-estimate from interface evidence.
 - [ ] Complete dependency-ordered delivery with required checks/reviews.
 - [ ] Meet section 8 numeric performance/resource gates and review CPU/I/O profiles.
 - [ ] Record real-registry plus storage-redirect interoperability evidence or approved exception.
 - [ ] Deliver W6 docs for default migration, SDK batch/status APIs, both commands,
-      retry controls, scratch placement/cost, fallback and failure troubleshooting.
+      retry defaults/disable controls, custom-client compatibility, true legacy
+      transport escape, scratch placement/cost, fallback and troubleshooting.
 - [ ] Reconcile the capability inventory only after implementation/docs merge.
 - [ ] Obtain separate release authorization; no external partner/legal/cloud
   buildout is identified for this local open-source enhancement.
