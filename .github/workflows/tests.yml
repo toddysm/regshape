@@ -41,6 +41,8 @@ jobs:
       - name: Test bounded receives and transport compatibility
         run: >-
           python -m pytest -q
+          src/regshape/tests/test_download_policy.py
+          src/regshape/tests/test_download_transport.py
           src/regshape/tests/test_manifest_download.py
           src/regshape/tests/test_manifest_progress.py
           src/regshape/tests/test_transport_client.py

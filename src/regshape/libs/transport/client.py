@@ -20,8 +20,9 @@
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
-from dataclasses import dataclass, field
-from typing import Any, List, Optional
+import copy
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any, List, Optional
 
 import requests
 
@@ -37,12 +38,16 @@ from regshape.libs.transport.middleware import (
     LoggingMiddleware,
     Middleware,
     MiddlewarePipeline,
+    NextHandler,
     RetryConfig,
     RetryMiddleware,
     _normalize_www_authenticate,
 )
 from regshape.libs.transport.models import RegistryRequest, RegistryResponse
 from regshape.libs.transport.urls import require_authentication_origin
+
+if TYPE_CHECKING:
+    from regshape.libs.transport.download import DownloadTransport
 
 
 def _send_http_request(*args: Any, **kwargs: Any) -> requests.Response:
@@ -144,6 +149,7 @@ class RegistryClient:
     """
 
     def __init__(self, config: TransportConfig) -> None:
+        """Resolve credentials once and construct private request/middleware state."""
         self.config = config
         # Resolve credentials once - domain modules and CLI commands never
         # call resolve_credentials() directly.
@@ -152,11 +158,107 @@ class RegistryClient:
         )
         # Store the last response for access to headers (e.g., pagination)
         self.last_response: Optional[requests.Response] = None
+        self._session: requests.Session | None = None
+        self._download_context: DownloadTransport | None = None
         
         # Initialize middleware pipeline if enabled
         self._pipeline: Optional[MiddlewarePipeline] = None
         if config.enable_middleware:
             self._pipeline = self._setup_middleware_pipeline()
+
+    def supports_download_fork(self) -> bool:
+        """Check base-client configuration or an explicit custom safe-fork override.
+
+        The base hook only supports its configured built-ins. Subclasses and
+        runtime pipeline changes must opt in rather than silently lose behavior.
+        """
+        if type(self).fork_for_download is not RegistryClient.fork_for_download:
+            return True
+        if type(self) is not RegistryClient or self.config.middlewares:
+            return False
+        if set(vars(self)) - {
+            "config", "_username", "_password", "last_response",
+            "_pipeline", "_session", "_download_context",
+        }:
+            return False
+        if self._download_context is not None:
+            return True
+        if not self.config.enable_middleware:
+            return self._pipeline is None
+        if type(self._pipeline) is not MiddlewarePipeline:
+            return False
+        expected: list[type] = [AuthMiddleware]
+        if self.config.enable_logging:
+            expected.append(LoggingMiddleware)
+        if self.config.enable_retries:
+            expected.append(RetryMiddleware)
+        if self.config.enable_caching:
+            expected.append(CachingMiddleware)
+        if [type(item) for item in self._pipeline._middleware] != expected:
+            return False
+        allowed = {
+            AuthMiddleware: {"_username", "_password", "_registry", "_base_url"},
+            LoggingMiddleware: {"logger", "level"},
+            RetryMiddleware: {"config", "honor_retry_after"},
+            CachingMiddleware: {"cache", "max_size", "ttl"},
+        }
+        if any(set(vars(item)) != allowed[type(item)] for item in self._pipeline._middleware):
+            return False
+        auth = self._pipeline._middleware[0]
+        if not isinstance(auth, AuthMiddleware):
+            return False
+        return (
+            auth._username == self._username and auth._password == self._password
+            and auth._base_url == self.base_url and auth._registry == self.config.registry
+        )
+
+    def fork_for_download(self, *, context: "DownloadTransport") -> "RegistryClient":
+        """Create an isolated worker from the operation's resolved configuration snapshot.
+
+        No credential-store lookup occurs. The worker borrows the context's auth
+        provider and connection pool, but owns its headers, cookies, middleware,
+        cache and last_response. Custom extensions must explicitly override this
+        hook and preserve their semantics with equivalent isolation. Call only
+        from the context before worker I/O; the original client is never closed.
+        Only built-in settings are copied; the override reconstructs custom
+        middleware without copying the original middleware's mutable state.
+        One outer retry owner shares the status/transport retry budget across
+        authentication dispatches rather than resetting it on auth resends.
+
+        :param context: Open operation-owned pooled transport.
+        :returns: Fresh base client with worker-local mutable request state.
+        :raises ValueError: If customization has no explicit safe override.
+        """
+        if not self.supports_download_fork():
+            raise ValueError("Custom client requires an explicit safe download fork")
+        if context.borrowed is not self and self._download_context is not context:
+            raise ValueError("Download fork requires its client's operation context")
+        worker = object.__new__(RegistryClient)
+        worker.config = replace(
+            context.config, retry_config=copy.deepcopy(context.config.retry_config), middlewares=[],
+        )
+        worker._username, worker._password = context.username, context.password
+        worker.last_response = None
+        worker._download_context = context
+        session = context.new_session()
+        worker._session = session
+        worker._pipeline = MiddlewarePipeline()
+
+        def authenticate(request: RegistryRequest, next_handler: NextHandler) -> RegistryResponse:
+            """Bind the shared provider to this worker's private session and request chain."""
+            return context.auth.execute(request, next_handler, session)
+
+        worker._pipeline.add_middleware(
+            RetryMiddleware(copy.deepcopy(context.retry_config), honor_retry_after=True)
+        )
+        worker._pipeline.add_middleware(authenticate)
+        if context.logging_config is not None:
+            worker._pipeline.add_middleware(LoggingMiddleware(*context.logging_config))
+        if context.cache_config is not None:
+            worker._pipeline.add_middleware(
+                CachingMiddleware(*context.cache_config)
+            )
+        return worker
 
     # ------------------------------------------------------------------
     # Properties
@@ -232,6 +334,8 @@ class RegistryClient:
         redirect_options: dict[str, Any] = {} if request.allow_redirects else {"allow_redirects": False}
         if request.response_hook is not None:
             redirect_options["response_hook"] = request.response_hook
+        if self._session is not None:
+            redirect_options["session"] = self._session
         response = _send_http_request(
             url=url,
             method=request.method,
