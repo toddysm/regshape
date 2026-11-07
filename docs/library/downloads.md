@@ -43,6 +43,8 @@ least the greater of that delay and configured exponential backoff after releasi
 the response slot. Malformed values emit a sanitized diagnostic and retain normal
 backoff; platform-unrepresentable delays fail explicitly rather than retry early.
 Legacy retry timing is unchanged.
+One retry owner wraps the complete authentication flow, so registry status and
+transport retries share their budget across authentication resends.
 
 `DownloadOptions.sequential()` means pooled C=W=1. `DownloadOptions.legacy()`
 means C=W=1 with the **original borrowed-client transport**; it requires
@@ -72,6 +74,8 @@ Tokens are bound to the registry origin, credential snapshot, validated
 realm/service and repository pull scope. Expiry metadata or rejection of a
 generation causes one shared refresh. Anonymous and Basic flows remain supported;
 foreign 401 responses cannot select token realms or warm this provider.
+Scopes use the terminal manifest/blob resource; nested repository components
+named `manifests` or `blobs` remain part of the repository identity.
 
 Token exchanges use the same instrumented HTTP hook, finite timeout and pool.
 External registry-issued token realms are supported without credential-bearing

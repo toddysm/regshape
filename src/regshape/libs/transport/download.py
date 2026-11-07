@@ -90,17 +90,17 @@ class _DownloadAuth:
 
     @staticmethod
     def _scope(request: RegistryRequest) -> str:
-        """Validate a registry read path and derive its repository action scope."""
+        """Derive scope from the terminal resource, allowing resource names inside repositories."""
         full_path = urlsplit(request.url).path
         if full_path == "/v2/":
             return ""
         if not full_path.startswith("/v2/"):
             raise ValueError("Download forks only support registry blob/manifest reads")
         path = full_path.removeprefix("/v2/")
-        for separator in ("/manifests/", "/blobs/"):
-            repo, found, _ = path.rpartition(separator)
-            if found and repo:
-                return f"repository:{repo}:pull"
+        parent, _, reference = path.rpartition("/")
+        repo, _, resource = parent.rpartition("/")
+        if repo and reference and resource in ("manifests", "blobs"):
+            return f"repository:{repo}:pull"
         raise ValueError("Download forks only support registry blob/manifest reads")
 
     @staticmethod

@@ -47,6 +47,7 @@ class _ServerState:
         self.payload = b"download bytes"
         self.root = document(config=edge(self.payload))
         self.failures = 0
+        self.pre_auth_failures = 0
         self.failure_status = 429
         self.token_lifetime = 3600
         self.challenge_scope: str | None = None
@@ -104,8 +105,15 @@ def server():
                 state.requests += 1
                 authorization = self.headers.get("Authorization")
                 state.headers.append(authorization)
-                repo = path.path.removeprefix("/v2/").split("/blobs/")[0].split("/manifests/")[0]
-                scope = f"repository:{repo}:pull"
+                if path.path == "/v2/":
+                    repo, resource = "", ""
+                else:
+                    repo, resource, _ = path.path.removeprefix("/v2/").rsplit("/", 2)
+                scope = f"repository:{repo}:pull" if repo else ""
+                if state.pre_auth_failures:
+                    state.pre_auth_failures -= 1
+                    self._reply(state.failure_status, b"")
+                    return
                 basic = "Basic " + base64.b64encode(b"test-user:test-password").decode()
                 expected = (
                     basic if state.mode == "basic"
@@ -126,7 +134,7 @@ def server():
                     headers = {"Retry-After": state.retry_after} if state.retry_after is not None else {}
                     self._reply(state.failure_status, b"", headers)
                     return
-                payload = state.root if "/manifests/" in path.path else state.payload
+                payload = state.root if resource == "manifests" else state.payload
                 self._reply(200, payload)
 
         def do_POST(self) -> None:
@@ -287,6 +295,22 @@ def test_scope_and_credential_isolation(server) -> None:
     assert state.token_calls[0][1] != state.token_calls[2][1]
 
 
+@pytest.mark.parametrize("repo", ["team/manifests/image", "team/blobs/image", "team/manifests/blobs/image"])
+@pytest.mark.parametrize("resource", ["manifests", "blobs"])
+def test_nested_repository_scope_uses_terminal_resource(server, repo: str, resource: str) -> None:
+    """Repository components named manifests/blobs remain in the validated authentication scope."""
+    authority, state = server
+    with DownloadTransport(_client(authority), DownloadOptions.sequential()) as worker:
+        reference = "latest" if resource == "manifests" else address(state.payload)
+        with worker.get(f"/v2/{repo}/{resource}/{reference}", stream=True) as response:
+            assert response.status_code == 200
+            assert response.content == (state.root if resource == "manifests" else state.payload)
+        result = get_blob(worker, repo, address(state.payload))
+        assert result.digest == address(state.payload)
+    assert [scope for scope, _ in state.token_calls] == [f"repository:{repo}:pull"]
+    assert state.unauthorized == 1
+
+
 @pytest.mark.parametrize("mode", ["anonymous", "basic"])
 @pytest.mark.parametrize("middleware", [True, False])
 def test_anonymous_and_basic(server, mode: str, middleware: bool) -> None:
@@ -364,6 +388,23 @@ def test_modern_retry_default_and_explicit_zero(server, budget: int | None) -> N
             assert response.status_code == (429 if budget == 0 else 200)
         assert worker._download_context.retry_config.max_retries == (3 if budget is None else budget)
     assert state.requests == (1 if budget == 0 else 3)
+
+
+@pytest.mark.parametrize("budget", [0, 1, 2])
+def test_retry_budget_shared_across_authentication_resends(server, budget: int) -> None:
+    """Mixed 429/401/429 responses cannot restart the retry budget after token negotiation."""
+    authority, state = server
+    state.pre_auth_failures = 1
+    state.failures = 1
+    with (
+        patch.object(RetryMiddleware, "_wait_backoff") as wait,
+        DownloadTransport(_client(authority), DownloadOptions(max_retries=budget)) as worker,
+    ):
+        with worker.get("/v2/repo/blobs/test", stream=True) as response:
+            assert response.status_code == (200 if budget == 2 else 429)
+        assert wait.call_count == budget
+    assert state.requests == {0: 1, 1: 3, 2: 4}[budget]
+    assert len(state.token_calls) == (0 if budget == 0 else 1)
 
 
 def test_explicit_client_retry_policy_retained(server) -> None:

@@ -222,6 +222,8 @@ class RegistryClient:
         from the context before worker I/O; the original client is never closed.
         Only built-in settings are copied; the override reconstructs custom
         middleware without copying the original middleware's mutable state.
+        One outer retry owner shares the status/transport retry budget across
+        authentication dispatches rather than resetting it on auth resends.
 
         :param context: Open operation-owned pooled transport.
         :returns: Fresh base client with worker-local mutable request state.
@@ -246,12 +248,12 @@ class RegistryClient:
             """Bind the shared provider to this worker's private session and request chain."""
             return context.auth.execute(request, next_handler, session)
 
-        worker._pipeline.add_middleware(authenticate)
-        if context.logging_config is not None:
-            worker._pipeline.add_middleware(LoggingMiddleware(*context.logging_config))
         worker._pipeline.add_middleware(
             RetryMiddleware(copy.deepcopy(context.retry_config), honor_retry_after=True)
         )
+        worker._pipeline.add_middleware(authenticate)
+        if context.logging_config is not None:
+            worker._pipeline.add_middleware(LoggingMiddleware(*context.logging_config))
         if context.cache_config is not None:
             worker._pipeline.add_middleware(
                 CachingMiddleware(*context.cache_config)
