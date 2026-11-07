@@ -141,6 +141,7 @@ class _DownloadAuth:
         Only same-origin GET/HEAD requests can use scoped credentials. Foreign
         successes pass through without provider headers; foreign 401s fail closed.
         Followers do not dispatch while initial discovery or expiry refresh runs.
+        Unsuccessful initial responses leave discovery serialized for later peers.
         """
         if request.method not in ("GET", "HEAD"):
             raise ValueError("Download forks only support GET and HEAD")
@@ -161,7 +162,7 @@ class _DownloadAuth:
                     return self._challenge(
                         state, request, self._capture_challenge(response), next_handler, session,
                     )
-                state.initialized = True
+                state.initialized = 200 <= response.status_code < 300
                 return response
             if state.token is not None and (
                 state.token.expires_at is not None and state.token.expires_at <= time.monotonic()

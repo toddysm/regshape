@@ -210,6 +210,46 @@ def test_concurrent_unknown_scope_single_flight(server) -> None:
     assert state.unauthorized == 1 and len(state.token_calls) == 1
 
 
+@pytest.mark.parametrize("status", [429, 503])
+def test_unsuccessful_first_response_keeps_concurrent_discovery_single_flight(server, status: int) -> None:
+    """Waiting peers share one discovery while the first throttled request backs off."""
+    authority, state = server
+    state.pre_auth_failures = 1
+    state.failure_status = status
+    backoff_entered = threading.Event()
+    release_backoff = threading.Event()
+    peers_ready = threading.Barrier(4)
+
+    def pause_backoff(attempt: int) -> None:
+        """Hold the original request outside its released slot until peers finish discovery."""
+        backoff_entered.set()
+        assert release_backoff.wait(timeout=5)
+
+    def receive_peer(worker: RegistryClient) -> bytes:
+        """Dispatch four peers together against the still-undiscovered authentication scope."""
+        peers_ready.wait(timeout=5)
+        return _receive(worker)
+
+    with (
+        patch.object(RetryMiddleware, "_wait_backoff", side_effect=pause_backoff),
+        DownloadTransport(_client(authority), DownloadOptions(max_retries=1)) as root,
+    ):
+        context = root._download_context
+        workers = [context.fork() for _ in range(4)]
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            throttled = executor.submit(_receive, root)
+            try:
+                assert backoff_entered.wait(timeout=5)
+                assert not context.auth.states["repository:repo:pull"].initialized
+                assert context.active == 0
+                peers = [executor.submit(receive_peer, worker) for worker in workers]
+                assert [peer.result(timeout=5) for peer in peers] == [state.payload] * 4
+            finally:
+                release_backoff.set()
+            assert throttled.result(timeout=5) == state.payload
+    assert len(state.token_calls) == 1 and state.unauthorized == 1
+
+
 @pytest.mark.parametrize("rejected", [False, True])
 def test_expiry_and_rejected_generation_refresh_once(server, rejected: bool) -> None:
     """Expired or rejected shared generations cause one exchange rather than one per worker."""

@@ -70,6 +70,8 @@ The operation resolves no credentials: it snapshots the borrowed client's
 already resolved credentials and connection configuration. Root/manifest/blob
 clients share one operation-local single-flight provider. One leader discovers
 the same repository's challenge and exchanges a token while followers wait.
+Unsuccessful first responses do not mark discovery complete; waiting peers
+still share serialized challenge discovery while a throttled request backs off.
 Tokens are bound to the registry origin, credential snapshot, validated
 realm/service and repository pull scope. Expiry metadata or rejection of a
 generation causes one shared refresh. Anonymous and Basic flows remain supported;
