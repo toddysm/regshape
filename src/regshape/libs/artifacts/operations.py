@@ -45,13 +45,15 @@ from regshape.libs.artifacts.storage import (
     require_archive_publication,
     require_safe_filesystem,
 )
-from regshape.libs.blobs import get_blob
+from regshape.libs.blobs import DownloadOptions, get_blob
+from regshape.libs.blobs.download import resolve_download_options
 from regshape.libs.errors import ArtifactError
 from regshape.libs.manifests import download_manifest
 from regshape.libs.manifests.download import _validate_inputs
 from regshape.libs.models.descriptor import Descriptor
 from regshape.libs.progress import ManifestKind, ManifestProgress, TransferProgress
 from regshape.libs.transport import RegistryClient
+from regshape.libs.transport.download import DownloadTransport
 
 _TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
 
@@ -262,6 +264,7 @@ def pull_artifact(
     limits: ArtifactLimits | None = None,
     progress_callback: ArtifactProgressCallback | None = None,
     phase_callback: ArtifactPhaseCallback | None = None,
+    download_options: DownloadOptions | None = None,
 ) -> ArtifactPullResult:
     """Pull every platform/subject/config/layer into a new OCI directory or gzip-tar.
 
@@ -287,6 +290,38 @@ def pull_artifact(
     :param phase_callback: Optional synchronous packaging/publication notification,
         distinct from object bytes. Exceptions propagate unchanged before the
         announced local work and trigger owned cleanup.
+    :param download_options: Immutable shared download policy. Supported clients
+        use one pooled authentication context from the root through all objects.
+        Explicit legacy retains the original client and constructs no pool.
+        Graph scheduling remains serial until the parallel graph layer is integrated.
+    """
+    policy = resolve_download_options(client, download_options)
+    _pull_inputs(client.config.registry, repo, reference, output_path, output_format, limits)
+    if policy.transport == "legacy":
+        return _pull_artifact_serial(
+            client, repo, reference, output_path, output_format=output_format,
+            limits=limits, progress_callback=progress_callback, phase_callback=phase_callback,
+            blob_options=policy,
+        )
+    with DownloadTransport(client, policy) as worker:
+        return _pull_artifact_serial(
+            worker, repo, reference, output_path, output_format=output_format,
+            limits=limits, progress_callback=progress_callback, phase_callback=phase_callback,
+            blob_options=None,
+        )
+
+
+def _pull_artifact_serial(
+    client: RegistryClient, repo: str, reference: str, output_path: str | Path, *,
+    output_format: ArtifactFormat, limits: ArtifactLimits | None,
+    progress_callback: ArtifactProgressCallback | None,
+    phase_callback: ArtifactPhaseCallback | None, blob_options: DownloadOptions | None,
+) -> ArtifactPullResult:
+    """Run the retained graph/publication path without owning the borrowed transport.
+
+    :param blob_options: Legacy policy for original nested blob calls; None reuses
+        the root worker's existing context. Output, observers, limits and errors
+        retain pull_artifact's contract.
     """
     observers = _Observers(progress_callback)
     if phase_callback is not None and not callable(phase_callback):
@@ -337,6 +372,7 @@ def pull_artifact(
                             client, repo, edge.digest, filename, total_size=edge.size,
                             max_bytes=max(1, min(edge.size, remaining)),
                             output_dir_fd=staging.fd, progress_callback=row.blob,
+                            download_options=blob_options,
                         )
                     staging.register(filename)
                     store.promote(filename, edge.digest)

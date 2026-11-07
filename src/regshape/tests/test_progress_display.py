@@ -833,6 +833,7 @@ def test_blob_download_real_library_wiring(disabled: bool) -> None:
         patch("regshape.cli.blob.ProgressDisplay", side_effect=display),
         patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
         patch("regshape.libs.decorators.call_details.requests.request", return_value=response) as http,
+        patch("requests.Session.request", side_effect=http),
     ):
         result = CliRunner().invoke(regshape, args)
     assert result.exit_code == 0, result.output

@@ -373,8 +373,8 @@ def debug_call(func):
 
 
 @debug_call
-def http_request(url: str, method: str = "GET", headers: dict = None, **kwargs) -> requests.Response:
-    """Thin wrapper around :func:`requests.request` decorated with
+def http_request(url: str, method: str = "GET", headers: dict | None = None, **kwargs) -> requests.Response:
+    """Thin wrapper around Requests, optionally using an owned session, decorated with
     ``@debug_call``.
 
     Use this instead of calling ``requests.get`` / ``requests.request``
@@ -383,6 +383,8 @@ def http_request(url: str, method: str = "GET", headers: dict = None, **kwargs) 
     :param url: Full request URL.
     :param method: HTTP method (default ``"GET"``).
     :param headers: Optional request headers dict.
+    :param session: Optional worker-owned Requests Session, supplied in kwargs.
+        Uses the same instrumentation and preserves environment/proxy settings.
     :param kwargs: Additional keyword arguments forwarded to
         :func:`requests.request` (e.g. ``timeout``).
     :return: :class:`requests.Response`
@@ -390,7 +392,10 @@ def http_request(url: str, method: str = "GET", headers: dict = None, **kwargs) 
         if Requests raises a parsing/argument ValueError with automatic redirects
         disabled. This occurs before telemetry or middleware can log the error.
     """
+    session = kwargs.pop("session", None)
     try:
+        if session is not None:
+            return session.request(method, url, headers=headers or {}, **kwargs)
         return requests.request(method, url, headers=headers or {}, **kwargs)
     except ValueError:
         if kwargs.get("allow_redirects", True):

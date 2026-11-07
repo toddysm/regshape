@@ -719,7 +719,10 @@ def test_blob_downloads_share_stream_cache_and_retry_safety() -> None:
         StreamResponse(payload, headers=headers),
     )
     transport = client(caching=True, retries=True)
-    with patch("requests.request", side_effect=[failed, first, second]) as send:
+    with (
+        patch("requests.request", side_effect=[failed, first, second]) as send,
+        patch("requests.Session.request", side_effect=send),
+    ):
         for _ in range(2):
             result = get_blob(transport, REPO, digest)
             assert result.digest == digest and result.size == len(payload)

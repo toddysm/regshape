@@ -21,6 +21,7 @@ concerns — error reporting is the caller's responsibility.
 import hashlib
 import logging
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import BinaryIO, Optional
 from urllib.parse import parse_qsl, urlparse
@@ -29,6 +30,7 @@ import requests
 
 from regshape.libs._http import ClosingResponse
 from regshape.libs._http import download_total as _download_total
+from regshape.libs.blobs.download import DownloadOptions, resolve_download_options
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.decorators.timing import track_time
 from regshape.libs.errors import AuthError, BlobError
@@ -45,6 +47,7 @@ from regshape.libs.progress import (
 )
 from regshape.libs.transport import RegistryClient
 from regshape.libs.transport.body import _UploadBody
+from regshape.libs.transport.download import DownloadTransport
 
 _DEFAULT_CHUNK_SIZE = 65_536
 _DEFAULT_CONTENT_TYPE = "application/octet-stream"
@@ -102,6 +105,7 @@ def get_blob(
     total_size: int | None = None,
     max_bytes: int | None = None,
     output_dir_fd: int | None = None,
+    download_options: DownloadOptions | None = None,
 ) -> BlobInfo:
     """Download a blob and verify its digest.
 
@@ -134,6 +138,10 @@ def get_blob(
         decoding/error bodies and exclusive output, checking counts before writes.
     :param output_dir_fd: Borrowed safe parent handle for a single output filename.
         Requires max_bytes; the caller checks platform support and parent identity.
+    :param download_options: Immutable pooled policy, or explicit legacy rollback.
+        Omitted options select the pool for supported clients and retain original
+        serial behavior with a logged notice for unsupported custom clients.
+        Range scheduling is implemented by the separate range-download layer.
     :returns: :class:`~regshape.libs.models.blob.BlobInfo` built from
         response headers after successful digest verification.
     :raises AuthError: On authentication failure.
@@ -141,6 +149,37 @@ def get_blob(
         algorithm, a digest mismatch, or an I/O error when *output_path*
         is supplied.
     :raises requests.exceptions.RequestException: On transport errors.
+    :raises ValueError: For invalid policy or unsupported explicit pooled clients,
+        before acquisition effects.
+    """
+    policy = resolve_download_options(client, download_options)
+    context = getattr(client, "_download_context", None)
+    transport: AbstractContextManager[RegistryClient]
+    if context is not None and isinstance(context, DownloadTransport):
+        if download_options is not None and policy != context.options:
+            raise ValueError("Nested downloads must use their operation's download policy")
+        transport = nullcontext(client)
+    elif policy.transport == "legacy":
+        transport = nullcontext(client)
+    else:
+        transport = DownloadTransport(client, policy)
+    with transport as worker:
+        return _get_blob_serial(
+            worker, repo, digest, output_path, chunk_size,
+            progress_callback=progress_callback, total_size=total_size,
+            max_bytes=max_bytes, output_dir_fd=output_dir_fd,
+        )
+
+
+def _get_blob_serial(
+    client: RegistryClient, repo: str, digest: str, output_path: Optional[str],
+    chunk_size: int, *, progress_callback: ProgressCallback | None,
+    total_size: int | None, max_bytes: int | None, output_dir_fd: int | None,
+) -> BlobInfo:
+    """Retain the original verified full-stream receiver on a selected client.
+
+    Caller owns transport lifetime. Existing progress, output cleanup and domain
+    errors are unchanged; this receiver neither forks clients nor schedules jobs.
     """
     _validate_chunk_size(chunk_size)
     if max_bytes is not None:

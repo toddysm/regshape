@@ -121,6 +121,7 @@ def _invoke(
         _console_streams(runner, console),
         patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
         patch("requests.request", side_effect=registry.respond) as send,
+        patch("requests.Session.request", side_effect=send),
         patch("regshape.cli.artifact.ProgressDisplay", side_effect=console.artifact_display),
     ):
         result = runner.invoke(regshape, [
@@ -806,7 +807,8 @@ def test_phase_callback_announces_actual_local_work_and_preserves_errors(
 
     with (
         patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
-        patch("requests.request", side_effect=registry.respond),
+        patch("requests.request", side_effect=registry.respond) as send,
+        patch("requests.Session.request", side_effect=send),
     ):
         client = RegistryClient(TransportConfig(registry="registry.example"))
         fails = fail_at == ArtifactPhase.PUBLISHING or (
@@ -907,6 +909,7 @@ def test_alias_and_sha512_insecure_command_contract(
     with (
         patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
         patch("requests.request", side_effect=registry.respond) as send,
+        patch("requests.Session.request", side_effect=send),
     ):
         result = runner.invoke(regshape, [
             "--insecure", "artifact", "pull", alias,

@@ -9,6 +9,7 @@ import base64
 import hashlib
 import io
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlsplit
@@ -18,7 +19,7 @@ import requests
 from requests.adapters import BaseAdapter
 from urllib3.response import HTTPResponse
 
-from regshape.libs.blobs import get_blob
+from regshape.libs.blobs import DownloadOptions, get_blob
 from regshape.libs.errors import AuthError
 from regshape.libs.transport import RegistryClient, TransportConfig
 from regshape.libs.transport.urls import require_authentication_origin
@@ -89,9 +90,9 @@ class WireAdapter(BaseAdapter):
         self.routes[url] = lambda request: WireResponse(request, status, body, headers)
 
 
-@pytest.fixture
-def wire(monkeypatch: pytest.MonkeyPatch) -> WireAdapter:
-    """Mount the local adapter for every registry/token Session and disable environment credentials."""
+@pytest.fixture(params=["pooled", "legacy"])
+def wire(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> WireAdapter:
+    """Exercise both backends on the local adapter, with proxies/netrc and sockets disabled."""
     adapter = WireAdapter()
     original = requests.Session.__init__
 
@@ -103,6 +104,9 @@ def wire(monkeypatch: pytest.MonkeyPatch) -> WireAdapter:
         session.mount("http://", adapter)
 
     monkeypatch.setattr(requests.Session, "__init__", isolated)
+    monkeypatch.setattr("regshape.libs.transport.download._DownloadAdapter", lambda concurrency: adapter)
+    options = DownloadOptions() if request.param == "pooled" else DownloadOptions.legacy()
+    monkeypatch.setattr(__name__ + ".get_blob", partial(get_blob, download_options=options))
     return adapter
 
 
@@ -238,6 +242,8 @@ def test_adapter_control_reproduces_disclosure_when_guard_is_removed(
     wire.reply(ATTACKER + "/token", 200, b'{"token":"synthetic-token"}')
     with patch("regshape.libs.transport.client.require_authentication_origin"), patch(
         "regshape.libs.transport.middleware.require_authentication_origin",
+    ), patch(
+        "regshape.libs.transport.download.require_authentication_origin",
     ):
         assert download(middleware, tmp_path / "blob").digest == DIGEST
     exposed = [item for item in wire.sent if item.url.startswith(ATTACKER)]

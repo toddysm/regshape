@@ -11,6 +11,7 @@
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
+from regshape.libs.blobs.download import DownloadOptions
 from regshape.libs.blobs.operations import (
     delete_blob,
     get_blob,
@@ -28,6 +29,7 @@ from regshape.libs.progress import (
 )
 
 __all__ = [
+    "DownloadOptions",
     "ProgressCallback",
     "TransferDirection",
     "TransferPhase",
