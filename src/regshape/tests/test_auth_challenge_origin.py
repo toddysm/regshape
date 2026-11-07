@@ -19,10 +19,15 @@ import requests
 from requests.adapters import BaseAdapter
 from urllib3.response import HTTPResponse
 
+from regshape.libs.auth.download import negotiate_download_token
 from regshape.libs.blobs import DownloadOptions, get_blob
 from regshape.libs.errors import AuthError
 from regshape.libs.transport import RegistryClient, TransportConfig
-from regshape.libs.transport.urls import require_authentication_origin
+from regshape.libs.transport.download import DownloadTransport
+from regshape.libs.transport.urls import (
+    REDIRECT_STATUSES,
+    require_authentication_origin,
+)
 
 BASE = "https://registry.example"
 CDN = "https://cdn.example"
@@ -124,6 +129,40 @@ def download(middleware: bool, path: Path, bounded: bool = True):
         client(middleware), "repo", DIGEST, str(path),
         **({"max_bytes": len(PAYLOAD), "total_size": len(PAYLOAD)} if bounded else {}),
     )
+
+
+@pytest.mark.parametrize("method", ["GET", "POST"])
+@pytest.mark.parametrize("status", REDIRECT_STATUSES)
+def test_token_redirect_rejected_before_requests_buffers_response_next(method: str, status: int) -> None:
+    """Real Requests rejects GET/refresh-POST redirects without reading bodies or leaking slots."""
+    adapter = WireAdapter()
+
+    def token_response(request: requests.PreparedRequest) -> WireResponse:
+        """Return an ACR GET rejection or a redirect with a body Requests must not buffer."""
+        if method == "POST" and request.method == "GET":
+            return WireResponse(request, 401)
+        return WireResponse(
+            request, status, b"untrusted token redirect body",
+            {"Location": ATTACKER + "/collect"},
+        )
+
+    adapter.routes[TOKEN_ORIGIN + "/token"] = token_response
+    with (
+        patch("regshape.libs.transport.download._DownloadAdapter", return_value=adapter),
+        DownloadTransport(client(True), DownloadOptions.sequential()) as worker,
+        patch.object(HTTPResponse, "read", side_effect=AssertionError("Redirect body was consumed")) as read,
+    ):
+        worker._session.trust_env = False
+        with pytest.raises(AuthError, match="Token endpoint redirects") as caught:
+            negotiate_download_token(
+                challenge(TOKEN_ORIGIN), *CREDENTIALS, base_url=BASE,
+                scope="repository:repo:pull", session=worker._session, timeout=12,
+            )
+        read.assert_not_called()
+        assert worker._download_context.active == 0
+        assert all(response.close_calls == 1 for response in adapter.responses)
+        assert [request.method for request in adapter.sent] == (["GET", "POST"] if method == "POST" else ["GET"])
+        assert all(value not in str(caught.value) for value in (*CREDENTIALS, TOKEN_ORIGIN, ATTACKER))
 
 
 @pytest.mark.parametrize("middleware", [False, True])

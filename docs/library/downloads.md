@@ -77,6 +77,8 @@ Token exchanges use the same instrumented HTTP hook, finite timeout and pool.
 External registry-issued token realms are supported without credential-bearing
 URLs or HTTPS-to-HTTP downgrade. Token-endpoint redirects are rejected. The
 ACR refresh-token POST fallback remains supported.
+GET and refresh-token POST reject redirects in a response hook before Requests
+can buffer their bodies, preserving the token-response byte limit.
 
 Worker-local Requests sessions isolate headers, cookies, caches, retry state and
 `last_response`. One blocking adapter bounds its origin-pool cache and per-origin

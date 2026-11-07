@@ -13,12 +13,12 @@ from urllib.parse import urlsplit
 
 import requests
 
-from regshape.libs._http import ClosingResponse
+from regshape.libs._http import ClosingResponse, close_response
 from regshape.libs.auth.registryauth import _get_basic_auth, _parse_auth_header
 from regshape.libs.decorators.call_details import http_request
 from regshape.libs.errors import AuthError, ManifestError
 from regshape.libs.manifests._stream import entity_chunks
-from regshape.libs.transport.urls import _url_origin
+from regshape.libs.transport.urls import REDIRECT_STATUSES, _url_origin
 
 
 @dataclass(frozen=True)
@@ -64,6 +64,19 @@ def _token_payload(response: requests.Response) -> dict:
     return value
 
 
+def _reject_token_redirect(response: requests.Response, **kwargs: object) -> requests.Response:
+    """Close and reject token redirects before Requests buffers bodies for Response.next.
+
+    Successful/non-redirect responses remain caller-owned. A cleanup failure is
+    reported without replacing the sanitized authentication failure.
+    """
+    if response.status_code in REDIRECT_STATUSES:
+        error = AuthError("Token endpoint redirects are not allowed")
+        close_response(response, primary_error=error)
+        raise error
+    return response
+
+
 def negotiate_download_token(
     challenge: str,
     username: str | None,
@@ -80,6 +93,8 @@ def negotiate_download_token(
     with no TLS downgrade. Missing scope is bound to the requested repository.
     A challenged repository/action scope must exactly match the requested one.
     GET with optional Basic credentials retains the ACR refresh-token POST fallback.
+    Both exchanges reject redirects in a response hook before any redirect-body
+    buffering; successful token JSON remains bounded to 1 MiB.
 
     :param challenge: Registry-issued WWW-Authenticate value.
     :param username: Resolved credential snapshot, possibly anonymous.
@@ -122,6 +137,7 @@ def negotiate_download_token(
         with ClosingResponse(http_request(
             realm, "GET", session=session, params=params, auth=credentials,
             timeout=timeout, stream=True, allow_redirects=False,
+            hooks={"response": _reject_token_redirect},
         )) as response:
             refresh = response.status_code == 401 and password is not None
             if not refresh:
@@ -131,6 +147,7 @@ def negotiate_download_token(
                 realm, "POST", session=session,
                 data={"grant_type": "refresh_token", "refresh_token": password, **params},
                 timeout=timeout, stream=True, allow_redirects=False,
+                hooks={"response": _reject_token_redirect},
             )) as response:
                 payload = _token_payload(response)
     except requests.exceptions.RequestException:
