@@ -21,7 +21,7 @@
 """
 
 import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, List, Optional
 
 import requests
@@ -199,7 +199,7 @@ class RegistryClient:
         allowed = {
             AuthMiddleware: {"_username", "_password", "_registry", "_base_url"},
             LoggingMiddleware: {"logger", "level"},
-            RetryMiddleware: {"config"},
+            RetryMiddleware: {"config", "honor_retry_after"},
             CachingMiddleware: {"cache", "max_size", "ttl"},
         }
         if any(set(vars(item)) != allowed[type(item)] for item in self._pipeline._middleware):
@@ -220,6 +220,8 @@ class RegistryClient:
         cache and last_response. Custom extensions must explicitly override this
         hook and preserve their semantics with equivalent isolation. Call only
         from the context before worker I/O; the original client is never closed.
+        Only built-in settings are copied; the override reconstructs custom
+        middleware without copying the original middleware's mutable state.
 
         :param context: Open operation-owned pooled transport.
         :returns: Fresh base client with worker-local mutable request state.
@@ -230,7 +232,9 @@ class RegistryClient:
         if context.borrowed is not self and self._download_context is not context:
             raise ValueError("Download fork requires its client's operation context")
         worker = object.__new__(RegistryClient)
-        worker.config = copy.deepcopy(context.config)
+        worker.config = replace(
+            context.config, retry_config=copy.deepcopy(context.config.retry_config), middlewares=[],
+        )
         worker._username, worker._password = context.username, context.password
         worker.last_response = None
         worker._download_context = context
@@ -245,7 +249,9 @@ class RegistryClient:
         worker._pipeline.add_middleware(authenticate)
         if context.logging_config is not None:
             worker._pipeline.add_middleware(LoggingMiddleware(*context.logging_config))
-        worker._pipeline.add_middleware(RetryMiddleware(copy.deepcopy(context.retry_config)))
+        worker._pipeline.add_middleware(
+            RetryMiddleware(copy.deepcopy(context.retry_config), honor_retry_after=True)
+        )
         if context.cache_config is not None:
             worker._pipeline.add_middleware(
                 CachingMiddleware(*context.cache_config)

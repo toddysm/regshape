@@ -112,13 +112,10 @@ class _DownloadAuth:
         return replace(request, headers=dict(headers))
 
     def _challenge(
-        self, state: _AuthState, request: RegistryRequest, response: RegistryResponse,
+        self, state: _AuthState, request: RegistryRequest, challenge: str,
         next_handler: NextHandler, session: requests.Session,
     ) -> RegistryResponse:
-        """Validate/dispose a challenge, negotiate, and return one caller-owned auth retry."""
-        require_authentication_origin(response.raw_response, self.base_url)
-        with ClosingResponse(response.raw_response):
-            challenge = response.raw_response.headers.get("WWW-Authenticate", "")
+        """Negotiate a captured challenge under the scope lock, then retry once."""
         if not challenge:
             challenge = AuthMiddleware._probe_v2_challenge(next_handler, request, self.base_url)
         if not challenge:
@@ -129,6 +126,12 @@ class _DownloadAuth:
         if retried.status_code == 401:
             require_authentication_origin(retried.raw_response, self.base_url)
         return retried
+
+    def _capture_challenge(self, response: RegistryResponse) -> str:
+        """Validate and close a rejected response before waiting for the scope lock."""
+        require_authentication_origin(response.raw_response, self.base_url)
+        with ClosingResponse(response.raw_response):
+            return response.raw_response.headers.get("WWW-Authenticate", "")
 
     def execute(
         self, request: RegistryRequest, next_handler: NextHandler, session: requests.Session,
@@ -155,7 +158,9 @@ class _DownloadAuth:
             if not state.initialized:
                 response = next_handler(request)
                 if response.status_code == 401:
-                    return self._challenge(state, request, response, next_handler, session)
+                    return self._challenge(
+                        state, request, self._capture_challenge(response), next_handler, session,
+                    )
                 state.initialized = True
                 return response
             if state.token is not None and (
@@ -166,15 +171,12 @@ class _DownloadAuth:
         response = next_handler(self._authorized(request, token))
         if response.status_code != 401:
             return response
-        require_authentication_origin(response.raw_response, self.base_url)
+        challenge = self._capture_challenge(response)
         with state.lock:
             if state.exchange_error is not None:
-                with ClosingResponse(response.raw_response):
-                    raise state.exchange_error
+                raise state.exchange_error
             if state.generation == generation:
-                return self._challenge(state, request, response, next_handler, session)
-            with ClosingResponse(response.raw_response):
-                pass
+                return self._challenge(state, request, challenge, next_handler, session)
             retried = next_handler(self._authorized(request, state.token))
             if retried.status_code == 401:
                 require_authentication_origin(retried.raw_response, self.base_url)
@@ -282,15 +284,21 @@ class DownloadTransport:
     """
 
     def __init__(self, client: RegistryClient, options: "DownloadOptions") -> None:
-        """Snapshot resolved credentials/configuration and allocate one bounded adapter."""
+        """Snapshot built-ins and validate the effective retry budget before allocation.
+
+        Custom middleware state is reconstructed only by the safe-fork hook,
+        never traversed while copying connection/retry settings.
+        """
         if options.transport != "pooled" or not client.supports_download_fork():
             raise ValueError("DownloadTransport requires supported pooled download policy")
         options.validate()
         self.options = options
         self.borrowed = client
-        self.config = copy.deepcopy(client.config)
+        self.config = replace(
+            client.config, retry_config=copy.deepcopy(client.config.retry_config), middlewares=[],
+        )
         self.username, self.password = client._username, client._password
-        explicit_retry = self.config.retry_config if self.config.enable_retries else None
+        explicit_retry = self.config.retry_config
         self.logging_config: tuple[str, int] | None = None
         self.cache_config: tuple[int, float | None] | None = None
         if client._pipeline is not None:
@@ -305,8 +313,12 @@ class DownloadTransport:
         self.retry_config = copy.deepcopy(explicit_retry) if explicit_retry else RetryConfig(
             status_codes=(429, 500, 502, 503, 504),
         )
+        if explicit_retry is not None and not self.config.enable_retries:
+            self.retry_config.max_retries = 0
         if options.max_retries is not None:
             self.retry_config.max_retries = options.max_retries
+        if type(self.retry_config.max_retries) is not int or not 0 <= self.retry_config.max_retries <= 10:
+            raise ValueError("Resolved download max_retries must be an integer in 0..10")
         self.auth = _DownloadAuth(self.config, self.username, self.password)
         self.adapter = _DownloadAdapter(options.concurrency)
         self.slots = threading.BoundedSemaphore(options.concurrency)

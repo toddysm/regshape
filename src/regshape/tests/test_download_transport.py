@@ -9,6 +9,7 @@ import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
@@ -46,10 +47,12 @@ class _ServerState:
         self.payload = b"download bytes"
         self.root = document(config=edge(self.payload))
         self.failures = 0
+        self.failure_status = 429
         self.token_lifetime = 3600
         self.challenge_scope: str | None = None
         self.token_status = 200
         self.token_posts = 0
+        self.retry_after: str | None = None
 
 
 @pytest.fixture
@@ -120,7 +123,8 @@ def server():
                     return
                 if state.failures:
                     state.failures -= 1
-                    self._reply(429, b"")
+                    headers = {"Retry-After": state.retry_after} if state.retry_after is not None else {}
+                    self._reply(state.failure_status, b"", headers)
                     return
                 payload = state.root if "/manifests/" in path.path else state.payload
                 self._reply(200, payload)
@@ -213,6 +217,55 @@ def test_expiry_and_rejected_generation_refresh_once(server, rejected: bool) -> 
         workers = [context.fork() for _ in range(4)]
         with ThreadPoolExecutor(max_workers=4) as executor:
             assert list(executor.map(_receive, workers)) == [state.payload] * 4
+    assert len(state.token_calls) == 2
+
+
+def test_expiry_refresh_and_inflight_rejection_release_slot_before_scope_lock(server) -> None:
+    """An expired peer holding the scope lock cannot deadlock an in-flight 401 at C=1."""
+    authority, state = server
+    with DownloadTransport(_client(authority), DownloadOptions.sequential()) as root:
+        assert _receive(root) == state.payload
+        context = root._download_context
+        peer = context.fork()
+        auth = context.auth.states["repository:repo:pull"]
+        state.valid_tokens.clear()
+        rejected_ready = threading.Event()
+        refresh_entered = threading.Event()
+        rejected = []
+        send = root._session.send
+        refresh = context.auth._refresh
+
+        def hold_rejection(request, **kwargs):
+            """Hold the response lease until the peer has entered refresh under its lock."""
+            response = send(request, **kwargs)
+            if response.status_code == 401:
+                rejected.append(response)
+                rejected_ready.set()
+                assert refresh_entered.wait(timeout=5)
+            return response
+
+        def notify_refresh(*args, **kwargs):
+            """Expose scope-lock ownership before the token exchange waits for the C=1 slot."""
+            refresh_entered.set()
+            return refresh(*args, **kwargs)
+
+        with (
+            patch.object(root._session, "send", side_effect=hold_rejection),
+            patch.object(context.auth, "_refresh", side_effect=notify_refresh),
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            inflight = executor.submit(_receive, root)
+            try:
+                assert rejected_ready.wait(timeout=5)
+                auth.token = replace(auth.token, expires_at=0)
+                expired = executor.submit(_receive, peer)
+                assert inflight.result(timeout=5) == state.payload
+                assert expired.result(timeout=5) == state.payload
+            finally:
+                # Release the blocked peer even if a regression times out.
+                for response in rejected:
+                    response.close()
+        assert context.active == 0 and auth.generation == 2
     assert len(state.token_calls) == 2
 
 
@@ -340,6 +393,94 @@ def test_implicit_enabled_retry_policy_uses_modern_defaults(server) -> None:
     assert state.requests == 2
 
 
+@pytest.mark.parametrize("budget", [None, 0, 2])
+def test_disabled_explicit_client_retry_policy_preserves_zero_unless_overridden(server, budget) -> None:
+    """An explicitly disabled policy keeps statuses/backoff and performs only authorized retries."""
+    authority, state = server
+    state.mode = "anonymous"
+    state.failures = 2
+    policy = RetryConfig(max_retries=5, backoff_factor=0, status_codes=(429,), exceptions=())
+    client = _client(authority, enable_retries=False, retry_config=policy)
+    with (
+        patch.object(RetryMiddleware, "_wait_backoff"),
+        DownloadTransport(client, DownloadOptions(max_retries=budget)) as worker,
+    ):
+        resolved = worker._download_context.retry_config
+        assert resolved.max_retries == (0 if budget is None else budget)
+        assert resolved.status_codes == (429,) and resolved.backoff_factor == 0
+        assert resolved.exceptions == ()
+        with worker.get("/v2/repo/blobs/test", stream=True) as response:
+            assert response.status_code == (200 if budget == 2 else 429)
+    assert state.requests == (3 if budget == 2 else 1)
+    assert policy.max_retries == 5
+
+
+@pytest.mark.parametrize("header,expected", [
+    ("5", 5.0),
+    ("000000000000000000000005", 5.0),
+    ("0", 1.0),
+    ("Fri, 06 Nov 2026 16:00:05 GMT", 5.0),
+    ("Fri, 06 Nov 2026 15:59:00 GMT", 1.0),
+    ("not-a-date", 1.0),
+    ("", 1.0),
+])
+@pytest.mark.parametrize("status", [429, 503])
+def test_pooled_retry_after_actual_wait(
+    server, header: str, expected: float, status: int, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Pooled throttling waits honor seconds/dates, release slots and diagnose malformed values."""
+    authority, state = server
+    state.mode = "anonymous"
+    state.failures = 1
+    state.failure_status = status
+    state.retry_after = header
+
+    def assert_released(delay: float) -> None:
+        """Prove the discarded response releases its global slot before backoff starts."""
+        assert worker._download_context.active == 0
+
+    with (
+        patch(
+            "regshape.libs.transport.middleware.time.time",
+            return_value=datetime(2026, 11, 6, 16, tzinfo=timezone.utc).timestamp(),
+        ),
+        patch("regshape.libs.transport.middleware.time.sleep", side_effect=assert_released) as sleep,
+        DownloadTransport(_client(authority), DownloadOptions()) as worker,
+    ):
+        _receive(worker)
+        assert worker._download_context.active == 0
+    sleep.assert_called_once_with(expected)
+    assert ("Malformed Retry-After" in caplog.text) == (header in ("not-a-date", ""))
+
+
+def test_legacy_retry_after_timing_is_unchanged(server) -> None:
+    """The original borrowed-client path retains configured backoff despite a Retry-After header."""
+    authority, state = server
+    state.mode = "anonymous"
+    state.failures = 1
+    state.retry_after = "5"
+    policy = RetryConfig(max_retries=1, status_codes=(429,), backoff_factor=0)
+    with patch("regshape.libs.transport.middleware.time.sleep") as sleep:
+        get_blob(
+            _client(authority, enable_retries=True, retry_config=policy),
+            "repo", address(state.payload), download_options=DownloadOptions.legacy(),
+        )
+    sleep.assert_called_once_with(0)
+
+
+def test_unrepresentable_retry_after_fails_after_release(server) -> None:
+    """An unsupported server delay never retries early or leaks an owned stream/pool slot."""
+    authority, state = server
+    state.mode = "anonymous"
+    state.failures = 1
+    state.retry_after = "9" * 20
+    with DownloadTransport(_client(authority), DownloadOptions()) as worker:
+        with pytest.raises(ValueError, match="supported download wait"):
+            _receive(worker)
+        assert worker._download_context.active == 0
+    assert state.requests == 1
+
+
 def test_worker_session_bound_and_closed_record_reclamation(server) -> None:
     """One root plus C peers bounds mutable session records; closed peers can be replaced."""
     authority, _state = server
@@ -457,6 +598,50 @@ def test_artifact_root_and_blobs_share_context(server, tmp_path: Path) -> None:
     assert len(state.token_calls) == 1 and state.unauthorized == 1
     assert client.last_response is None
     assert (tmp_path / "layout" / "blobs" / "sha256" / address(state.payload).split(":")[1]).read_bytes() == state.payload
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_custom_worker_nested_downloads_inherit_context_without_reforking(
+    server, tmp_path: Path, caplog: pytest.LogCaptureFixture, explicit: bool,
+) -> None:
+    """Nested blob/artifact calls accept custom worker state and keep one borrowed context."""
+    class Custom(RegistryClient):
+        """Safe extension whose worker-only state intentionally fails base support detection."""
+
+        def fork_for_download(self, *, context: DownloadTransport) -> RegistryClient:
+            """Add isolated custom state after the built-in worker has been constructed."""
+            worker = super().fork_for_download(context=context)
+            worker.custom_state = []
+            return worker
+
+    authority, state = server
+    with patch(
+        "regshape.libs.transport.client.resolve_credentials", return_value=("test-user", "test-password"),
+    ):
+        client = Custom(TransportConfig(authority, insecure=True))
+    policy = DownloadOptions(concurrency=2, max_retries=0)
+    with DownloadTransport(client, policy) as worker:
+        context = worker._download_context
+        assert not worker.supports_download_fork()
+        with patch("regshape.libs.transport.download._DownloadAdapter", side_effect=AssertionError("nested pool")):
+            result = get_blob(
+                worker, "repo", address(state.payload), download_options=policy if explicit else None,
+            )
+            assert result.digest == address(state.payload)
+            artifact = pull_artifact(
+                worker, "repo", "latest", tmp_path / "layout", download_options=policy if explicit else None,
+            )
+            assert artifact.root.digest == address(state.root)
+            for conflicting in (DownloadOptions(), DownloadOptions.legacy()):
+                with pytest.raises(ValueError, match="Nested downloads"):
+                    get_blob(worker, "repo", address(state.payload), download_options=conflicting)
+                with pytest.raises(ValueError, match="Nested downloads"):
+                    pull_artifact(worker, "repo", "latest", tmp_path / "rejected", download_options=conflicting)
+        assert len(context.sessions) == 1 and not context.closed
+        assert context.options == policy
+        assert not (tmp_path / "rejected").exists()
+    assert len(state.token_calls) == 1 and state.unauthorized == 1
+    assert "original serial transport" not in caplog.text
 
 
 @pytest.mark.parametrize("options", [None, DownloadOptions.sequential(), DownloadOptions.legacy()])

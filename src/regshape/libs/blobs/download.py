@@ -93,6 +93,8 @@ def resolve_download_options(
 
     Omitted options preserve unsupported existing custom callers with one logged
     notice. Explicit pooled or new batch/status consumers instead fail closed.
+    Nested calls inherit their operation's policy and check the borrowed client's
+    fork contract, not custom state already installed on an isolated worker.
 
     :param client: Borrowed transport or existing custom singular/artifact client.
     :param options: Explicit immutable policy, or None for compatibility selection.
@@ -102,7 +104,16 @@ def resolve_download_options(
     """
     if options is not None and not isinstance(options, DownloadOptions):
         raise ValueError("download_options must be DownloadOptions or None")
-    policy = options or DownloadOptions()
+    from regshape.libs.transport.download import DownloadTransport
+
+    context = getattr(client, "_download_context", None)
+    if isinstance(context, DownloadTransport):
+        if options is not None and options != context.options:
+            raise ValueError("Nested downloads must use their operation's download policy")
+        client = context.borrowed
+        policy = context.options
+    else:
+        policy = options or DownloadOptions()
     # Recheck paths if the directory was removed after policy construction.
     policy.validate()
     if policy.transport == "legacy":

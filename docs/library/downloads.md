@@ -32,8 +32,17 @@ the library cannot establish the caller's trust in that directory.
 Pooled retries default to three, including HTTP 429 and the existing transient
 server statuses. An enabled explicit `TransportConfig.retry_config` instead
 supplies its original budget, backoff, statuses and exception policy.
+An explicit retry configuration with `enable_retries=False` retains its policy
+with a zero budget unless a download override is supplied. The resolved budget,
+including one inherited from the client, must be a non-boolean integer in 0..10
+and is checked before auth/pool creation.
 `max_retries` explicitly overrides its budget, including zero to disable retries.
 Each request uses the original finite client timeout.
+Pooled 429/503 retries honor a valid `Retry-After` delay or HTTP date, waiting at
+least the greater of that delay and configured exponential backoff after releasing
+the response slot. Malformed values emit a sanitized diagnostic and retain normal
+backoff; platform-unrepresentable delays fail explicitly rather than retry early.
+Legacy retry timing is unchanged.
 
 `DownloadOptions.sequential()` means pooled C=W=1. `DownloadOptions.legacy()`
 means C=W=1 with the **original borrowed-client transport**; it requires
@@ -88,6 +97,10 @@ that preserves customization and returns a distinct client, private configuratio
 and worker-local session attached to that context. Omitted options on the two
 existing operations instead retain unsupported custom clients' original serial
 path with one logged notice. New batch/status consumers have no such exception.
+Connection/retry snapshots do not copy custom middleware; the override must
+reconstruct it with isolated state, including locks. Nested blob/artifact calls
+inherit their existing context's policy without reforking or compatibility
+warnings, and reject a conflicting explicit policy.
 
 `DownloadTransport(client, options)` is an internal building block for the
 scheduler. It allows one discovery/root session and at most C open worker

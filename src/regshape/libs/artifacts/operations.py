@@ -297,7 +297,7 @@ def pull_artifact(
     """
     policy = resolve_download_options(client, download_options)
     _pull_inputs(client.config.registry, repo, reference, output_path, output_format, limits)
-    if policy.transport == "legacy":
+    if policy.transport == "legacy" or isinstance(getattr(client, "_download_context", None), DownloadTransport):
         return _pull_artifact_serial(
             client, repo, reference, output_path, output_format=output_format,
             limits=limits, progress_callback=progress_callback, phase_callback=phase_callback,
@@ -319,8 +319,8 @@ def _pull_artifact_serial(
 ) -> ArtifactPullResult:
     """Run the retained graph/publication path without owning the borrowed transport.
 
-    :param blob_options: Legacy policy for original nested blob calls; None reuses
-        the root worker's existing context. Output, observers, limits and errors
+    :param blob_options: Policy for nested blob calls; None inherits the root
+        worker's existing context. Output, observers, limits and errors
         retain pull_artifact's contract.
     """
     observers = _Observers(progress_callback)

@@ -156,8 +156,6 @@ def get_blob(
     context = getattr(client, "_download_context", None)
     transport: AbstractContextManager[RegistryClient]
     if context is not None and isinstance(context, DownloadTransport):
-        if download_options is not None and policy != context.options:
-            raise ValueError("Nested downloads must use their operation's download policy")
         transport = nullcontext(client)
     elif policy.transport == "legacy":
         transport = nullcontext(client)

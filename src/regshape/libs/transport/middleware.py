@@ -10,6 +10,7 @@
               Middleware components can inspect and modify both requests
               and responses as they flow through the pipeline. Authentication
               validates the actual 401 issuer before negotiating credentials.
+              Pooled retries opt into Retry-After without changing legacy timing.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
@@ -265,8 +266,11 @@ class MiddlewarePipeline:
 
 
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Dict, Optional
 
 import requests.exceptions
@@ -627,18 +631,23 @@ class RetryMiddleware(BaseMiddleware):
     Uses exponential backoff to avoid overwhelming the server.
     """
     
-    def __init__(self, config: Optional[RetryConfig] = None):
+    def __init__(self, config: Optional[RetryConfig] = None, *, honor_retry_after: bool = False):
         """Initialize retry middleware.
         
         :param config: RetryConfig instance, or None for default settings
+        :param honor_retry_after: Opt-in pooled-download policy for server-requested
+            429/503 delays. Defaults to False to preserve legacy timing behavior.
         """
         self.config = config or RetryConfig()
+        self.honor_retry_after = honor_retry_after
     
     def __call__(self, request: RegistryRequest, next_handler: NextHandler) -> RegistryResponse:
         """Retry with configured policy, closing discarded streams before backoff.
 
         A sole cleanup failure propagates rather than becoming another retry.
         The final successful/exhausted response remains owned by the caller.
+        Opt-in pooled 429/503 delays are parsed after response disposal and never
+        shorten the configured backoff; malformed directives are diagnosed.
         """
         last_exception = None
         processed_request = request
@@ -658,7 +667,15 @@ class RetryMiddleware(BaseMiddleware):
                         closing_for_retry = True
                         close_response(response.raw_response)
                         closing_for_retry = False
-                    self._wait_backoff(attempt)
+                    retry_after = (
+                        self._retry_after(response)
+                        if self.honor_retry_after and response.status_code in (429, 503)
+                        else None
+                    )
+                    if retry_after is None:
+                        self._wait_backoff(attempt)
+                    else:
+                        self._wait_backoff(attempt, retry_after)
                     continue
                 
                 # Process response and return
@@ -684,9 +701,51 @@ class RetryMiddleware(BaseMiddleware):
         # Fallback - should never happen
         raise RuntimeError("Retry logic reached unexpected state")
     
-    def _wait_backoff(self, attempt: int) -> None:
-        """Wait for exponential backoff delay."""
+    @staticmethod
+    def _retry_after(response: RegistryResponse) -> float | None:
+        """Parse delay-seconds or an HTTP date after the retry response was disposed.
+
+        Malformed headers emit a sanitized protocol diagnostic and retain normal
+        backoff. Platform-unrepresentable delays fail explicitly rather than
+        retrying sooner than a valid server directive.
+
+        :returns: Nonnegative delay in seconds, or None for missing/malformed input.
+        :raises ValueError: For a delay exceeding the platform's supported wait.
+        """
+        if not any(key.lower() == "retry-after" for key in response.headers):
+            return None
+        value = _get_header_ci(response.headers, "Retry-After").strip()
+        try:
+            if value.isascii() and value.isdecimal():
+                significant = value.lstrip("0") or "0"
+                if len(significant) > 19:
+                    raise OverflowError("Unrepresentable retry delay")
+                delay = float(int(significant))
+            else:
+                date = parsedate_to_datetime(value)
+                if date.tzinfo is None:
+                    date = date.replace(tzinfo=timezone.utc)
+                delay = max(0.0, date.timestamp() - time.time())
+        except (TypeError, ValueError):
+            logging.getLogger(__name__).warning(
+                "Malformed Retry-After on a pooled download; using configured backoff"
+            )
+            return None
+        except OverflowError:
+            raise ValueError("Retry-After exceeds the supported download wait") from None
+        if delay > threading.TIMEOUT_MAX:
+            raise ValueError("Retry-After exceeds the supported download wait")
+        return delay
+
+    def _wait_backoff(self, attempt: int, retry_after: float = 0.0) -> None:
+        """Wait at least the greater of configured backoff and a validated server delay.
+
+        :param attempt: Zero-based retry index.
+        :param retry_after: Nonnegative parsed server delay; zero retains legacy timing.
+        """
         delay = self.config.backoff_factor * (2 ** attempt)
+        if retry_after:
+            delay = max(delay, retry_after)
         time.sleep(delay)
 
 

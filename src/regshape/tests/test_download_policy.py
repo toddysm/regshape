@@ -1,5 +1,6 @@
 """Policy bounds, compatibility selection and no-effect rejection for download clients."""
 
+import threading
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -12,7 +13,11 @@ from regshape.libs.blobs import DownloadOptions, get_blob
 from regshape.libs.blobs.download import resolve_download_options
 from regshape.libs.transport import RegistryClient, TransportConfig
 from regshape.libs.transport.download import DownloadTransport
-from regshape.libs.transport.middleware import MiddlewarePipeline
+from regshape.libs.transport.middleware import (
+    BaseMiddleware,
+    MiddlewarePipeline,
+    RetryConfig,
+)
 from regshape.tests.artifact_fixtures import Registry, address, document, edge
 
 
@@ -107,6 +112,13 @@ def test_subclass_middleware_and_instance_customization_rejected() -> None:
 
 def test_explicit_safe_fork_extension() -> None:
     """A custom override explicitly installs its own isolated behavior in the context."""
+    class LockedMiddleware(BaseMiddleware):
+        """Synthetic extension whose original lock cannot be deep-copied."""
+
+        def __init__(self) -> None:
+            """Allocate a worker-local lock without borrowing original extension state."""
+            self.lock = threading.Lock()
+
     class Custom(RegistryClient):
         """Example extension preserving custom state without sharing mutable worker data."""
 
@@ -114,12 +126,56 @@ def test_explicit_safe_fork_extension() -> None:
             """Delegate base isolation and add worker-local extension metadata."""
             worker = super().fork_for_download(context=context)
             worker.custom_state = []
+            worker._pipeline.add_middleware(LockedMiddleware())
             return worker
 
+    original = LockedMiddleware()
     with patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)):
-        client = Custom(TransportConfig("registry.example", middlewares=[Mock()]))
+        client = Custom(TransportConfig("registry.example", middlewares=[original]))
     with DownloadTransport(client, DownloadOptions()) as worker:
         assert worker is not client and worker.custom_state == []
+        peer = worker._download_context.fork()
+        first = worker._pipeline._middleware[-1]
+        second = peer._pipeline._middleware[-1]
+        assert first.lock is not original.lock and first.lock is not second.lock
+        assert worker.config.middlewares == [] and peer.config.middlewares == []
+        assert worker.config.middlewares is not peer.config.middlewares
+    assert client.config.middlewares == [original]
+
+
+@pytest.mark.parametrize("budget", [-1, 11, False, True, 1.5, "3", None])
+@pytest.mark.parametrize("operation", ["blob", "artifact"])
+def test_invalid_inherited_retry_budget_before_effects(
+    tmp_path: Path, budget: object, operation: str,
+) -> None:
+    """Reject the effective client budget before auth, adapter, request or staging effects."""
+    client = _client(enable_retries=True, retry_config=RetryConfig(max_retries=budget))
+    with (
+        patch("regshape.libs.transport.download._DownloadAuth") as auth,
+        patch("regshape.libs.transport.download._DownloadAdapter") as adapter,
+        patch("regshape.libs.transport.client._send_http_request") as send,
+        pytest.raises(ValueError, match="Resolved download max_retries"),
+    ):
+        if operation == "blob":
+            get_blob(client, "repo", address(b"x"), str(tmp_path / "blob"))
+        else:
+            pull_artifact(client, "repo", "latest", tmp_path / "layout")
+    auth.assert_not_called()
+    adapter.assert_not_called()
+    send.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("budget", [0, 10])
+def test_valid_retry_override_replaces_invalid_inherited_budget(budget: int) -> None:
+    """Validate the final override, not a superseded client's invalid retry budget."""
+    policy = RetryConfig(max_retries=-1, backoff_factor=2, status_codes=(503,))
+    client = _client(enable_retries=True, retry_config=policy)
+    with DownloadTransport(client, DownloadOptions(max_retries=budget)) as worker:
+        resolved = worker._download_context.retry_config
+        assert resolved.max_retries == budget
+        assert resolved.backoff_factor == 2 and resolved.status_codes == (503,)
+    assert policy.max_retries == -1
 
 
 def test_legacy_blob_bypasses_new_layer() -> None:
