@@ -20,6 +20,9 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
+_ACR_REFRESH_TOKEN_USERNAME = "00000000-0000-0000-0000-000000000000"
+_TOKEN_CLIENT_ID = "regshape"
+
 def _parse_auth_header(auth_header: str) -> dict:
     """
     Parses the authentication header and returns a dictionary of the parameters.
@@ -99,6 +102,9 @@ def _get_auth_token(
     :type password: str
     :return: The bearer token string
     :rtype: str
+
+    Only the ACR sentinel username with a nonempty password enables the
+    refresh-token POST fallback. A failed fallback retains the GET rejection.
     """
 
     # Ensure realm is present
@@ -152,16 +158,23 @@ def _get_auth_token(
         log.error(e)
         raise AuthError("Token request failed", f"Request to {realm} failed: {e}")
 
-    # If the standard GET failed with 401 and we have a password, try an
-    # OAuth2 refresh-token exchange via POST.  This is needed for registries
-    # like ACR where `az acr login` stores a refresh token (JWT) in the
-    # Docker credential store instead of a plain username/password pair.
-    if response.status_code == 401 and password:
-        response = _try_refresh_token_exchange(realm, query_params, password)
+    if response.status_code == 401 and username == _ACR_REFRESH_TOKEN_USERNAME and password:
+        try:
+            refreshed = _try_refresh_token_exchange(realm, query_params, password)
+        except AuthError:
+            log.warning("ACR refresh-token exchange failed; retaining original token rejection")
+        else:
+            if refreshed.status_code == 200:
+                response.close()
+                response = refreshed
+            else:
+                refreshed.close()
+                log.warning("ACR refresh-token exchange failed; retaining original token rejection")
 
     # Parse the response
     if response.status_code != 200:
         log.error(f"Token request failed with status {response.status_code}")
+        response.close()
         raise AuthError("Token request failed", f"Status code: {response.status_code}")
 
     token_response = json.loads(response.text)
@@ -185,7 +198,9 @@ def _try_refresh_token_exchange(
     Registries like Azure Container Registry store a refresh token (JWT) in
     the Docker credential store (via ``az acr login``).  These tokens cannot
     be exchanged with a standard GET + Basic-Auth request; instead the token
-    endpoint expects a POST with ``grant_type=refresh_token``.
+    endpoint expects a POST with ``grant_type=refresh_token`` and the
+    ``regshape`` client identifier. The caller must enforce the ACR sentinel
+    username and retain its original GET rejection if this exchange fails.
 
     :param realm: Token endpoint URL from the ``WWW-Authenticate`` header.
     :param query_params: ``service`` and optional ``scope`` parameters.
@@ -197,6 +212,7 @@ def _try_refresh_token_exchange(
     post_data = {
         'grant_type': 'refresh_token',
         'refresh_token': refresh_token,
+        'client_id': _TOKEN_CLIENT_ID,
     }
     post_data.update(query_params)
 

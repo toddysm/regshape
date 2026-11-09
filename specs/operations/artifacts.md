@@ -18,7 +18,8 @@ and [command reference](../cli/artifact.md).
 Import `ArtifactError`, `ArtifactFormat`, `ArtifactLimits`, `ArtifactProgress`,
 `ArtifactProgressCallback`, `ArtifactPhase`, `ArtifactPhaseCallback`,
 `ArtifactPullResult`, `preflight_artifact_pull`, `pull_artifact` and
-`DirectorySnapshot`, `ArchiveSnapshot`, and `snapshot_layout` from `regshape.libs.artifacts`.
+`DirectorySnapshot`, `ArchiveSnapshot`, `DownloadOptions`, and `snapshot_layout`
+from `regshape.libs.artifacts`.
 
 ### Signatures and caller ownership
 
@@ -29,6 +30,7 @@ pull_artifact(
     limits: ArtifactLimits | None = None,
     progress_callback: ArtifactProgressCallback | None = None,
     phase_callback: ArtifactPhaseCallback | None = None,
+    download_options: DownloadOptions | None = None,
 ) -> ArtifactPullResult
 
 preflight_artifact_pull(
@@ -49,6 +51,17 @@ symlinks, are never adopted or overwritten.
 full digest, not a complete registry URL. `limits=None` selects `ArtifactLimits()`.
 Callbacks must be callable or `None`; invalid observers raise `TypeError` before
 effects. The library never renders progress.
+
+`download_options=None` establishes one pooled operation context before root
+discovery for supported clients; roots, child manifests and blobs share scoped
+authentication and reusable connections. The original client is borrowed, not
+closed or mutated by workers. Unsupported custom clients retain the original
+serial path with one logged notice when options are omitted. Explicit pooled
+requests require a safe fork override. `DownloadOptions.legacy()` selects the
+original serial path without the new provider/pool; `sequential()` still uses
+modern pooled transport. This transport foundation does not yet schedule graph
+objects in parallel. See [download policy and transport](../../docs/library/downloads.md)
+for policy fields, retry precedence and downstream feature boundaries.
 
 Command callers use `preflight_artifact_pull(registry, repo, reference, output_path,
 output_format=ArtifactFormat.OCI, limits=None)` **before constructing the client**

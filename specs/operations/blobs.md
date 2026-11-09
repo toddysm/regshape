@@ -94,6 +94,9 @@ def get_blob(
     *,
     progress_callback: ProgressCallback | None = None,
     total_size: int | None = None,
+    max_bytes: int | None = None,
+    output_dir_fd: int | None = None,
+    download_options: DownloadOptions | None = None,
 ) -> BlobInfo:
 ```
 
@@ -108,6 +111,20 @@ Downloads a blob and verifies its digest.
 | `chunk_size` | `int` | `65536` | Positive streaming chunk size in bytes |
 | `progress_callback` | `Optional[ProgressCallback]` | `None` | Keyword-only observer of immutable transfer events |
 | `total_size` | `Optional[int]` | `None` | Keyword-only trusted size of the consumed payload |
+| `max_bytes` | `Optional[int]` | `None` | Positive hard entity-byte cap; enables exclusive output and bounded decoding/error bodies |
+| `output_dir_fd` | `Optional[int]` | `None` | Borrowed safe parent handle for one filename; requires `max_bytes` |
+| `download_options` | `Optional[DownloadOptions]` | `None` | Pooled policy for supported clients, or explicit legacy rollback |
+
+Import `DownloadOptions` from `regshape.libs.blobs` or `regshape.libs.artifacts`.
+Omitted options select one operation-owned pool with C=4/W=1 and three retries
+(including HTTP 429), unless an enabled explicit client retry policy applies.
+`DownloadOptions.sequential()` selects C=W=1 on the same modern pool;
+`DownloadOptions.legacy()` bypasses the pool, new authentication provider and
+worker cloning entirely. Unsupported existing custom clients retain the original
+serial path with one logged notice only when options are omitted. Explicit pooled
+requests without a safe fork raise `ValueError` before acquisition.
+See [download policy and transport](../../docs/library/downloads.md) for bounds,
+ownership and the separate scheduler/range/batch delivery boundary.
 
 **Returns:** `BlobInfo` built from response headers after successful digest
 verification.

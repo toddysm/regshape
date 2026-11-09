@@ -185,7 +185,8 @@ def test_pull_push_command_round_trip(
     source = tmp_path / ("layout.tgz" if archive else "layout")
     with (
         patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)) as credentials,
-        patch("regshape.libs.decorators.call_details.requests.request", side_effect=registry.respond),
+        patch("regshape.libs.decorators.call_details.requests.request", side_effect=registry.respond) as send,
+        patch("requests.Session.request", side_effect=send),
     ):
         pulled = pull_artifact(
             _client(), "source", "moving" if tagged else address(root, algorithm), source,
@@ -594,7 +595,8 @@ def test_archive_cli_limits_precede_credentials(tmp_path: Path, name: str, dry: 
     source = tmp_path / "layout.gz"
     with (
         patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
-        patch("regshape.libs.decorators.call_details.requests.request", side_effect=registry.respond),
+        patch("regshape.libs.decorators.call_details.requests.request", side_effect=registry.respond) as send,
+        patch("requests.Session.request", side_effect=send),
     ):
         pull_artifact(_client(), "source", "moving", source, output_format=ArtifactFormat.OCI_TAR_GZIP)
     with patch("regshape.cli.layout.RegistryClient") as client:

@@ -10,6 +10,7 @@
               Middleware components can inspect and modify both requests
               and responses as they flow through the pipeline. Authentication
               validates the actual 401 issuer before negotiating credentials.
+              Pooled retries opt into Retry-After without changing legacy timing.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
@@ -267,6 +268,8 @@ class MiddlewarePipeline:
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Dict, Optional
 
 import requests.exceptions
@@ -475,6 +478,28 @@ class AuthMiddleware(BaseMiddleware):
         original_request: RegistryRequest,
         base_url: Optional[str] = None,
     ) -> str:
+        """Return the base-endpoint challenge and close the final probe.
+
+        Legacy callers retain the empty-string result for a non-401 or missing
+        header; response ownership and redirect validation are delegated to the
+        shared probe helper.
+        """
+        probe_response = AuthMiddleware._probe_v2_response(
+            next_handler, original_request, base_url,
+        )
+        with ClosingResponse(probe_response.raw_response):
+            if probe_response.status_code == 401:
+                return _get_header_ci(probe_response.headers, "WWW-Authenticate")
+            return ""
+
+    @staticmethod
+    def _probe_v2_response(
+        next_handler: Callable[[RegistryRequest], RegistryResponse],
+        original_request: RegistryRequest,
+        base_url: str | None = None,
+        *,
+        stream: bool = False,
+    ) -> RegistryResponse:
         """Issue ``GET /v2/`` to obtain a ``WWW-Authenticate`` challenge.
 
         Some registries only return the challenge header on the ``/v2/``
@@ -483,14 +508,16 @@ class AuthMiddleware(BaseMiddleware):
         authentication. The probe inherits the original redirect policy so
         an unvalidated redirect cannot introduce a foreign challenge. Every 401
         issuer is checked against the trusted origin, including when Requests
-        followed redirects automatically; probes are always closed. When
+        followed redirects automatically. When
         automatic redirects are disabled, follow only validated same-origin
         targets, with cycle detection and a 30-hop limit. Optional response hooks
-        are retained on probes, whose bodies then remain streamed and are closed
-        without consumption; a rejecting hook may abort before redirect handling.
+        are retained on probes; a rejecting hook may abort before redirect handling.
 
-        :returns: The ``WWW-Authenticate`` header value, or an empty
-            string if the probe also lacks one.
+        :param stream: Keep the final response unbuffered even without a response
+            hook, allowing a pooled caller to transfer it to its outer retry owner.
+        :returns: The final response, owned by the caller. This helper closes
+            intermediate manual redirects and invalid responses. A response hook
+            or ``stream=True`` keeps probe bodies unbuffered.
         :raises AuthError: For unsafe, malformed, or non-terminating probe redirects.
         """
         probe = RegistryRequest(
@@ -500,17 +527,14 @@ class AuthMiddleware(BaseMiddleware):
             timeout=original_request.timeout,
             allow_redirects=original_request.allow_redirects,
             response_hook=original_request.response_hook,
-            stream=original_request.response_hook is not None,
+            stream=stream or original_request.response_hook is not None,
         )
         origin = base_url or original_request.url
         if original_request.allow_redirects:
             probe_response = next_handler(probe)
             if probe_response.status_code == 401:
                 require_authentication_origin(probe_response.raw_response, origin)
-            with ClosingResponse(probe_response.raw_response):
-                if probe_response.status_code == 401:
-                    return _get_header_ci(probe_response.headers, "WWW-Authenticate")
-                return ""
+            return probe_response
 
         try:
             current_url = resolve_registry_url(origin, "/v2/", origin)
@@ -525,17 +549,16 @@ class AuthMiddleware(BaseMiddleware):
             probe_response = next_handler(probe)
             if probe_response.status_code == 401:
                 require_authentication_origin(probe_response.raw_response, origin)
-            with ClosingResponse(probe_response.raw_response):
-                try:
-                    response_url = resolve_registry_url(
-                        origin, probe_response.raw_response.url or current_url, current_url,
-                    )
-                except ValueError:
+            try:
+                response_url = resolve_registry_url(
+                    origin, probe_response.raw_response.url or current_url, current_url,
+                )
+            except ValueError:
+                with ClosingResponse(probe_response.raw_response):
                     raise AuthError("Unsafe authentication probe response origin") from None
-                if probe_response.status_code not in REDIRECT_STATUSES:
-                    if probe_response.status_code == 401:
-                        return _get_header_ci(probe_response.headers, "WWW-Authenticate")
-                    return ""
+            if probe_response.status_code not in REDIRECT_STATUSES:
+                return probe_response
+            with ClosingResponse(probe_response.raw_response):
                 if redirects >= MAX_REDIRECTS:
                     raise AuthError("Authentication probe redirect limit exceeded")
                 location = _get_header_ci(probe_response.headers, "Location")
@@ -549,7 +572,7 @@ class AuthMiddleware(BaseMiddleware):
                 method="GET", url=current_url, headers={},
                 timeout=original_request.timeout, allow_redirects=False,
                 response_hook=original_request.response_hook,
-                stream=original_request.response_hook is not None,
+                stream=stream or original_request.response_hook is not None,
             )
             redirects += 1
 
@@ -627,18 +650,23 @@ class RetryMiddleware(BaseMiddleware):
     Uses exponential backoff to avoid overwhelming the server.
     """
     
-    def __init__(self, config: Optional[RetryConfig] = None):
+    def __init__(self, config: Optional[RetryConfig] = None, *, honor_retry_after: bool = False):
         """Initialize retry middleware.
         
         :param config: RetryConfig instance, or None for default settings
+        :param honor_retry_after: Opt-in pooled-download policy for server-requested
+            429/503 delays. Defaults to False to preserve legacy timing behavior.
         """
         self.config = config or RetryConfig()
+        self.honor_retry_after = honor_retry_after
     
     def __call__(self, request: RegistryRequest, next_handler: NextHandler) -> RegistryResponse:
         """Retry with configured policy, closing discarded streams before backoff.
 
         A sole cleanup failure propagates rather than becoming another retry.
         The final successful/exhausted response remains owned by the caller.
+        Opt-in pooled 429/503 delays are parsed after response disposal and never
+        shorten the configured backoff; malformed directives are diagnosed.
         """
         last_exception = None
         processed_request = request
@@ -658,7 +686,15 @@ class RetryMiddleware(BaseMiddleware):
                         closing_for_retry = True
                         close_response(response.raw_response)
                         closing_for_retry = False
-                    self._wait_backoff(attempt)
+                    retry_after = (
+                        self._retry_after(response)
+                        if self.honor_retry_after and response.status_code in (429, 503)
+                        else None
+                    )
+                    if retry_after is None:
+                        self._wait_backoff(attempt)
+                    else:
+                        self._wait_backoff(attempt, retry_after)
                     continue
                 
                 # Process response and return
@@ -684,9 +720,51 @@ class RetryMiddleware(BaseMiddleware):
         # Fallback - should never happen
         raise RuntimeError("Retry logic reached unexpected state")
     
-    def _wait_backoff(self, attempt: int) -> None:
-        """Wait for exponential backoff delay."""
+    @staticmethod
+    def _retry_after(response: RegistryResponse) -> float | None:
+        """Parse delay-seconds or an HTTP date after the retry response was disposed.
+
+        Malformed headers emit a sanitized protocol diagnostic and retain normal
+        backoff. Delays above 300 seconds fail explicitly rather than hanging
+        acquisition or retrying sooner than a valid server directive.
+
+        :returns: Nonnegative delay in seconds, or None for missing/malformed input.
+        :raises ValueError: For a delay exceeding the 300-second download limit.
+        """
+        if not any(key.lower() == "retry-after" for key in response.headers):
+            return None
+        value = _get_header_ci(response.headers, "Retry-After").strip()
+        try:
+            if value.isascii() and value.isdecimal():
+                significant = value.lstrip("0") or "0"
+                if len(significant) > 19:
+                    raise OverflowError("Unrepresentable retry delay")
+                delay = float(int(significant))
+            else:
+                date = parsedate_to_datetime(value)
+                if date.tzinfo is None:
+                    date = date.replace(tzinfo=timezone.utc)
+                delay = max(0.0, date.timestamp() - time.time())
+        except (TypeError, ValueError):
+            logging.getLogger(__name__).warning(
+                "Malformed Retry-After on a pooled download; using configured backoff"
+            )
+            return None
+        except OverflowError:
+            raise ValueError("Retry-After exceeds the supported download wait") from None
+        if delay > 300:
+            raise ValueError("Retry-After exceeds the supported download wait (300-second limit)")
+        return delay
+
+    def _wait_backoff(self, attempt: int, retry_after: float = 0.0) -> None:
+        """Wait at least the greater of configured backoff and a validated server delay.
+
+        :param attempt: Zero-based retry index.
+        :param retry_after: Nonnegative parsed server delay; zero retains legacy timing.
+        """
         delay = self.config.backoff_factor * (2 ** attempt)
+        if retry_after:
+            delay = max(delay, retry_after)
         time.sleep(delay)
 
 

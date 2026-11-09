@@ -216,29 +216,60 @@ class TestGetAuthToken:
                 registryauth._get_auth_token(header, 'user', 'wrongpass')
 
     def test_falls_back_to_refresh_token_post_on_401(self):
-        """When GET returns 401, tries POST with grant_type=refresh_token."""
+        """Only ACR sentinel credentials enable an identified refresh-token grant."""
         header = self._header(scope='repository:myrepo:pull')
         with patch('regshape.libs.auth.registryauth.requests.get') as mock_get, \
              patch('regshape.libs.auth.registryauth.requests.post') as mock_post:
             mock_get.return_value = MagicMock(status_code=401, text='{}')
             mock_post.return_value = _token_response('refreshed-tok')
-            token = registryauth._get_auth_token(header, '<token>', 'eyJhbGci...')
+            token = registryauth._get_auth_token(
+                header, '00000000-0000-0000-0000-000000000000', 'eyJhbGci...',
+            )
         assert token == 'refreshed-tok'
         post_data = mock_post.call_args[1]['data']
         assert post_data['grant_type'] == 'refresh_token'
         assert post_data['refresh_token'] == 'eyJhbGci...'
         assert post_data['service'] == 'registry.example.com'
         assert post_data['scope'] == 'repository:myrepo:pull'
+        assert post_data['client_id'] == 'regshape'
+        mock_get.return_value.close.assert_called_once()
 
-    def test_no_refresh_fallback_without_credentials(self):
-        """When GET returns 401 with no password, no POST is attempted."""
+    @pytest.mark.parametrize("username,password", [
+        (None, None), ("test-user", "wrong-password"),
+        ("00000000-0000-0000-0000-000000000000", ""),
+        ("00000000-0000-0000-0000-000000000000", None),
+    ])
+    def test_no_refresh_fallback_without_acr_credentials(self, username, password):
+        """Missing, ordinary or empty credentials retain the GET 401 without a refresh POST."""
         header = self._header()
         with patch('regshape.libs.auth.registryauth.requests.get') as mock_get, \
              patch('regshape.libs.auth.registryauth.requests.post') as mock_post:
             mock_get.return_value = MagicMock(status_code=401, text='{}')
             with pytest.raises(AuthError):
-                registryauth._get_auth_token(header)
+                registryauth._get_auth_token(header, username, password)
         mock_post.assert_not_called()
+
+    @pytest.mark.parametrize("failure", [401, 403, 503, requests.exceptions.Timeout()])
+    def test_failed_refresh_retains_original_get_rejection(self, failure, caplog):
+        """Refresh HTTP/transport failures preserve the original rejection and close responses."""
+        original = MagicMock(status_code=401, text='{}')
+        refreshed = MagicMock(status_code=failure, text='{}')
+        with (
+            patch('regshape.libs.auth.registryauth.requests.get', return_value=original),
+            patch('regshape.libs.auth.registryauth.requests.post') as post,
+            pytest.raises(AuthError, match="Status code: 401"),
+        ):
+            if isinstance(failure, Exception):
+                post.side_effect = failure
+            else:
+                post.return_value = refreshed
+            registryauth._get_auth_token(
+                self._header(), '00000000-0000-0000-0000-000000000000', 'synthetic-refresh',
+            )
+        original.close.assert_called_once()
+        if not isinstance(failure, Exception):
+            refreshed.close.assert_called_once()
+        assert "retaining original token rejection" in caplog.text
 
     def test_raises_auth_error_on_connection_error(self):
         header = self._header()

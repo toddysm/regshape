@@ -403,6 +403,7 @@ def test_real_client_preserves_live_download_streaming(
     with (
         patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
         patch("regshape.libs.decorators.call_details.requests.request", return_value=response) as http,
+        patch("requests.Session.request", side_effect=http),
         patch.object(response, "close", wraps=response.close) as close,
     ):
         client = RegistryClient(TransportConfig(registry=REGISTRY, enable_middleware=middleware))
