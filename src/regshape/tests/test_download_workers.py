@@ -4,6 +4,7 @@ Synthetic streams exercise byte faults; ephemeral HTTP servers prove physical
 request accounting, scoped authentication and cancellation without false deadlines.
 """
 
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
@@ -205,24 +206,49 @@ def test_digest_mismatch_removes_invocation_output(client, tmp_path, bounded):
     assert not path.exists()
 
 
-def test_digest_mismatch_never_removes_replacement(client, tmp_path, caplog):
-    """A replaced filename is not a cleanup target even when the invocation overwrote it."""
+@pytest.mark.parametrize("replacement_phase", ["stream", "cleanup"])
+def test_digest_mismatch_never_removes_replacement(
+    client, tmp_path, caplog, replacement_phase
+):
+    """Preserve replacements during POSIX receipt or after closed receipt on every platform."""
+    if replacement_phase == "stream" and os.name == "nt":
+        pytest.skip("Windows does not permit renaming this open output handle")
     path = tmp_path / "blob"
     path.write_bytes(b"old")
-    response = StreamResponse(b"")
+    response = StreamResponse(b"wrong")
+    blob = _FullBlob("repo", address(b"expected"), str(path))
 
-    def stream(chunk_size, decode_content=False):
-        """Replace the entry while the invocation still holds its old inode open."""
-        yield b"wrong"
-        path.unlink()
+    def replace_output():
+        """Retain the old inode under another name so its identity cannot be recycled."""
+        path.rename(tmp_path / "owned-output")
         path.write_bytes(b"replacement")
 
-    response.raw.stream = stream
-    blob = _FullBlob("repo", address(b"expected"), str(path))
-    with patch.object(RegistryClient, "get", return_value=response):
+    if replacement_phase == "stream":
+
+        def stream(chunk_size, decode_content=False):
+            """Replace the entry while a POSIX worker still holds its old inode open."""
+            yield b"wrong"
+            replace_output()
+
+        response.raw.stream = stream
+
+    original_cleanup = blob.output.cleanup
+
+    def cleanup(accepted):
+        """Replace only after worker shutdown when exercising the portable cleanup race."""
+        if replacement_phase == "cleanup":
+            assert blob.output.closed
+            replace_output()
+        original_cleanup(accepted)
+
+    with (
+        patch.object(RegistryClient, "get", return_value=response),
+        patch.object(blob.output, "cleanup", cleanup),
+    ):
         with pytest.raises(BlobError, match="digest"):
             _receive(client, blob)
     assert path.read_bytes() == b"replacement"
+    assert (tmp_path / "owned-output").read_bytes() == b"wrong"
     assert "preserving the original error" in caplog.text
 
 
