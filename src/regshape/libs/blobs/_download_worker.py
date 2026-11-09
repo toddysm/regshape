@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import BinaryIO
 from uuid import uuid4
 
+from requests.exceptions import ContentDecodingError
+
 from regshape.libs._http import (
     ClosingResponse,
     download_total,
@@ -392,6 +394,8 @@ class _FullBlob:
                         if status_code in (429, 503)
                         else 0.0
                     )
+                except (BlobError, ContentDecodingError):
+                    raise
                 except retryable:
                     if (
                         not receiving

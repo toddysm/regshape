@@ -285,6 +285,56 @@ def test_broad_retry_exception_never_retries_validation(client):
     assert get.call_count == 1
 
 
+@pytest.mark.parametrize(
+    "stage",
+    ["redirect_limit", "redirect_encoding", "body_encoding", "error_encoding"],
+)
+def test_broad_retry_policy_never_hides_protocol_rejection(client, tmp_path, stage):
+    """Actual response-hook/decoder validation cannot be hidden by a later successful response."""
+    client.config.retry_config = RetryConfig(exceptions=(Exception,))
+    if stage == "redirect_limit":
+        first = StreamResponse(b"x" * 65_537, status=302)
+    else:
+        first = StreamResponse(
+            b"not a gzip stream",
+            status=(
+                302
+                if stage == "redirect_encoding"
+                else 403 if stage == "error_encoding" else 200
+            ),
+            headers={"Content-Encoding": "gzip"},
+        )
+    second = StreamResponse(b"valid payload")
+    responses = iter([first, second])
+    path = tmp_path / "blob"
+    blob = _FullBlob("repo", address(b"valid payload"), str(path), max_bytes=100)
+    statuses = []
+
+    def dispatch(path, **kwargs):
+        """Run the real pre-return response hook, as Requests does before handing back a response."""
+        response = next(responses)
+        kwargs["response_hook"](response)
+        return response
+
+    with patch.object(RegistryClient, "get", side_effect=dispatch) as get:
+        with pytest.raises(
+            BlobError
+            if stage == "redirect_limit"
+            else requests.exceptions.ContentDecodingError
+        ):
+            _receive(
+                client,
+                blob,
+                options=DownloadOptions(max_retries=2),
+                status=statuses.append,
+            )
+    assert get.call_count == 1
+    assert not blob.committed
+    assert not path.exists()
+    assert first.close_calls == 1 and second.close_calls == 0
+    assert not any(event.status.event == "retry" for event in statuses)
+
+
 @pytest.mark.parametrize("bounded", [False, True])
 def test_digest_mismatch_removes_invocation_output(client, tmp_path, bounded):
     """Invalid ordinary overwrites and exclusive staging files are removed by identity."""

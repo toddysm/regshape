@@ -189,6 +189,8 @@ retry only before any bytes have committed to either a file or its hasher,
 including verify-only. Body failures after commitment cannot replay/append.
 Configured retry exception types apply to request/body receive failures, not
 sink, validation or cleanup errors.
+Protocol budget and content-decoding rejections remain permanent even when a
+broad configured exception policy matches them.
 Backoff runs after the discarded response releases its network slot and wakes
 on cancellation.
 
