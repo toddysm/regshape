@@ -171,7 +171,7 @@ class _FullBlob:
         self.job()
 
     def job(self) -> _Job[BlobInfo]:
-        """Describe zero-spool work; only the invoking thread may execute its cleanup."""
+        """Describe zero-spool work with invoking-thread identity validation and cleanup."""
         return _Job(
             self.transfer_id,
             self.digest,
@@ -180,6 +180,7 @@ class _FullBlob:
             attempt=self.attempt,
             reason=self.reason,
             terminal=True,
+            validate_result=self.output.verify_identity,
         )
 
     def _progress(
@@ -377,7 +378,6 @@ class _FullBlob:
                             ),
                             worker.stats.bytes_accepted,
                         )
-                        self._progress(worker, TransferPhase.COMPLETED, total)
                         return info
                     # Parse server delay only after the discarded response releases its slot.
                     retry_after = (

@@ -453,6 +453,42 @@ def test_callback_failure_removes_bounded_completed_output(client, tmp_path):
     assert not path.exists()
 
 
+def test_callback_replacement_after_worker_check_never_publishes(client, tmp_path):
+    """Caller-side identity validation rejects a closed output replaced by a queued callback."""
+    payload = b"verified payload"
+    path = tmp_path / "blob"
+    blob = _FullBlob("repo", address(payload), str(path), max_bytes=100)
+    worker_checked = threading.Event()
+    published = []
+    original_verify = blob.output.verify_identity
+
+    def verify():
+        """Signal only after the worker's first closed-output identity check succeeds."""
+        original_verify()
+        worker_checked.set()
+
+    def progress(event):
+        """Replace the closed filename only after its worker-side check has succeeded."""
+        if event.phase == TransferPhase.VERIFYING:
+            assert worker_checked.wait(5)
+            path.rename(tmp_path / "verified-output")
+            path.write_bytes(b"unverified replacement")
+
+    with (
+        patch.object(RegistryClient, "get", return_value=StreamResponse(payload)),
+        patch.object(blob.output, "verify_identity", verify),
+        DownloadTransport(client, DownloadOptions.sequential()) as root,
+    ):
+        with _Coordinator(
+            root._download_context, progress_callback=progress
+        ) as coordinator:
+            with pytest.raises(OSError, match="replaced"):
+                coordinator.run([[blob.job()]], on_result=published.append)
+    assert published == []
+    assert path.read_bytes() == b"unverified replacement"
+    assert (tmp_path / "verified-output").read_bytes() == payload
+
+
 def test_precommit_status_retry_single_owner_and_released_slot(client):
     """HTTP retries share one budget and release discarded responses before waiting."""
     first = StreamResponse(b"", status=429, headers={"Retry-After": "2"})

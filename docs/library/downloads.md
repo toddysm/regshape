@@ -174,8 +174,11 @@ The [full-stream worker](../../src/regshape/libs/blobs/_download_worker.py)
 hashes and writes its exclusive sink locally, or hashes/discards for verify-only.
 There is no full-blob spool or coordinator-copy bottleneck. Callers perform
 shared `ContentStore`/`SafeDirectory` bookkeeping and publication only after
-the worker closes its response/output and verifies size/digest. Bounded outputs
-are exclusive and check entity limits before each write. Unbounded outputs
+the worker closes its response/output and verifies size/digest. The saved
+output's identity is revalidated on the invoking thread after queued callbacks
+drain and before result consumption, so a callback's replacement cannot become
+a verified result. Bounded outputs are exclusive and check entity limits before
+each write. Unbounded outputs
 preserve overwrite and partial-file-on-most-failures behavior. Digest mismatch
 removes the invocation's invalid output, including an overwritten destination,
 but never a filename whose identity no longer matches.
@@ -196,6 +199,11 @@ bounded bridge. All observer, result-consumer, terminal and library-log sinks
 run on the invoking thread. Failed observers are disabled permanently and their
 original exception objects propagate after producer shutdown. Parent scenario
 metrics and timings are merged, never cleared by a worker scenario.
+Successful terminal progress/status is emitted only after worker/session
+closure, telemetry merge, caller validation, result consumption and job cleanup.
+Cancellation is rechecked before consuming a result. Terminal progress and
+status observers are attempted independently; one failing observer cannot hide
+the terminal notification from the other.
 
 An explicit fallback reset is allowed only after old jobs drain and stop.
 The caller supplies an identity-checked sink reset; accepted bytes reset,

@@ -29,6 +29,7 @@ from regshape.libs.transport._coordinator import (
     _DownloadCancelled,
     _Job,
     _Status,
+    _Telemetry,
     _Text,
 )
 from regshape.libs.transport.download import DownloadTransport
@@ -45,9 +46,17 @@ def client():
 
 
 def _job(
-    identity, run, *, cleanup=None, scratch=0, attempt=1, reason=None, terminal=False
+    identity,
+    run,
+    *,
+    cleanup=None,
+    scratch=0,
+    attempt=1,
+    reason=None,
+    terminal=False,
+    validate_result=None,
 ):
-    """Build a strict internal job with no cleanup unless the test owns scratch."""
+    """Build an isolated job with optional caller validation and owned-scratch cleanup."""
     return _Job(
         identity,
         address(identity.encode()),
@@ -57,6 +66,7 @@ def _job(
         attempt=attempt,
         reason=reason,
         terminal=terminal,
+        validate_result=validate_result,
     )
 
 
@@ -290,7 +300,12 @@ def test_all_progress_survives_fast_worker_completion(client):
             root._download_context, progress_callback=received.append
         ) as coordinator:
             coordinator.run([[_job("a", task)]], on_result=lambda value: None)
-    assert [event.bytes_completed for event in received] == list(range(50))
+    assert [
+        event.bytes_completed
+        for event in received
+        if event.phase == TransferPhase.TRANSFERRING
+    ] == list(range(50))
+    assert received[-1].phase == TransferPhase.COMPLETED
 
 
 def test_telemetry_isolation_and_bounded_parent_merging(client):
@@ -484,7 +499,8 @@ def test_reset_queues_zero_artifact_progress_on_same_row(client):
         ) as coordinator:
             coordinator.run([[_job("a", task)]], on_result=lambda value: None)
             coordinator.reset("a", lambda: None)
-    assert len(progress) == 2
+    assert len(progress) == 3
+    assert progress[1].phase == "received"
     assert progress[-1].transfer_id == "a"
     assert progress[-1].bytes_completed == 0
     assert progress[-1].attempt == 2
@@ -725,3 +741,218 @@ def test_logging_failure_does_not_skip_other_joined_cleanup(client):
                     )
     assert caught.value is primary
     assert cleaned == [False, False]
+
+
+@pytest.mark.parametrize("cancel_stage", ["progress", "validation"])
+def test_last_queued_callback_cancellation_discards_completed_job(client, cancel_stage):
+    """Cancellation from the final queued callback or validation cannot publish a stopped job."""
+    consumed = []
+    cleaned = []
+
+    def task(worker):
+        """Queue one progress record without blocking the task's completion."""
+        _progress(worker, 1)
+        return "verified"
+
+    with DownloadTransport(client, DownloadOptions.sequential()) as root:
+        with _Coordinator(root._download_context) as coordinator:
+
+            def cancel(event):
+                """Wait for the stopped future, then cancel from its final queued record."""
+                if (
+                    cancel_stage == "progress"
+                    and event.phase == TransferPhase.TRANSFERRING
+                ):
+                    pending = next(iter(coordinator.pending.values()))
+                    pending.future.result(timeout=5)
+                    coordinator.cancel()
+
+            coordinator.progress_callback = cancel
+            with pytest.raises(_DownloadCancelled):
+                coordinator.run(
+                    [
+                        [
+                            _job(
+                                "a",
+                                task,
+                                cleanup=cleaned.append,
+                                terminal=True,
+                                validate_result=(
+                                    coordinator.cancel
+                                    if cancel_stage == "validation"
+                                    else None
+                                ),
+                            )
+                        ]
+                    ],
+                    on_result=consumed.append,
+                )
+    assert consumed == []
+    assert cleaned == [False]
+
+
+@pytest.mark.parametrize("stage", ["session", "telemetry", "consumer", "cleanup"])
+def test_finalization_failure_never_emits_completed_progress(client, stage):
+    """No worker success record escapes before session, telemetry, consumer and cleanup succeed."""
+    primary = RuntimeError(f"{stage} fault")
+    progress = []
+    cleaned = []
+    original_merge = _Telemetry.merge
+
+    def task(worker):
+        """Queue premature success and optionally fail the worker's later session close."""
+        if stage == "session":
+            original_close = worker.client._session.close
+
+            def close():
+                """Release the worker session before injecting its close failure."""
+                worker.client._session.close = original_close
+                original_close()
+                raise primary
+
+            worker.client._session.close = close
+        worker.emit(
+            TransferProgress(
+                worker.job.transfer_id,
+                worker.job.digest,
+                TransferDirection.DOWNLOAD,
+                TransferPhase.COMPLETED,
+                1,
+                1,
+            )
+        )
+        return "verified"
+
+    def merge(telemetry, parent, keys):
+        """Retain real aggregation except for the explicit caller-side merge failure."""
+        if stage == "telemetry":
+            raise primary
+        original_merge(telemetry, parent, keys)
+
+    def consume(value):
+        """Fail after observation delivery when testing result-consumer finalization."""
+        if stage == "consumer":
+            raise primary
+
+    def cleanup(accepted):
+        """Record discards even when successful-result cleanup itself raises."""
+        cleaned.append(accepted)
+        if accepted and stage == "cleanup":
+            raise primary
+
+    with (
+        patch.object(_Telemetry, "merge", merge),
+        DownloadTransport(client, DownloadOptions.sequential()) as root,
+    ):
+        with _Coordinator(
+            root._download_context, progress_callback=progress.append
+        ) as coordinator:
+            with pytest.raises(RuntimeError) as caught:
+                coordinator.run(
+                    [[_job("a", task, cleanup=cleanup, terminal=True)]],
+                    on_result=consume,
+                )
+    assert caught.value is primary
+    assert [event.phase for event in progress] == [TransferPhase.FAILED]
+    assert cleaned[-1] is False
+
+
+def test_completed_progress_follows_all_finalization_steps(client):
+    """A completed row follows session close, telemetry, identity checks, consumer and cleanup."""
+    events = []
+    original_merge = _Telemetry.merge
+
+    def task(worker):
+        """Record actual session closure after producing a deferred success record."""
+        original_close = worker.client._session.close
+
+        def close():
+            """Release the real worker session before recording stopped resources."""
+            worker.client._session.close = original_close
+            original_close()
+            events.append("session")
+
+        worker.client._session.close = close
+        worker.emit(
+            TransferProgress(
+                worker.job.transfer_id,
+                worker.job.digest,
+                TransferDirection.DOWNLOAD,
+                TransferPhase.COMPLETED,
+                1,
+                1,
+            )
+        )
+        return "verified"
+
+    def merge(telemetry, parent, keys):
+        """Record completed real caller-side aggregation."""
+        original_merge(telemetry, parent, keys)
+        events.append("telemetry")
+
+    def progress(event):
+        """Assert the whole finalization order at the first public success event."""
+        if event.phase == TransferPhase.COMPLETED:
+            assert events == ["session", "telemetry", "validate", "consumer", "cleanup"]
+            events.append("completed")
+
+    with (
+        patch.object(_Telemetry, "merge", merge),
+        DownloadTransport(client, DownloadOptions.sequential()) as root,
+    ):
+        with _Coordinator(
+            root._download_context, progress_callback=progress
+        ) as coordinator:
+            coordinator.run(
+                [
+                    [
+                        _job(
+                            "a",
+                            task,
+                            cleanup=lambda accepted: events.append("cleanup"),
+                            validate_result=lambda: events.append("validate"),
+                            terminal=True,
+                        )
+                    ]
+                ],
+                on_result=lambda value: events.append("consumer"),
+            )
+    assert events[-1] == "completed"
+
+
+@pytest.mark.parametrize("completed", [False, True])
+def test_first_terminal_progress_failure_preserves_healthy_status(client, completed):
+    """A progress observer first failing at a terminal event cannot suppress healthy status."""
+    statuses = []
+    observed = []
+    primary = RuntimeError("job fault")
+    observer_error = RuntimeError("terminal progress fault")
+
+    def task(worker):
+        """Fail before any progress, or finish without progress for successful finalization."""
+        if not completed:
+            raise primary
+        return "verified"
+
+    def progress(event):
+        """Fail only when first invoked for the terminal notification."""
+        observed.append(event.phase)
+        raise observer_error
+
+    with DownloadTransport(client, DownloadOptions.sequential()) as root:
+        with _Coordinator(
+            root._download_context,
+            progress_callback=progress,
+            status_callback=statuses.append,
+        ) as coordinator:
+            with pytest.raises(RuntimeError) as caught:
+                coordinator.run(
+                    [[_job("a", task, terminal=True)]],
+                    on_result=lambda value: None,
+                )
+    assert caught.value is (observer_error if completed else primary)
+    assert observed == [TransferPhase.COMPLETED if completed else TransferPhase.FAILED]
+    assert any(
+        event.status.event == ("completed" if completed else "failed")
+        for event in statuses
+    )

@@ -243,6 +243,9 @@ class _Job(Generic[T]):
     :param terminal: True for a verified final job (all full-stream jobs). Its
         ordered source must have no trailing jobs, and completion is emitted
         immediately after successful result consumption and cleanup.
+    :param validate_result: Optional invoking-thread validation after queued
+        observers drain, immediately before result consumption. Failures discard
+        the stopped job instead of publishing an unproven output.
     """
 
     transfer_id: str
@@ -254,6 +257,7 @@ class _Job(Generic[T]):
     strategy: Literal["full", "ranged"] = "full"
     reason: str | None = None
     terminal: bool = False
+    validate_result: Callable[[], None] | None = None
 
     def __post_init__(self) -> None:
         """Validate identity/attempt using the existing immutable progress contract."""
@@ -273,6 +277,8 @@ class _Job(Generic[T]):
             raise ValueError("Download scratch reservation must be nonnegative")
         if type(self.terminal) is not bool:
             raise ValueError("Download terminal marker must be boolean")
+        if self.validate_result is not None and not callable(self.validate_result):
+            raise ValueError("Download result validation must be callable")
 
 
 @dataclass(frozen=True)
@@ -636,7 +642,7 @@ class _Coordinator:
         )
 
     def _pump(self, *, discard: bool = False) -> None:
-        """Pump one record without waiting on a Future while producers may be queue-blocked."""
+        """Pump one record without waiting on Futures; defer success until caller finalization."""
         try:
             record = self.queue.get(timeout=0.01)
         except Empty:
@@ -656,7 +662,8 @@ class _Coordinator:
         self.failure_transfer = pending.job.transfer_id
         if isinstance(payload, (TransferProgress, ArtifactProgress)):
             self.last_progress[pending.job.transfer_id] = payload
-            self._call(self.progress_callback, payload)
+            if payload.phase != "completed":
+                self._call(self.progress_callback, payload)
         elif isinstance(payload, _Status):
             self.status(pending.job.transfer_id, payload)
         elif isinstance(payload, _Text):
@@ -726,22 +733,67 @@ class _Coordinator:
         self.blob_scratch[identity] -= pending.job.scratch_bytes
         del self.pending[pending.number]
 
+    def _terminal_observers(
+        self, identity: str, event: Literal["completed", "failed", "cancelled"]
+    ) -> list[BaseException]:
+        """Attempt both terminal observers independently, returning errors for caller priority.
+
+        Artifact receipt uses its native received phase, retaining stored/skipped
+        when already established; only TransferProgress has a completed phase.
+        """
+        errors: list[BaseException] = []
+        digest, attempt, strategy, reason = self.identities[identity]
+        try:
+            progress = self.last_progress.get(identity)
+            if progress is None:
+                progress = TransferProgress(
+                    identity,
+                    digest,
+                    TransferDirection.DOWNLOAD,
+                    TransferPhase.PREPARING,
+                    self.snapshot(identity).bytes_accepted,
+                    None,
+                    attempt,
+                )
+            terminal: TransferProgress | ArtifactProgress
+            if isinstance(progress, TransferProgress):
+                terminal = replace(progress, phase=TransferPhase(event))
+            else:
+                artifact_phase: str = event
+                if event == "completed":
+                    artifact_phase = (
+                        progress.phase
+                        if progress.phase in ("stored", "skipped")
+                        else "received"
+                    )
+                terminal = replace(progress, phase=artifact_phase)
+            self.last_progress[identity] = terminal
+            self._call(self.progress_callback, terminal)
+        except BaseException as error:
+            errors.append(error)
+        try:
+            self.status(
+                identity,
+                _Status(event, cast(Literal["full", "ranged"], strategy), reason),
+            )
+        except BaseException as error:
+            errors.append(error)
+        return errors
+
     def _complete_source(self, source: _Source) -> None:
-        """Report a drained verified source once, without reclassifying it on a later failure."""
+        """Notify completion after consumption/cleanup; never reclassify a committed source."""
         if source.exhausted and not source.pending and not source.completed:
             source.completed = True
             if source.identity is not None:
                 identity, _, attempt = source.identity
                 self.completed.add((identity, attempt))
-                _, _, strategy, reason = self.identities[identity]
-                self.status(
-                    identity,
-                    _Status(
-                        "completed",
-                        cast(Literal["full", "ranged"], strategy),
-                        reason,
-                    ),
-                )
+                errors = self._terminal_observers(identity, "completed")
+                if errors:
+                    for secondary in errors[1:]:
+                        report_secondary_failure(
+                            errors[0], secondary, "Download terminal observer"
+                        )
+                    raise errors[0]
 
     def run(
         self,
@@ -857,6 +909,8 @@ class _Coordinator:
                     else:
                         self._complete_source(source)
                 self._pump()
+                if self.cancelled.is_set():
+                    raise _DownloadCancelled("Download cancelled")
                 for pending in tuple(self.pending.values()):
                     if pending.future.done():
                         outcome = pending.future.result()
@@ -880,6 +934,10 @@ class _Coordinator:
                                     "Download source has jobs after its terminal job"
                                 )
                             source.exhausted = True
+                        if pending.job.validate_result is not None:
+                            pending.job.validate_result()
+                        if self.cancelled.is_set():
+                            raise _DownloadCancelled("Download cancelled")
                         self._call(on_result, cast(T, outcome.value))
                         pending.job.cleanup(True)
                         self._release(pending)
@@ -924,55 +982,25 @@ class _Coordinator:
                 report_secondary_failure(primary, cleanup_error, "Download job cleanup")
         if primary is not None:
             failure_transfer = self.failure_transfer
+            terminal_errors: list[BaseException] = []
             for identity in identities:
-                try:
-                    digest, attempt, strategy, reason = self.identities[identity]
-                    if (identity, attempt) in self.completed:
-                        continue
-                    cancelled = (
-                        isinstance(primary, (_DownloadCancelled, KeyboardInterrupt))
-                        or failure_transfer is not None
-                        and identity != failure_transfer
+                _, attempt, _, _ = self.identities[identity]
+                if (identity, attempt) in self.completed:
+                    continue
+                cancelled = (
+                    isinstance(primary, (_DownloadCancelled, KeyboardInterrupt))
+                    or failure_transfer is not None
+                    and identity != failure_transfer
+                )
+                terminal_errors.extend(
+                    self._terminal_observers(
+                        identity, "cancelled" if cancelled else "failed"
                     )
-                    progress = self.last_progress.get(identity)
-                    if progress is None:
-                        progress = TransferProgress(
-                            identity,
-                            digest,
-                            TransferDirection.DOWNLOAD,
-                            TransferPhase.PREPARING,
-                            self.snapshot(identity).bytes_accepted,
-                            None,
-                            attempt,
-                        )
-                    terminal: TransferProgress | ArtifactProgress
-                    if isinstance(progress, TransferProgress):
-                        terminal = replace(
-                            progress,
-                            phase=(
-                                TransferPhase.CANCELLED
-                                if cancelled
-                                else TransferPhase.FAILED
-                            ),
-                        )
-                    else:
-                        terminal = replace(
-                            progress, phase="cancelled" if cancelled else "failed"
-                        )
-                    self.last_progress[identity] = terminal
-                    self._call(self.progress_callback, terminal)
-                    self.status(
-                        identity,
-                        _Status(
-                            "cancelled" if cancelled else "failed",
-                            cast(Literal["full", "ranged"], strategy),
-                            reason,
-                        ),
-                    )
-                except BaseException as secondary:
-                    report_secondary_failure(
-                        primary, secondary, "Download terminal observer"
-                    )
+                )
+            for secondary in terminal_errors:
+                report_secondary_failure(
+                    primary, secondary, "Download terminal observer"
+                )
             raise primary
         return self.snapshot()
 
