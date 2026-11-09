@@ -625,6 +625,7 @@ def test_slow_consumer_cannot_starve_completed_job_and_next_blob(client):
     refilled = threading.Event()
     producer_done = threading.Event()
     third_started = threading.Event()
+    allow_small_finish = threading.Event()
     third_started_early = []
 
     class SlowSink(io.StringIO):
@@ -644,6 +645,7 @@ def test_slow_consumer_cannot_starve_completed_job_and_next_blob(client):
                     for item in coordinator.pending.values()
                     if item.job.transfer_id == "b"
                 )
+                allow_small_finish.set()
                 pending.future.result(timeout=5)
             elif self.writes == 2:
                 assert third_started.wait(5)
@@ -666,6 +668,11 @@ def test_slow_consumer_cannot_starve_completed_job_and_next_blob(client):
                     advance.clear()
         return "large"
 
+    def small(worker):
+        """Remain pending until the first observation explicitly permits completion."""
+        assert allow_small_finish.wait(5)
+        return "small"
+
     def third(worker):
         """Prove a ready blob starts before the other producer finishes all observations."""
         third_started_early.append(not producer_done.is_set())
@@ -679,7 +686,7 @@ def test_slow_consumer_cannot_starve_completed_job_and_next_blob(client):
                 coordinator.run(
                     [
                         [_job("a", producer, terminal=True)],
-                        [_job("b", lambda worker: "small", terminal=True)],
+                        [_job("b", small, terminal=True)],
                         [_job("c", third, terminal=True)],
                     ],
                     on_result=lambda value: None,
@@ -687,6 +694,7 @@ def test_slow_consumer_cannot_starve_completed_job_and_next_blob(client):
         assert third_started_early == [True]
     finally:
         advance.set()
+        allow_small_finish.set()
         _telemetry_config.reset(token)
 
 
