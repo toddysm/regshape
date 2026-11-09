@@ -11,6 +11,8 @@ from typing import Literal
 
 import requests
 
+from regshape.libs._logging import emit_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,10 +42,11 @@ def report_secondary_failure(
     primary and let Python retain secondary context without replacing its cause.
     """
     try:
-        logger.error(
+        emit_log(logger, logging.ERROR,
             "%s failed (%s); preserving the original error",
             context,
             type(secondary).__name__,
+            method="error",
         )
     except BaseException:  # noqa: BLE001 - preserve the active primary error and its cause
         raise primary

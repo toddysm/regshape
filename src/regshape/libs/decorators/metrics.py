@@ -11,7 +11,13 @@
     moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
+from contextvars import ContextVar
 from dataclasses import dataclass, field
+
+
+metrics_collector: ContextVar["PerformanceMetrics | None"] = ContextVar(
+    "regshape_metrics_collector", default=None,
+)
 
 
 @dataclass
@@ -49,7 +55,12 @@ class PerformanceMetrics:
         :param bytes_received: Response body size in bytes.
         :param elapsed: Elapsed time in seconds for this request.
         :param is_retry: Whether this request was a retry.
+        :raises ValueError: In worker collection, for a status outside 100..599;
+            this bounds immutable status-count records without changing ordinary callers.
         """
+        collector = metrics_collector.get()
+        if collector is not None and (type(status_code) is not int or not 100 <= status_code <= 599):
+            raise ValueError("Worker metrics require a valid HTTP status")
         self.total_requests += 1
         self.total_bytes_sent += bytes_sent
         self.total_bytes_received += bytes_received
@@ -61,3 +72,5 @@ class PerformanceMetrics:
             self.retries += 1
         if status_code >= 400:
             self.errors += 1
+        if collector is not None and collector is not self:
+            collector.record_request(status_code, bytes_sent, bytes_received, elapsed, is_retry)
