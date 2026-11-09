@@ -1,11 +1,13 @@
 """Bounded, instrumented token negotiation for an operation-owned download.
 
-Legacy authentication remains unchanged. Tokens here retain expiry metadata and
-use the worker's owned session with finite timeouts and no token-endpoint redirects.
+Tokens retain expiry metadata and use the worker's owned session with finite
+timeouts and no token-endpoint redirects.
 """
 
 import json
+import logging
 import math
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -14,7 +16,12 @@ from urllib.parse import urlsplit
 import requests
 
 from regshape.libs._http import ClosingResponse, close_response
-from regshape.libs.auth.registryauth import _get_basic_auth, _parse_auth_header
+from regshape.libs.auth.registryauth import (
+    _ACR_REFRESH_TOKEN_USERNAME,
+    _TOKEN_CLIENT_ID,
+    _get_basic_auth,
+    _parse_auth_header,
+)
 from regshape.libs.decorators.call_details import http_request
 from regshape.libs.errors import AuthError, ManifestError
 from regshape.libs.manifests._stream import entity_chunks
@@ -91,8 +98,10 @@ def negotiate_download_token(
 
     Bearer realms may be external but must be credential-free HTTP(S) URLs,
     with no TLS downgrade. Missing scope is bound to the requested repository.
-    A challenged repository/action scope must exactly match the requested one.
-    GET with optional Basic credentials retains the ACR refresh-token POST fallback.
+    Challenged scopes must cover pull on the same repository; token requests
+    still ask only for the expected scope. The service audience is optional.
+    Only the ACR sentinel username with a nonempty password enables the
+    refresh-token POST fallback; failures retain the original GET 401.
     Both exchanges reject redirects in a response hook before any redirect-body
     buffering; successful token JSON remains bounded to 1 MiB.
 
@@ -127,9 +136,15 @@ def negotiate_download_token(
             raise ValueError("Unsafe token realm")
     except ValueError:
         raise AuthError("Invalid download authentication realm") from None
-    if not service or challenged_scope != scope:
-        raise AuthError("Invalid download authentication service or repository scope")
-    params = {"service": service}
+    if challenged_scope != scope:
+        repository, _, actions = challenged_scope.rpartition(":")
+        expected_repository, _, expected_actions = scope.rpartition(":")
+        if (
+            not scope or repository != expected_repository
+            or not set(expected_actions.split(",")).issubset(actions.split(","))
+        ):
+            raise AuthError("Invalid download authentication repository scope")
+    params = {"service": service} if service else {}
     if scope:
         params["scope"] = scope
     credentials = (username, password) if username is not None and password is not None else None
@@ -139,17 +154,29 @@ def negotiate_download_token(
             timeout=timeout, stream=True, allow_redirects=False,
             hooks={"response": _reject_token_redirect},
         )) as response:
-            refresh = response.status_code == 401 and password is not None
+            refresh = (
+                response.status_code == 401
+                and username == _ACR_REFRESH_TOKEN_USERNAME and bool(password)
+            )
             if not refresh:
                 payload = _token_payload(response)
         if refresh:
-            with ClosingResponse(http_request(
-                realm, "POST", session=session,
-                data={"grant_type": "refresh_token", "refresh_token": password, **params},
-                timeout=timeout, stream=True, allow_redirects=False,
-                hooks={"response": _reject_token_redirect},
-            )) as response:
-                payload = _token_payload(response)
+            try:
+                with ClosingResponse(http_request(
+                    realm, "POST", session=session,
+                    data={
+                        "grant_type": "refresh_token", "refresh_token": password,
+                        "client_id": _TOKEN_CLIENT_ID, **params,
+                    },
+                    timeout=timeout, stream=True, allow_redirects=False,
+                    hooks={"response": _reject_token_redirect},
+                )) as response:
+                    payload = _token_payload(response)
+            except (AuthError, requests.exceptions.RequestException):
+                logging.getLogger(__name__).warning(
+                    "ACR refresh-token exchange failed; retaining original token rejection"
+                )
+                raise AuthError("Token request failed", "Status code: 401") from None
     except requests.exceptions.RequestException:
         raise AuthError("Download token transport failed") from None
     token = payload.get("access_token") or payload.get("token")
@@ -169,6 +196,11 @@ def negotiate_download_token(
             try:
                 if not isinstance(issued, str):
                     raise TypeError("Invalid issuance time")
+                # Python 3.10 accepts only millisecond/microsecond ISO fractions.
+                issued = re.sub(
+                    r"\.([0-9]+)(?=Z$|[+-][0-9]{2}:[0-9]{2}$)",
+                    lambda match: "." + match[1][:6].ljust(6, "0"), issued,
+                )
                 timestamp = datetime.fromisoformat(issued.replace("Z", "+00:00"))
                 if timestamp.tzinfo is None:
                     raise ValueError("Issuance time requires a timezone")

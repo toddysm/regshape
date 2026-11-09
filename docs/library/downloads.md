@@ -10,6 +10,21 @@ The [blob API](../../specs/operations/blobs.md#get_blob) and
 accept keyword-only `download_options`; existing positional arguments, results,
 output ownership and progress observers are unchanged.
 
+## Upgrade note: default transport changes
+
+Omitting `download_options` on `get_blob` or `pull_artifact` now selects a pooled
+worker for supported clients, even if the borrowed client has
+`enable_retries=False`. Unless an explicit retry policy says otherwise, pooled
+downloads retry 429/transient 5xx responses up to three times, honor bounded
+`Retry-After` directives, and log each attempt. Responses update the worker's
+`last_response`, not the borrowed client's. Result types and positional
+arguments are unchanged; these transport and observability changes are intentional.
+
+Pass `download_options=DownloadOptions.legacy()` to either operation to retain
+the original client's retry, logging/middleware and `last_response` behavior.
+`DownloadOptions.sequential()` still uses pooled transport and is **not** a
+compatibility rollback. The legacy example below shows the explicit rollback.
+
 ## Policy
 
 Import the same frozen `DownloadOptions` type from `regshape.libs.blobs` or
@@ -41,7 +56,8 @@ Each request uses the original finite client timeout.
 Pooled 429/503 retries honor a valid `Retry-After` delay or HTTP date, waiting at
 least the greater of that delay and configured exponential backoff after releasing
 the response slot. Malformed values emit a sanitized diagnostic and retain normal
-backoff; platform-unrepresentable delays fail explicitly rather than retry early.
+backoff. Server-directed delays above 300 seconds raise `ValueError` after the
+response is closed, rather than hanging acquisition or retrying early.
 Legacy retry timing is unchanged.
 One retry owner wraps the complete authentication flow, so registry status and
 transport retries share their budget across authentication resends.
@@ -76,13 +92,22 @@ Tokens are bound to the registry origin, credential snapshot, validated
 realm/service and repository pull scope. Expiry metadata or rejection of a
 generation causes one shared refresh. Anonymous and Basic flows remain supported;
 foreign 401 responses cannot select token realms or warm this provider.
+Exchange failures are not cached: a later request can retry without replaying
+another worker's exception. Fractional RFC 3339 `issued_at` timestamps, including
+Docker Hub's nanosecond precision, are normalized for Python 3.10 compatibility.
 Scopes use the terminal manifest/blob resource; nested repository components
 named `manifests` or `blobs` remain part of the repository identity.
 
 Token exchanges use the same instrumented HTTP hook, finite timeout and pool.
 External registry-issued token realms are supported without credential-bearing
 URLs or HTTPS-to-HTTP downgrade. Token-endpoint redirects are rejected. The
-ACR refresh-token POST fallback remains supported.
+ACR refresh-token POST fallback requires the sentinel username
+`00000000-0000-0000-0000-000000000000` and a nonempty password, sends
+`client_id=regshape`, and retains the original GET 401 if the fallback fails.
+Ordinary rejected username/password credentials do not trigger this POST.
+Challenges may omit `service` or include additional actions such as `pull,push`
+on the same repository; token requests still ask only for the expected pull
+scope. Different repositories or scopes without pull are rejected.
 GET and refresh-token POST reject redirects in a response hook before Requests
 can buffer their bodies, preserving the token-response byte limit.
 
@@ -95,8 +120,10 @@ initialization is single-flight, with at most max(2, C) proxy managers per opera
 No streamed GET
 is cached. Close each response and stop/join peers before closing the context.
 Closing a worker session detaches the borrowed adapter, never closes a peer's
-pool. The operation closes its adapter exactly once; the original client is
-neither closed nor mutated.
+pool. The operation closes its adapter exactly once, including when closure
+detects a still-open response and raises `RuntimeError`. Callers must still close
+their responses and join workers; cleanup does not make premature closure safe.
+The original client is neither closed nor mutated.
 
 The extension hook is `RegistryClient.fork_for_download(*, context)`. An exact
 base client with configured built-ins is supported. Subclasses, custom middleware

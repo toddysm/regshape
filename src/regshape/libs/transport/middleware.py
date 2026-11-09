@@ -266,7 +266,6 @@ class MiddlewarePipeline:
 
 
 import logging
-import threading
 import time
 from dataclasses import dataclass, field
 from datetime import timezone
@@ -706,11 +705,11 @@ class RetryMiddleware(BaseMiddleware):
         """Parse delay-seconds or an HTTP date after the retry response was disposed.
 
         Malformed headers emit a sanitized protocol diagnostic and retain normal
-        backoff. Platform-unrepresentable delays fail explicitly rather than
-        retrying sooner than a valid server directive.
+        backoff. Delays above 300 seconds fail explicitly rather than hanging
+        acquisition or retrying sooner than a valid server directive.
 
         :returns: Nonnegative delay in seconds, or None for missing/malformed input.
-        :raises ValueError: For a delay exceeding the platform's supported wait.
+        :raises ValueError: For a delay exceeding the 300-second download limit.
         """
         if not any(key.lower() == "retry-after" for key in response.headers):
             return None
@@ -733,8 +732,8 @@ class RetryMiddleware(BaseMiddleware):
             return None
         except OverflowError:
             raise ValueError("Retry-After exceeds the supported download wait") from None
-        if delay > threading.TIMEOUT_MAX:
-            raise ValueError("Retry-After exceeds the supported download wait")
+        if delay > 300:
+            raise ValueError("Retry-After exceeds the supported download wait (300-second limit)")
         return delay
 
     def _wait_backoff(self, attempt: int, retry_after: float = 0.0) -> None:

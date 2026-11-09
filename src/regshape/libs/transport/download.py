@@ -47,7 +47,6 @@ class _AuthState:
     token: DownloadToken | None = None
     generation: int = 0
     challenge: str = field(default="", repr=False)
-    exchange_error: BaseException | None = field(default=None, repr=False)
 
 
 class _DownloadAuth:
@@ -75,16 +74,16 @@ class _DownloadAuth:
             return self.states[scope]
 
     def _refresh(self, state: _AuthState, request: RegistryRequest, session: requests.Session) -> None:
-        """Exchange once under the scope lock; retain exchange failures for waiting peers."""
-        try:
-            state.token = negotiate_download_token(
-                state.challenge, self.username, self.password,
-                base_url=self.base_url, scope=state.scope, session=session,
-                timeout=request.timeout or self.timeout,
-            )
-        except BaseException as error:
-            state.exchange_error = error
-            raise
+        """Exchange under the scope lock; failures leave later peers free to retry.
+
+        Failed exchanges never cache exception objects or advance the token
+        generation. Process-control exceptions propagate only to their caller.
+        """
+        state.token = negotiate_download_token(
+            state.challenge, self.username, self.password,
+            base_url=self.base_url, scope=state.scope, session=session,
+            timeout=request.timeout or self.timeout,
+        )
         state.generation += 1
         state.initialized = True
 
@@ -154,8 +153,6 @@ class _DownloadAuth:
             return response
         state = self._state(request)
         with state.lock:
-            if state.exchange_error is not None:
-                raise state.exchange_error
             if not state.initialized:
                 response = next_handler(request)
                 if response.status_code == 401:
@@ -174,8 +171,6 @@ class _DownloadAuth:
             return response
         challenge = self._capture_challenge(response)
         with state.lock:
-            if state.exchange_error is not None:
-                raise state.exchange_error
             if state.generation == generation:
                 return self._challenge(state, request, challenge, next_handler, session)
             retried = next_handler(self._authorized(request, state.token))
@@ -379,21 +374,25 @@ class DownloadTransport:
             raise
 
     def close(self) -> None:
-        """Close child-local resources then the pool once, after all responses/workers stop.
+        """Close child-local resources and the pool once, even on lifecycle misuse.
 
-        :raises RuntimeError: If callers still own an active request/stream.
+        Callers must still close responses and join workers. A live response
+        can release its accounting after closure, but no new requests may start.
+
+        :raises RuntimeError: After cleanup, if callers still own a request/stream.
         """
         with self.lock:
             if self.closed:
                 return
-            if self.active:
-                raise RuntimeError("Close download responses and join workers before closing the pool")
+            active = self.active
             self.closed = True
         try:
             for session in self.sessions:
                 session.close()
         finally:
             self.adapter.close()
+        if active:
+            raise RuntimeError("Close download responses and join workers before closing the pool")
 
     def __exit__(
         self, exc_type: type[BaseException] | None, exc: BaseException | None,

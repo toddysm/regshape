@@ -16,6 +16,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+import requests
 
 from regshape.libs.artifacts import pull_artifact
 from regshape.libs.auth.download import negotiate_download_token
@@ -53,6 +54,8 @@ class _ServerState:
         self.challenge_scope: str | None = None
         self.token_status = 200
         self.token_posts = 0
+        self.token_post_status = 200
+        self.token_post_data: list[dict[str, list[str]]] = []
         self.retry_after: str | None = None
 
 
@@ -142,10 +145,11 @@ def server():
             data = parse_qs(self.rfile.read(int(self.headers["Content-Length"])).decode())
             with state.lock:
                 state.token_posts += 1
+                state.token_post_data.append(data)
                 scope = data.get("scope", [""])[0]
                 token = f"refresh-{state.token_posts}"
                 state.valid_tokens[scope] = token
-                self._reply(200, json.dumps({"access_token": token}).encode())
+                self._reply(state.token_post_status, json.dumps({"access_token": token}).encode())
 
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=httpd.serve_forever)
@@ -159,11 +163,14 @@ def server():
         assert not thread.is_alive()
 
 
-def _client(authority: str, **kwargs: object) -> RegistryClient:
+def _client(
+    authority: str, *, username: str | None = "test-user",
+    password: str | None = "test-password", **kwargs: object,
+) -> RegistryClient:
     """Resolve a synthetic credential snapshot once without touching Docker configuration."""
     with patch(
         "regshape.libs.transport.client.resolve_credentials",
-        return_value=("test-user", "test-password"),
+        return_value=(username, password),
     ):
         return RegistryClient(TransportConfig(authority, insecure=True, **kwargs))
 
@@ -399,19 +406,52 @@ def test_worker_isolation_and_single_pool_close(server) -> None:
         resolve.assert_called_once()
 
 
-def test_owned_stream_holds_slot_and_blocks_pool_close(server) -> None:
-    """Pool cleanup rejects live streams and response.close releases accounting exactly once."""
+def test_owned_stream_holds_slot_and_closes_pool_on_misuse(server) -> None:
+    """Premature cleanup closes the pool once, rejects new work and retains response accounting."""
     authority, _state = server
     context = DownloadTransport(_client(authority), DownloadOptions.sequential())
     worker = context.fork()
     response = worker.get("/v2/repo/blobs/test", stream=True)
     assert context.active == 1
-    with pytest.raises(RuntimeError, match="Close download responses"):
+    try:
+        with patch.object(context.adapter, "close", wraps=context.adapter.close) as close:
+            with pytest.raises(RuntimeError, match="Close download responses"):
+                context.close()
+            assert context.closed and close.call_count == 1
+            with pytest.raises(RuntimeError, match="closed"):
+                context.new_session()
+            response.close()
+            response.close()
+            assert context.active == 0
+            context.close()
+            close.assert_called_once()
+    finally:
+        response.close()
         context.close()
-    response.close()
-    response.close()
+
+
+def test_pool_closes_with_live_response_without_masking_primary_error(
+    server, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Context exit reports lifecycle misuse but retains a primary failure and closes its pool."""
+    authority, _state = server
+    context = DownloadTransport(_client(authority), DownloadOptions.sequential())
+    primary = ValueError("synthetic primary failure")
+    response = None
+    try:
+        with patch.object(context.adapter, "close", wraps=context.adapter.close) as close:
+            with pytest.raises(ValueError) as caught, context as worker:
+                response = worker.get("/v2/repo/blobs/test", stream=True)
+                raise primary
+            assert caught.value is primary
+            close.assert_called_once()
+        assert context.closed
+        assert "Download transport cleanup" in caplog.text
+    finally:
+        if response is not None:
+            response.close()
+        context.close()
     assert context.active == 0
-    context.close()
 
 
 @pytest.mark.parametrize("budget", [None, 0, 2])
@@ -498,6 +538,7 @@ def test_disabled_explicit_client_retry_policy_preserves_zero_unless_overridden(
 
 @pytest.mark.parametrize("header,expected", [
     ("5", 5.0),
+    ("300", 300.0),
     ("000000000000000000000005", 5.0),
     ("0", 1.0),
     ("Fri, 06 Nov 2026 16:00:05 GMT", 5.0),
@@ -549,17 +590,26 @@ def test_legacy_retry_after_timing_is_unchanged(server) -> None:
     sleep.assert_called_once_with(0)
 
 
-def test_unrepresentable_retry_after_fails_after_release(server) -> None:
-    """An unsupported server delay never retries early or leaks an owned stream/pool slot."""
+@pytest.mark.parametrize("header", [
+    "301", "31536000", "Fri, 01 Jan 2100 00:00:00 GMT", "9" * 20,
+])
+@pytest.mark.parametrize("status", [429, 503])
+def test_excessive_retry_after_fails_after_release(server, header: str, status: int) -> None:
+    """Server delays above the 300-second ceiling fail without sleeping, retrying or leaking slots."""
     authority, state = server
     state.mode = "anonymous"
     state.failures = 1
-    state.retry_after = "9" * 20
-    with DownloadTransport(_client(authority), DownloadOptions()) as worker:
+    state.retry_after = header
+    state.failure_status = status
+    with (
+        patch("regshape.libs.transport.middleware.time.sleep") as sleep,
+        DownloadTransport(_client(authority), DownloadOptions()) as worker,
+    ):
         with pytest.raises(ValueError, match="supported download wait"):
             _receive(worker)
         assert worker._download_context.active == 0
     assert state.requests == 1
+    sleep.assert_not_called()
 
 
 def test_worker_session_bound_and_closed_record_reclamation(server) -> None:
@@ -661,12 +711,229 @@ def test_scope_mismatch_rejected_before_exchange(server) -> None:
 
 
 def test_refresh_token_fallback(server) -> None:
-    """ACR-style GET rejection closes the old response before instrumented POST exchange."""
+    """ACR sentinel credentials enable a scoped, identified POST after releasing the GET."""
     authority, state = server
     state.token_status = 401
-    with DownloadTransport(_client(authority), DownloadOptions()) as worker:
+    client = _client(authority, username="00000000-0000-0000-0000-000000000000")
+    with DownloadTransport(client, DownloadOptions()) as worker:
         assert _receive(worker) == state.payload
     assert len(state.token_calls) == 1 and state.token_posts == 1
+    assert state.token_post_data == [{
+        "grant_type": ["refresh_token"], "refresh_token": ["test-password"],
+        "client_id": ["regshape"], "service": ["registry"],
+        "scope": ["repository:repo:pull"],
+    }]
+
+
+@pytest.mark.parametrize("username,password", [
+    ("test-user", "wrong-password"), (None, None),
+    ("00000000-0000-0000-0000-000000000000", ""),
+    ("00000000-0000-0000-0000-000000000000", None),
+])
+def test_non_acr_credentials_do_not_trigger_refresh_post(
+    server, username: str | None, password: str | None,
+) -> None:
+    """Ordinary or empty credentials retain the GET 401 without attempting a refresh grant."""
+    authority, state = server
+    state.token_status = 401
+    client = _client(authority, username=username, password=password)
+    with DownloadTransport(client, DownloadOptions()) as worker:
+        with pytest.raises(AuthError, match="Status code: 401"):
+            _receive(worker)
+        assert worker._download_context.active == 0
+    assert len(state.token_calls) == 1 and state.token_posts == 0
+
+
+@pytest.mark.parametrize("status", [401, 403, 503])
+def test_failed_refresh_post_retains_original_rejection(
+    server, status: int, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A rejected refresh grant closes both exchanges and reports the original GET 401."""
+    authority, state = server
+    state.token_status = 401
+    state.token_post_status = status
+    client = _client(authority, username="00000000-0000-0000-0000-000000000000")
+    with DownloadTransport(client, DownloadOptions()) as worker:
+        with pytest.raises(AuthError, match="Status code: 401"):
+            _receive(worker)
+        assert worker._download_context.active == 0
+    assert state.token_posts == 1
+    assert "retaining original token rejection" in caplog.text
+
+
+def test_refresh_post_transport_failure_retains_original_rejection(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Refresh transport failures cannot obscure the closed GET 401 or expose exception details."""
+    rejected = StreamResponse(b"", status=401)
+    with (
+        requests.Session() as session,
+        patch(
+            "regshape.libs.auth.download.http_request",
+            side_effect=[rejected, requests.exceptions.Timeout("synthetic private endpoint")],
+        ) as send,
+        pytest.raises(AuthError, match="Status code: 401"),
+    ):
+        negotiate_download_token(
+            'Bearer realm="https://tokens.example/token",service="registry"',
+            "00000000-0000-0000-0000-000000000000", "synthetic-refresh",
+            base_url="https://registry.example", scope="repository:repo:pull",
+            session=session, timeout=12,
+        )
+    assert rejected.close_calls == 1 and send.call_count == 2
+    assert "retaining original token rejection" in caplog.text
+    assert "synthetic private endpoint" not in caplog.text
+
+
+@pytest.mark.parametrize("phase", ["discovery", "expiry", "rejection"])
+@pytest.mark.parametrize("error_type", [AuthError, KeyboardInterrupt, SystemExit])
+def test_failed_exchange_does_not_poison_later_peer(
+    server, phase: str, error_type: type[BaseException],
+) -> None:
+    """Failed discovery/refresh never replays an exception into a later worker or advances state."""
+    authority, state = server
+    with DownloadTransport(_client(authority), DownloadOptions()) as root:
+        context = root._download_context
+        if phase != "discovery":
+            _receive(root)
+            auth = context.auth.states["repository:repo:pull"]
+            if phase == "expiry":
+                auth.token = replace(auth.token, expires_at=0)
+            else:
+                state.valid_tokens.clear()
+        failure = error_type("synthetic exchange failure")
+        failed = False
+
+        def fail_once(*args, **kwargs):
+            """Raise only for the first caller, then perform a real loopback token exchange."""
+            nonlocal failed
+            if not failed:
+                failed = True
+                raise failure
+            return negotiate_download_token(*args, **kwargs)
+
+        with patch("regshape.libs.transport.download.negotiate_download_token", side_effect=fail_once):
+            with pytest.raises(error_type) as caught:
+                _receive(root)
+            assert caught.value is failure
+            auth = context.auth.states["repository:repo:pull"]
+            assert auth.generation == (0 if phase == "discovery" else 1)
+            assert context.active == 0
+            assert _receive(context.fork()) == state.payload
+            assert auth.generation == (1 if phase == "discovery" else 2)
+    assert len(state.token_calls) == (1 if phase == "discovery" else 2)
+
+
+@pytest.mark.parametrize("fraction", ["", ".8", ".858", ".8583", ".858301", ".858301624"])
+@pytest.mark.parametrize("zone", ["Z", "+00:00", "+02:00"])
+def test_fractional_issuance_time_on_supported_python_versions(fraction: str, zone: str) -> None:
+    """RFC 3339 fractions, including Docker Hub nanoseconds, retain expiry on Python 3.10+."""
+    issued = f"2026-11-09T18:16:37{fraction}{zone}"
+    whole_seconds = datetime.fromisoformat(
+        "2026-11-09T18:16:37" + zone.replace("Z", "+00:00"),
+    ).timestamp()
+    fractional_seconds = float("0" + fraction) if fraction else 0
+    response = StreamResponse(json.dumps({
+        "token": "synthetic", "expires_in": 3600, "issued_at": issued,
+    }).encode())
+    with (
+        requests.Session() as session,
+        patch("regshape.libs.auth.download.http_request", return_value=response),
+        patch("regshape.libs.auth.download.time.time", return_value=whole_seconds + 10),
+        patch("regshape.libs.auth.download.time.monotonic", return_value=1000),
+    ):
+        token = negotiate_download_token(
+            'Bearer realm="https://tokens.example/token",service="registry"',
+            None, None, base_url="https://registry.example", scope="repository:repo:pull",
+            session=session, timeout=12,
+        )
+    assert token.expires_at == pytest.approx(4590 + fractional_seconds, abs=0.000002)
+    assert response.close_calls == 1
+
+
+def test_waiting_peers_recover_after_single_flight_exchange_failure(server) -> None:
+    """A failed leader releases waiting workers to share one successful replacement exchange."""
+    authority, state = server
+    entered = threading.Event()
+    release = threading.Event()
+    attempts = 0
+
+    def exchange(*args, **kwargs):
+        """Hold and fail only the initial leader while peers wait on the repository lock."""
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            entered.set()
+            assert release.wait(timeout=5)
+            raise AuthError("synthetic transient exchange failure")
+        return negotiate_download_token(*args, **kwargs)
+
+    with (
+        DownloadTransport(_client(authority), DownloadOptions()) as root,
+        patch("regshape.libs.transport.download.negotiate_download_token", side_effect=exchange),
+        ThreadPoolExecutor(max_workers=4) as executor,
+    ):
+        context = root._download_context
+        workers = [context.fork() for _ in range(3)]
+        leader = executor.submit(_receive, root)
+        try:
+            assert entered.wait(timeout=5)
+            peers = [executor.submit(_receive, worker) for worker in workers]
+        finally:
+            release.set()
+        with pytest.raises(AuthError, match="synthetic transient"):
+            leader.result(timeout=5)
+        assert [peer.result(timeout=5) for peer in peers] == [state.payload] * 3
+        assert attempts == 2 and context.active == 0
+    assert len(state.token_calls) == 1
+
+
+@pytest.mark.parametrize("service", [None, "", "registry"])
+@pytest.mark.parametrize("scope", [None, "repository:repo:pull", "repository:repo:pull,push", "repository:repo:push,pull"])
+def test_optional_service_and_covering_scope_request_only_pull(
+    service: str | None, scope: str | None,
+) -> None:
+    """Broader same-repository challenges never broaden requested or cached token permissions."""
+    challenge = 'Bearer realm="https://tokens.example/token"'
+    if service is not None:
+        challenge += f',service="{service}"'
+    if scope is not None:
+        challenge += f',scope="{scope}"'
+    response = StreamResponse(b'{"token":"synthetic"}')
+    with (
+        requests.Session() as session,
+        patch("regshape.libs.auth.download.http_request", return_value=response) as send,
+    ):
+        token = negotiate_download_token(
+            challenge, None, None, base_url="https://registry.example",
+            scope="repository:repo:pull", session=session, timeout=12,
+        )
+    expected = {"scope": "repository:repo:pull"}
+    if service:
+        expected["service"] = service
+    assert send.call_args.kwargs["params"] == expected
+    assert token.scope == "repository:repo:pull" and token.service == (service or "")
+    assert response.close_calls == 1
+
+
+@pytest.mark.parametrize("scope", [
+    "repository:other:pull,push", "repository:repo:push",
+    "registry:repo:pull", "repository:repo:*", "",
+    "repository:repo:pull repository:other:pull",
+])
+def test_non_covering_scope_rejected_before_token_request(scope: str) -> None:
+    """Cross-repository, multi-scope and non-pull challenges fail before credential exchange."""
+    with (
+        requests.Session() as session,
+        patch("regshape.libs.auth.download.http_request") as send,
+        pytest.raises(AuthError, match="scope"),
+    ):
+        negotiate_download_token(
+            f'Bearer realm="https://tokens.example/token",scope="{scope}"',
+            None, None, base_url="https://registry.example", scope="repository:repo:pull",
+            session=session, timeout=12,
+        )
+    send.assert_not_called()
 
 
 def test_artifact_root_and_blobs_share_context(server, tmp_path: Path) -> None:

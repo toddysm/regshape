@@ -134,7 +134,7 @@ def download(middleware: bool, path: Path, bounded: bool = True):
 @pytest.mark.parametrize("method", ["GET", "POST"])
 @pytest.mark.parametrize("status", REDIRECT_STATUSES)
 def test_token_redirect_rejected_before_requests_buffers_response_next(method: str, status: int) -> None:
-    """Real Requests rejects GET/refresh-POST redirects without reading bodies or leaking slots."""
+    """Reject token redirects unread; failed ACR fallback retains the original GET 401."""
     adapter = WireAdapter()
 
     def token_response(request: requests.PreparedRequest) -> WireResponse:
@@ -153,9 +153,11 @@ def test_token_redirect_rejected_before_requests_buffers_response_next(method: s
         patch.object(HTTPResponse, "read", side_effect=AssertionError("Redirect body was consumed")) as read,
     ):
         worker._session.trust_env = False
-        with pytest.raises(AuthError, match="Token endpoint redirects") as caught:
+        expected = "Status code: 401" if method == "POST" else "Token endpoint redirects"
+        with pytest.raises(AuthError, match=expected) as caught:
             negotiate_download_token(
-                challenge(TOKEN_ORIGIN), *CREDENTIALS, base_url=BASE,
+                challenge(TOKEN_ORIGIN), "00000000-0000-0000-0000-000000000000",
+                CREDENTIALS[1], base_url=BASE,
                 scope="repository:repo:pull", session=worker._session, timeout=12,
             )
         read.assert_not_called()
