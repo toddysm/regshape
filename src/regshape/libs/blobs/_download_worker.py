@@ -21,7 +21,7 @@ from regshape.libs._http import (
     download_total,
     report_secondary_failure,
 )
-from regshape.libs.errors import BlobError
+from regshape.libs.errors import AuthError, BlobError
 from regshape.libs.manifests._stream import entity_chunks
 from regshape.libs.manifests.download import (
     _DownloadFile,
@@ -206,7 +206,7 @@ class _FullBlob:
 
         The worker closes the response and sink before returning a verified result.
         Configured retry exceptions apply only to request/body receive failures;
-        sink, validation and cleanup failures are never retried.
+        authentication, sink, validation and cleanup failures are never retried.
         The caller later performs identity-safe failed-output cleanup. Cancellation
         is checked between reads, not by a fictitious whole-read deadline.
         """
@@ -394,7 +394,7 @@ class _FullBlob:
                         if status_code in (429, 503)
                         else 0.0
                     )
-                except (BlobError, ContentDecodingError):
+                except (AuthError, BlobError, ContentDecodingError):
                     raise
                 except retryable:
                     if (

@@ -169,6 +169,8 @@ reserved spool bytes are retained. The immutable observation queue holds at
 most 4C records; a record exceeding 64 KiB is rejected, not silently truncated.
 Entity payload never enters this queue. Producers check cancellation while
 waiting for space, and the caller pumps records while waiting for tasks.
+Completion checks visit only sources retaining jobs, not every unstarted or
+retired source, so a long waiting list does not cause quadratic completion scans.
 
 The [full-stream worker](../../src/regshape/libs/blobs/_download_worker.py)
 hashes and writes its exclusive sink locally, or hashes/discards for verify-only.
@@ -189,8 +191,8 @@ retry only before any bytes have committed to either a file or its hasher,
 including verify-only. Body failures after commitment cannot replay/append.
 Configured retry exception types apply to request/body receive failures, not
 sink, validation or cleanup errors.
-Protocol budget and content-decoding rejections remain permanent even when a
-broad configured exception policy matches them.
+Authentication, protocol budget and content-decoding rejections remain permanent
+even when a broad configured exception policy matches them.
 Backoff runs after the discarded response releases its network slot and wakes
 on cancellation.
 
@@ -205,7 +207,9 @@ Successful terminal progress/status is emitted only after worker/session
 closure, telemetry merge, caller validation, result consumption and job cleanup.
 Cancellation is rechecked before consuming a result. Terminal progress and
 status observers are attempted independently; one failing observer cannot hide
-the terminal notification from the other.
+the terminal notification from the other. On failure, healthy terminal observers
+are attempted for every affected transfer before reporting secondary cleanup
+errors, so a broken diagnostic logger cannot suppress terminal notifications.
 
 An explicit fallback reset is allowed only after old jobs drain and stop.
 The caller supplies an identity-checked sink reset; accepted bytes reset,

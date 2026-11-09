@@ -14,7 +14,7 @@ import requests
 
 from regshape.libs.blobs import DownloadOptions
 from regshape.libs.blobs._download_worker import _FullBlob
-from regshape.libs.errors import BlobError
+from regshape.libs.errors import AuthError, BlobError
 from regshape.libs.progress import TransferPhase
 from regshape.libs.transport import RegistryClient, TransportConfig
 from regshape.libs.transport._coordinator import (
@@ -283,6 +283,51 @@ def test_broad_retry_exception_never_retries_validation(client):
                 options=DownloadOptions(max_retries=2),
             )
     assert get.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "failure", ["missing_credentials", "unsafe_scope", "token_rejected"]
+)
+def test_broad_retry_policy_never_retries_authentication_rejection(
+    server, tmp_path, failure
+):
+    """Permanent authentication rejection cannot consume a configured transport retry."""
+    authority, state = server
+    credentials: tuple[str | None, str | None] = ("test-user", "test-password")
+    if failure == "missing_credentials":
+        state.mode = "basic"
+        credentials = (None, None)
+    elif failure == "unsafe_scope":
+        state.challenge_scope = "repository:other:pull"
+    else:
+        state.token_status = 403
+    with patch(
+        "regshape.libs.transport.client.resolve_credentials",
+        return_value=credentials,
+    ):
+        client = RegistryClient(
+            TransportConfig(
+                authority,
+                insecure=True,
+                retry_config=RetryConfig(exceptions=(Exception,)),
+            )
+        )
+    path = tmp_path / "blob"
+    path.write_bytes(b"caller output")
+    blob = _FullBlob("repo", address(state.payload), str(path))
+    statuses = []
+    with pytest.raises(AuthError):
+        _receive(
+            client,
+            blob,
+            options=DownloadOptions(max_retries=2),
+            status=statuses.append,
+        )
+    assert state.requests == state.unauthorized == 1
+    assert len(state.token_calls) == (1 if failure == "token_rejected" else 0)
+    assert not blob.committed
+    assert path.read_bytes() == b"caller output"
+    assert not any(event.status.event == "retry" for event in statuses)
 
 
 @pytest.mark.parametrize(

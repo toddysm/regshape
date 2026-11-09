@@ -803,6 +803,9 @@ class _Coordinator:
     ) -> _Stats:
         """Round-robin ordered sources under global C and per-blob W uncommitted limits.
 
+        Completion checks visit only sources retaining jobs, never every waiting
+        source. Healthy terminal observers run before secondary cleanup diagnostics.
+
         :param on_result: Invoking-thread consumer; publish only verified results.
             Range sources are delivered in source order, not completion order.
         :returns: Final available operation counters after source cleanup.
@@ -815,6 +818,7 @@ class _Coordinator:
         if len(sources) > _MAX_SOURCES or not callable(on_result):
             raise ValueError("Invalid download sources or result consumer")
         ready = deque(_Source(iter(source), deque()) for source in sources)
+        active_sources: dict[str, _Source[T]] = {}
         identities: set[str] = set()
         primary: BaseException | None = None
         cleanup_errors: list[BaseException] = []
@@ -886,6 +890,7 @@ class _Coordinator:
                             )
                             self.pending[number] = pending
                             source.pending.append(pending)
+                            active_sources[job.transfer_id] = source
                             self.scratch_bytes += job.scratch_bytes
                             self.blob_scratch[job.transfer_id] = (
                                 self.blob_scratch.get(job.transfer_id, 0)
@@ -917,7 +922,7 @@ class _Coordinator:
                         if outcome.error is not None:
                             self.failure_transfer = pending.job.transfer_id
                             raise outcome.error
-                for source in ready:
+                for identity, source in tuple(active_sources.items()):
                     while source.pending and source.pending[0].future.done():
                         head = source.pending[0]
                         if (
@@ -943,6 +948,8 @@ class _Coordinator:
                         self._release(pending)
                         self.failure_transfer = None
                     self._complete_source(source)
+                    if not source.pending:
+                        del active_sources[identity]
             while not self.queue.empty():
                 self._pump()
         except BaseException as error:
@@ -978,9 +985,6 @@ class _Coordinator:
                 finally:
                     self._release(pending)
         if primary is not None:
-            for cleanup_error in cleanup_errors:
-                report_secondary_failure(primary, cleanup_error, "Download job cleanup")
-        if primary is not None:
             failure_transfer = self.failure_transfer
             terminal_errors: list[BaseException] = []
             for identity in identities:
@@ -997,6 +1001,8 @@ class _Coordinator:
                         identity, "cancelled" if cancelled else "failed"
                     )
                 )
+            for cleanup_error in cleanup_errors:
+                report_secondary_failure(primary, cleanup_error, "Download job cleanup")
             for secondary in terminal_errors:
                 report_secondary_failure(
                     primary, secondary, "Download terminal observer"

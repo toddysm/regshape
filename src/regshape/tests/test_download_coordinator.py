@@ -7,6 +7,7 @@ cleanup assertions run after their producers have stopped.
 import io
 import logging
 import threading
+from concurrent.futures import Future
 from dataclasses import FrozenInstanceError, replace
 from unittest.mock import patch
 
@@ -114,6 +115,44 @@ def test_round_robin_and_global_cap(client):
             assert set(starts[:2]) == {"a", "b"}
             assert starts[2] == "c"
             assert coordinator.jobs_peak == 2
+
+
+def test_completion_visits_scale_with_jobs_not_waiting_sources(client):
+    """Completed jobs must not rescan every unstarted or retired source."""
+    count = 128
+    results = []
+
+    def submit(function, *args, **kwargs):
+        """Complete normal worker tasks synchronously to remove thread-timing variance."""
+        future = Future()
+        future.set_result(function(*args, **kwargs))
+        return future
+
+    with DownloadTransport(client, DownloadOptions(concurrency=2)) as root:
+        with _Coordinator(root._download_context) as coordinator:
+            with (
+                patch.object(coordinator.executor, "submit", side_effect=submit),
+                patch.object(
+                    coordinator,
+                    "_complete_source",
+                    wraps=coordinator._complete_source,
+                ) as complete,
+            ):
+                coordinator.run(
+                    [
+                        [
+                            _job(
+                                str(index),
+                                lambda worker: worker.job.transfer_id,
+                                terminal=True,
+                            )
+                        ]
+                        for index in range(count)
+                    ],
+                    on_result=results.append,
+                )
+            assert len(results) == count
+            assert complete.call_count <= 4 * count
 
 
 def test_window_retains_out_of_order_results_and_scratch(client):
@@ -736,8 +775,10 @@ def test_telemetry_merge_failure_still_cleans_every_owned_job(client, worker_fai
 
 
 def test_logging_failure_does_not_skip_other_joined_cleanup(client):
-    """Even a broken secondary-error logger runs only after every stopped job's cleanup."""
+    """A broken secondary-error logger cannot skip cleanup or healthy terminal observers."""
     cleaned = []
+    progress = []
+    statuses = []
     barrier = threading.Barrier(2)
     primary = RuntimeError("task fault")
     diagnostic = RuntimeError("logger fault")
@@ -754,7 +795,11 @@ def test_logging_failure_does_not_skip_other_joined_cleanup(client):
             raise OSError("cleanup fault")
 
     with DownloadTransport(client, DownloadOptions(concurrency=2)) as root:
-        with _Coordinator(root._download_context) as coordinator:
+        with _Coordinator(
+            root._download_context,
+            progress_callback=progress.append,
+            status_callback=statuses.append,
+        ) as coordinator:
             with patch("regshape.libs._http.logger.error", side_effect=diagnostic):
                 with pytest.raises(RuntimeError) as caught:
                     coordinator.run(
@@ -766,6 +811,16 @@ def test_logging_failure_does_not_skip_other_joined_cleanup(client):
                     )
     assert caught.value is primary
     assert cleaned == [False, False]
+    assert {
+        event.transfer_id
+        for event in progress
+        if event.phase in (TransferPhase.FAILED, TransferPhase.CANCELLED)
+    } == {"a", "b"}
+    assert {
+        event.transfer_id
+        for event in statuses
+        if event.status.event in ("failed", "cancelled")
+    } == {"a", "b"}
 
 
 @pytest.mark.parametrize("cancel_stage", ["progress", "validation"])
