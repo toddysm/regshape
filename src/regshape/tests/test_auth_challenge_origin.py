@@ -24,6 +24,7 @@ from regshape.libs.blobs import DownloadOptions, get_blob
 from regshape.libs.errors import AuthError
 from regshape.libs.transport import RegistryClient, TransportConfig
 from regshape.libs.transport.download import DownloadTransport
+from regshape.libs.transport.middleware import RetryConfig
 from regshape.libs.transport.urls import (
     REDIRECT_STATUSES,
     require_authentication_origin,
@@ -165,6 +166,111 @@ def test_token_redirect_rejected_before_requests_buffers_response_next(method: s
         assert all(response.close_calls == 1 for response in adapter.responses)
         assert [request.method for request in adapter.sent] == (["GET", "POST"] if method == "POST" else ["GET"])
         assert all(value not in str(caught.value) for value in (*CREDENTIALS, TOKEN_ORIGIN, ATTACKER))
+
+
+@pytest.mark.parametrize("refresh", [False, True])
+def test_token_exchanges_request_identity_encoding(refresh: bool) -> None:
+    """Prepared GET/refresh POST override optional session codecs without mutating defaults."""
+    adapter = WireAdapter()
+
+    def token_response(request: requests.PreparedRequest) -> WireResponse:
+        """Return identity JSON only when the token exchange does not advertise Brotli."""
+        assert request.headers["Accept-Encoding"] == "identity"
+        if refresh and request.method == "GET":
+            return WireResponse(request, 401)
+        return WireResponse(request, 200, b'{"token":"synthetic"}')
+
+    adapter.routes[TOKEN_ORIGIN + "/token"] = token_response
+    with (
+        patch("regshape.libs.transport.download._DownloadAdapter", return_value=adapter),
+        DownloadTransport(client(True), DownloadOptions.sequential()) as worker,
+    ):
+        worker._session.trust_env = False
+        worker._session.headers["Accept-Encoding"] = "gzip, deflate, br"
+        token = negotiate_download_token(
+            challenge(TOKEN_ORIGIN),
+            "00000000-0000-0000-0000-000000000000" if refresh else CREDENTIALS[0],
+            CREDENTIALS[1], base_url=BASE, scope="repository:repo:pull",
+            session=worker._session, timeout=12,
+        )
+        assert token.authorization == "Bearer synthetic"
+        assert worker._session.headers["Accept-Encoding"] == "gzip, deflate, br"
+        assert worker._download_context.active == 0
+    assert [request.method for request in adapter.sent] == (["GET", "POST"] if refresh else ["GET"])
+    assert all(response.close_calls == 1 for response in adapter.responses)
+
+
+@pytest.mark.parametrize("redirects", [False, True])
+@pytest.mark.parametrize("status", [429, 503])
+@pytest.mark.parametrize("budget", [None, 0, 1, 2])
+@pytest.mark.parametrize("persistent", [False, True])
+def test_fallback_probe_shares_retry_budget_and_retry_after(
+    redirects: bool, status: int, budget: int | None, persistent: bool,
+) -> None:
+    """Probe and authenticated-object failures share one budget, close streams and honor backoff."""
+    adapter = WireAdapter()
+    probes = 0
+    objects = 0
+    tokens = 0
+    object_failed = False
+
+    def object_response(request: requests.PreparedRequest) -> WireResponse:
+        """Omit the challenge until negotiation succeeds, then fail one authenticated request."""
+        nonlocal objects, object_failed
+        objects += 1
+        if not request.headers.get("Authorization"):
+            return WireResponse(request, 401)
+        if not object_failed:
+            object_failed = True
+            return WireResponse(request, status, headers={"Retry-After": "5"})
+        return WireResponse(request, 200, PAYLOAD)
+
+    def probe_response(request: requests.PreparedRequest) -> WireResponse:
+        """Fail base probes transiently or until exhaustion before supplying the token realm."""
+        nonlocal probes
+        probes += 1
+        if persistent or probes == 1:
+            return WireResponse(request, status, headers={"Retry-After": "5"})
+        return WireResponse(request, 401, headers={"WWW-Authenticate": challenge(TOKEN_ORIGIN)})
+
+    def token_response(request: requests.PreparedRequest) -> WireResponse:
+        """Record one synthetic token negotiation without network access."""
+        nonlocal tokens
+        tokens += 1
+        return WireResponse(request, 200, b'{"token":"synthetic"}')
+
+    def assert_released(delay: float) -> None:
+        """Ensure neither a retryable probe nor an object response retains the only pool slot."""
+        assert worker._download_context.active == 0
+
+    adapter.routes[BASE + BLOB] = object_response
+    adapter.routes[BASE + "/v2/"] = probe_response
+    adapter.routes[TOKEN_ORIGIN + "/token"] = token_response
+    original = RegistryClient(TransportConfig(
+        "registry.example", username=CREDENTIALS[0], password=CREDENTIALS[1],
+        enable_retries=budget is not None,
+        retry_config=RetryConfig(max_retries=budget, status_codes=(status,)) if budget is not None else None,
+    ))
+    retry_budget = 3 if budget is None else budget
+    expected_retries = retry_budget if persistent else min(2, retry_budget)
+    successful = not persistent and retry_budget >= 2
+    with (
+        patch("regshape.libs.transport.download._DownloadAdapter", return_value=adapter),
+        patch("regshape.libs.transport.middleware.time.sleep", side_effect=assert_released) as sleep,
+        DownloadTransport(original, DownloadOptions.sequential()) as worker,
+    ):
+        worker._session.trust_env = False
+        with worker.get(BLOB, stream=True, allow_redirects=redirects) as response:
+            assert response.status_code == (200 if successful else status)
+            if successful:
+                assert response.content == PAYLOAD
+        assert worker._download_context.active == 0
+    assert probes == (retry_budget + 1 if persistent else (1 if retry_budget == 0 else 2))
+    assert tokens == (0 if persistent or retry_budget == 0 else 1)
+    assert objects == (retry_budget + 1 if persistent else {0: 1, 1: 3, 2: 4, 3: 4}[retry_budget])
+    assert sleep.call_count == expected_retries
+    assert all(call.args == (5.0,) for call in sleep.call_args_list)
+    assert all(response.close_calls == 1 for response in adapter.responses)
 
 
 @pytest.mark.parametrize("middleware", [False, True])

@@ -478,6 +478,28 @@ class AuthMiddleware(BaseMiddleware):
         original_request: RegistryRequest,
         base_url: Optional[str] = None,
     ) -> str:
+        """Return the base-endpoint challenge and close the final probe.
+
+        Legacy callers retain the empty-string result for a non-401 or missing
+        header; response ownership and redirect validation are delegated to the
+        shared probe helper.
+        """
+        probe_response = AuthMiddleware._probe_v2_response(
+            next_handler, original_request, base_url,
+        )
+        with ClosingResponse(probe_response.raw_response):
+            if probe_response.status_code == 401:
+                return _get_header_ci(probe_response.headers, "WWW-Authenticate")
+            return ""
+
+    @staticmethod
+    def _probe_v2_response(
+        next_handler: Callable[[RegistryRequest], RegistryResponse],
+        original_request: RegistryRequest,
+        base_url: str | None = None,
+        *,
+        stream: bool = False,
+    ) -> RegistryResponse:
         """Issue ``GET /v2/`` to obtain a ``WWW-Authenticate`` challenge.
 
         Some registries only return the challenge header on the ``/v2/``
@@ -486,14 +508,16 @@ class AuthMiddleware(BaseMiddleware):
         authentication. The probe inherits the original redirect policy so
         an unvalidated redirect cannot introduce a foreign challenge. Every 401
         issuer is checked against the trusted origin, including when Requests
-        followed redirects automatically; probes are always closed. When
+        followed redirects automatically. When
         automatic redirects are disabled, follow only validated same-origin
         targets, with cycle detection and a 30-hop limit. Optional response hooks
-        are retained on probes, whose bodies then remain streamed and are closed
-        without consumption; a rejecting hook may abort before redirect handling.
+        are retained on probes; a rejecting hook may abort before redirect handling.
 
-        :returns: The ``WWW-Authenticate`` header value, or an empty
-            string if the probe also lacks one.
+        :param stream: Keep the final response unbuffered even without a response
+            hook, allowing a pooled caller to transfer it to its outer retry owner.
+        :returns: The final response, owned by the caller. This helper closes
+            intermediate manual redirects and invalid responses. A response hook
+            or ``stream=True`` keeps probe bodies unbuffered.
         :raises AuthError: For unsafe, malformed, or non-terminating probe redirects.
         """
         probe = RegistryRequest(
@@ -503,17 +527,14 @@ class AuthMiddleware(BaseMiddleware):
             timeout=original_request.timeout,
             allow_redirects=original_request.allow_redirects,
             response_hook=original_request.response_hook,
-            stream=original_request.response_hook is not None,
+            stream=stream or original_request.response_hook is not None,
         )
         origin = base_url or original_request.url
         if original_request.allow_redirects:
             probe_response = next_handler(probe)
             if probe_response.status_code == 401:
                 require_authentication_origin(probe_response.raw_response, origin)
-            with ClosingResponse(probe_response.raw_response):
-                if probe_response.status_code == 401:
-                    return _get_header_ci(probe_response.headers, "WWW-Authenticate")
-                return ""
+            return probe_response
 
         try:
             current_url = resolve_registry_url(origin, "/v2/", origin)
@@ -528,17 +549,16 @@ class AuthMiddleware(BaseMiddleware):
             probe_response = next_handler(probe)
             if probe_response.status_code == 401:
                 require_authentication_origin(probe_response.raw_response, origin)
-            with ClosingResponse(probe_response.raw_response):
-                try:
-                    response_url = resolve_registry_url(
-                        origin, probe_response.raw_response.url or current_url, current_url,
-                    )
-                except ValueError:
+            try:
+                response_url = resolve_registry_url(
+                    origin, probe_response.raw_response.url or current_url, current_url,
+                )
+            except ValueError:
+                with ClosingResponse(probe_response.raw_response):
                     raise AuthError("Unsafe authentication probe response origin") from None
-                if probe_response.status_code not in REDIRECT_STATUSES:
-                    if probe_response.status_code == 401:
-                        return _get_header_ci(probe_response.headers, "WWW-Authenticate")
-                    return ""
+            if probe_response.status_code not in REDIRECT_STATUSES:
+                return probe_response
+            with ClosingResponse(probe_response.raw_response):
                 if redirects >= MAX_REDIRECTS:
                     raise AuthError("Authentication probe redirect limit exceeded")
                 location = _get_header_ci(probe_response.headers, "Location")
@@ -552,7 +572,7 @@ class AuthMiddleware(BaseMiddleware):
                 method="GET", url=current_url, headers={},
                 timeout=original_request.timeout, allow_redirects=False,
                 response_hook=original_request.response_hook,
-                stream=original_request.response_hook is not None,
+                stream=stream or original_request.response_hook is not None,
             )
             redirects += 1
 

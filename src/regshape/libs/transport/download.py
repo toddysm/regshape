@@ -52,14 +52,18 @@ class _AuthState:
 class _DownloadAuth:
     """Single-flight provider bound to one immutable origin/credential snapshot."""
 
-    def __init__(self, config: TransportConfig, username: str | None, password: str | None) -> None:
-        """Capture configuration/credentials without credential-store or network effects."""
+    def __init__(
+        self, config: TransportConfig, username: str | None, password: str | None,
+        retry_status_codes: tuple[int, ...],
+    ) -> None:
+        """Snapshot credentials and retryable probe statuses without store/network effects."""
         scheme = "http" if config.insecure else "https"
         self.base_url = f"{scheme}://{config.registry}"
         self.origin = _url_origin(self.base_url)
         self.username = username
         self.password = password
         self.timeout = config.timeout
+        self.retry_status_codes = tuple(retry_status_codes)
         self.states: dict[str, _AuthState] = {}
         self.lock = threading.Lock()
 
@@ -114,9 +118,18 @@ class _DownloadAuth:
         self, state: _AuthState, request: RegistryRequest, challenge: str,
         next_handler: NextHandler, session: requests.Session,
     ) -> RegistryResponse:
-        """Negotiate a captured challenge under the scope lock, then retry once."""
+        """Negotiate a challenge or return a retryable probe to the shared outer retry owner."""
         if not challenge:
-            challenge = AuthMiddleware._probe_v2_challenge(next_handler, request, self.base_url)
+            probe = AuthMiddleware._probe_v2_response(
+                next_handler, request, self.base_url, stream=True,
+            )
+            if probe.status_code != 401 and probe.status_code in self.retry_status_codes:
+                return probe
+            with ClosingResponse(probe.raw_response):
+                challenge = (
+                    probe.raw_response.headers.get("WWW-Authenticate", "")
+                    if probe.status_code == 401 else ""
+                )
         if not challenge:
             raise AuthError("Registry returned no download authentication challenge")
         state.challenge = challenge
@@ -315,7 +328,9 @@ class DownloadTransport:
             self.retry_config.max_retries = options.max_retries
         if type(self.retry_config.max_retries) is not int or not 0 <= self.retry_config.max_retries <= 10:
             raise ValueError("Resolved download max_retries must be an integer in 0..10")
-        self.auth = _DownloadAuth(self.config, self.username, self.password)
+        self.auth = _DownloadAuth(
+            self.config, self.username, self.password, self.retry_config.status_codes,
+        )
         self.adapter = _DownloadAdapter(options.concurrency)
         self.slots = threading.BoundedSemaphore(options.concurrency)
         self.lock = threading.Lock()

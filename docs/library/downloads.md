@@ -60,7 +60,9 @@ backoff. Server-directed delays above 300 seconds raise `ValueError` after the
 response is closed, rather than hanging acquisition or retrying early.
 Legacy retry timing is unchanged.
 One retry owner wraps the complete authentication flow, so registry status and
-transport retries share their budget across authentication resends.
+transport retries share their budget across authentication resends. If a
+headerless object 401 requires a `/v2/` challenge probe, retryable probe responses
+use that same budget and bounded `Retry-After` policy, not a separate retry loop.
 
 `DownloadOptions.sequential()` means pooled C=W=1. `DownloadOptions.legacy()`
 means C=W=1 with the **original borrowed-client transport**; it requires
@@ -99,6 +101,8 @@ Scopes use the terminal manifest/blob resource; nested repository components
 named `manifests` or `blobs` remain part of the repository identity.
 
 Token exchanges use the same instrumented HTTP hook, finite timeout and pool.
+Both GET and refresh-token POST request identity encoding rather than inheriting
+the session's optional compression codecs.
 External registry-issued token realms are supported without credential-bearing
 URLs or HTTPS-to-HTTP downgrade. Token-endpoint redirects are rejected. The
 ACR refresh-token POST fallback requires the sentinel username

@@ -102,8 +102,8 @@ def negotiate_download_token(
     still ask only for the expected scope. The service audience is optional.
     Only the ACR sentinel username with a nonempty password enables the
     refresh-token POST fallback; failures retain the original GET 401.
-    Both exchanges reject redirects in a response hook before any redirect-body
-    buffering; successful token JSON remains bounded to 1 MiB.
+    Both exchanges request identity encoding and reject redirects in a response
+    hook before redirect-body buffering; token JSON remains bounded to 1 MiB.
 
     :param challenge: Registry-issued WWW-Authenticate value.
     :param username: Resolved credential snapshot, possibly anonymous.
@@ -151,6 +151,7 @@ def negotiate_download_token(
     try:
         with ClosingResponse(http_request(
             realm, "GET", session=session, params=params, auth=credentials,
+            headers={"Accept-Encoding": "identity"},
             timeout=timeout, stream=True, allow_redirects=False,
             hooks={"response": _reject_token_redirect},
         )) as response:
@@ -164,6 +165,7 @@ def negotiate_download_token(
             try:
                 with ClosingResponse(http_request(
                     realm, "POST", session=session,
+                    headers={"Accept-Encoding": "identity"},
                     data={
                         "grant_type": "refresh_token", "refresh_token": password,
                         "client_id": _TOKEN_CLIENT_ID, **params,
