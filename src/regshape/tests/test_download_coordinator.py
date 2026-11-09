@@ -624,13 +624,29 @@ def test_slow_consumer_cannot_starve_completed_job_and_next_blob(client):
     advance = threading.Event()
     refilled = threading.Event()
     producer_done = threading.Event()
+    third_started = threading.Event()
     third_started_early = []
 
     class SlowSink(io.StringIO):
-        """Synchronize each consumed line with another producer write, without sleep timing."""
+        """Fence unrelated completion and scheduling while the producer keeps refilling."""
+
+        def __init__(self):
+            """Count consumed writes without sharing state with other observer instances."""
+            super().__init__()
+            self.writes = 0
 
         def write(self, text):
-            """Keep the queue nonempty until the producer is done."""
+            """Prove the next scheduler turn can run the third job before draining the queue."""
+            self.writes += 1
+            if self.writes == 1:
+                pending = next(
+                    item
+                    for item in coordinator.pending.values()
+                    if item.job.transfer_id == "b"
+                )
+                pending.future.result(timeout=5)
+            elif self.writes == 2:
+                assert third_started.wait(5)
             if not producer_done.is_set():
                 refilled.clear()
                 advance.set()
@@ -653,6 +669,7 @@ def test_slow_consumer_cannot_starve_completed_job_and_next_blob(client):
     def third(worker):
         """Prove a ready blob starts before the other producer finishes all observations."""
         third_started_early.append(not producer_done.is_set())
+        third_started.set()
         return "third"
 
     token = _telemetry_config.set(TelemetryConfig(output=SlowSink()))
