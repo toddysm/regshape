@@ -177,8 +177,11 @@ def negotiate_download_token(
                 )) as response:
                     payload = _token_payload(response)
             except (AuthError, requests.exceptions.RequestException):
-                logging.getLogger(__name__).warning(
-                    "ACR refresh-token exchange failed; retaining original token rejection"
+                from regshape.libs._logging import emit_log
+
+                emit_log(logging.getLogger(__name__), logging.WARNING,
+                    "ACR refresh-token exchange failed; retaining original token rejection",
+                    method="warning",
                 )
                 raise AuthError("Token request failed", "Status code: 401") from None
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as error:

@@ -594,11 +594,13 @@ class LoggingMiddleware(BaseMiddleware):
     
     def process_request(self, request: RegistryRequest) -> RegistryRequest:
         """Log the outgoing request."""
+        from regshape.libs._logging import emit_log
+
         if self.logger.isEnabledFor(self.level):
             from regshape.libs.decorators.sanitization import redact_headers
 
-            self.logger.log(
-                self.level,
+            emit_log(
+                self.logger, self.level,
                 f"HTTP Request: {request.method} {request.url}",
                 extra={
                     'method': request.method,
@@ -612,9 +614,11 @@ class LoggingMiddleware(BaseMiddleware):
     
     def process_response(self, request: RegistryRequest, response: RegistryResponse) -> RegistryResponse:
         """Log the incoming response."""
+        from regshape.libs._logging import emit_log
+
         if self.logger.isEnabledFor(self.level):
-            self.logger.log(
-                self.level,
+            emit_log(
+                self.logger, self.level,
                 f"HTTP Response: {response.status_code} for {request.method} {request.url}",
                 extra={
                     'status_code': response.status_code,
@@ -628,7 +632,9 @@ class LoggingMiddleware(BaseMiddleware):
     
     def handle_error(self, request: RegistryRequest, error: Exception) -> RegistryResponse:
         """Log errors that occur during request processing."""
-        self.logger.error(
+        from regshape.libs._logging import emit_log
+
+        emit_log(self.logger, logging.ERROR,
             f"HTTP Error for {request.method} {request.url}: {error}",
             extra={
                 'method': request.method,
@@ -636,7 +642,7 @@ class LoggingMiddleware(BaseMiddleware):
                 'error_type': type(error).__name__,
                 'error_message': str(error)
             },
-            exc_info=True
+            exc_info=True, method="error",
         )
         
         # Re-raise the error after logging
@@ -746,8 +752,11 @@ class RetryMiddleware(BaseMiddleware):
                     date = date.replace(tzinfo=timezone.utc)
                 delay = max(0.0, date.timestamp() - time.time())
         except (TypeError, ValueError):
-            logging.getLogger(__name__).warning(
-                "Malformed Retry-After on a pooled download; using configured backoff"
+            from regshape.libs._logging import emit_log
+
+            emit_log(logging.getLogger(__name__), logging.WARNING,
+                "Malformed Retry-After on a pooled download; using configured backoff",
+                method="warning",
             )
             return None
         except OverflowError:

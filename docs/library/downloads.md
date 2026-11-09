@@ -3,7 +3,8 @@
 <!-- doc-type: reference -->
 
 This development-build reference covers the transport foundation from
-[#134](https://github.com/toddysm/regshape/issues/134), targeting 0.2, not a
+[#134](https://github.com/toddysm/regshape/issues/134) and internal coordination
+from [#135](https://github.com/toddysm/regshape/issues/135), targeting 0.2, not a
 published release. See the [approved design](../../specs/operations/parallel-downloads.md).
 The [blob API](../../specs/operations/blobs.md#get_blob) and
 [artifact API](../../specs/operations/artifacts.md#signatures-and-caller-ownership)
@@ -153,14 +154,70 @@ scheduler. It allows one discovery/root session and at most C open worker
 sessions, reclaiming closed session records. Worker callers must not share one
 client/session concurrently.
 
-## Delivery boundary
+## Internal coordinator and full-stream workers
 
-This foundation retains **serial graph acquisition and full-stream blob receipt**.
+These are internal integration contracts, not new public download APIs.
+The [coordinator](../../src/regshape/libs/transport/_coordinator.py) owns one
+executor inside an existing `DownloadTransport`. Its ordered, lazy per-blob job
+sources share the global `concurrency` ceiling. Each source retains at most
+`ranges_per_blob` consecutive uncommitted jobs. Completed out-of-order work
+keeps its slot and scratch reservation until its ordered result consumer and
+cleanup finish; it cannot advance an unbounded range window.
+
+Ready sources are selected round-robin. At most C jobs and C times `range_size`
+reserved spool bytes are retained. The immutable observation queue holds at
+most 4C records; a record exceeding 64 KiB is rejected, not silently truncated.
+Entity payload never enters this queue. Producers check cancellation while
+waiting for space, and the caller pumps records while waiting for tasks.
+
+The [full-stream worker](../../src/regshape/libs/blobs/_download_worker.py)
+hashes and writes its exclusive sink locally, or hashes/discards for verify-only.
+There is no full-blob spool or coordinator-copy bottleneck. Callers perform
+shared `ContentStore`/`SafeDirectory` bookkeeping and publication only after
+the worker closes its response/output and verifies size/digest. Bounded outputs
+are exclusive and check entity limits before each write. Unbounded outputs
+preserve overwrite and partial-file-on-most-failures behavior. Digest mismatch
+removes the invocation's invalid output, including an overwritten destination,
+but never a filename whose identity no longer matches.
+
+Worker clients disable child retry middleware. A single worker retry owner
+uses the resolved download budget and server backoff. A full-stream receive may
+retry only before any bytes have committed to either a file or its hasher,
+including verify-only. Body failures after commitment cannot replay/append.
+Backoff runs after the discarded response releases its network slot and wakes
+on cancellation.
+
+Each task has a fresh telemetry context with preserved options, private metrics
+and bounded method timing aggregation. Existing progress models, internal
+strategy/retry/fallback/final records, and sanitized diagnostics cross the
+bounded bridge. All observer, result-consumer, terminal and library-log sinks
+run on the invoking thread. Failed observers are disabled permanently and their
+original exception objects propagate after producer shutdown. Parent scenario
+metrics and timings are merged, never cleared by a worker scenario.
+
+An explicit fallback reset is allowed only after old jobs drain and stop.
+The caller supplies an identity-checked sink reset; accepted bytes reset,
+received bytes remain cumulative, and the same row advances its attempt.
+`etag_changed` is retained on fallback and verified terminal observations.
+This layer emits no immediate ETag warning; the CLI observation consumer owns
+deferred, coalesced warnings under
+[#145](https://github.com/toddysm/regshape/issues/145).
+
+Cancellation stops scheduling and drains/discards pending records before waiting
+for every active task. Requests timeouts limit socket inactivity, not elapsed
+read time: a trickling peer can keep a buffered read active. No bounded
+cancellation-to-join latency is promised. Sink/scratch cleanup waits until its
+worker stops, and the sole executor is joined before caller namespace cleanup.
+Cleanup errors are reported without masking the original failure.
+
+## Public delivery boundary
+
+Existing public operations retain **serial graph acquisition and full-stream blob receipt**.
 The policy carries concurrency/range controls for downstream integration; it
-does not yet enable object/range scheduling, new batch/status result models or
-CLI flags. Those remain owned by
-[#135](https://github.com/toddysm/regshape/issues/135),
+does not yet enable public object/range scheduling, new batch/status result models
+or CLI flags. Those remain owned by
 [#144](https://github.com/toddysm/regshape/issues/144),
+[#145](https://github.com/toddysm/regshape/issues/145),
 [#136](https://github.com/toddysm/regshape/issues/136) and
 [#137](https://github.com/toddysm/regshape/issues/137).
 Existing callbacks run synchronously on the invoking thread, and standalone

@@ -9,6 +9,7 @@ import copy
 import threading
 import time
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Literal
@@ -36,6 +37,12 @@ if TYPE_CHECKING:
     from regshape.libs.blobs.download import DownloadOptions
 
 NextHandler = Callable[[RegistryRequest], RegistryResponse]
+request_observer: ContextVar[Callable[[int, float], None] | None] = ContextVar(
+    "regshape_download_request_observer", default=None,
+)
+request_lifecycle: ContextVar[Callable[[bool], None] | None] = ContextVar(
+    "regshape_download_request_lifecycle", default=None,
+)
 
 
 @dataclass
@@ -265,13 +272,19 @@ class _DownloadSession(requests.Session):
         if self.closed:
             raise RuntimeError("Download session is closed")
         if self._send_depth:
+            self.context._record_dispatch()
             return super().send(request, **kwargs)
         self.context._acquire()
+        self.context._record_dispatch()
         self._send_depth += 1
+        started = time.perf_counter()
         try:
             response = super().send(request, **kwargs)
         except BaseException:
             self.context._release()
+            observer = request_observer.get()
+            if observer is not None:
+                observer(0, time.perf_counter() - started)
             raise
         finally:
             self._send_depth -= 1
@@ -280,6 +293,12 @@ class _DownloadSession(requests.Session):
             response.close = lease.close  # type: ignore[method-assign]  # Requests has no close hook.
         else:
             self.context._release()
+        observer = request_observer.get()
+        if observer is not None:
+            observer(
+                0,
+                time.perf_counter() - started,
+            )
         return response
 
     def close(self) -> None:
@@ -341,6 +360,9 @@ class DownloadTransport:
         self.slots = threading.BoundedSemaphore(options.concurrency)
         self.lock = threading.Lock()
         self.active = 0
+        self.active_peak = 0
+        self.request_count = 0
+        self._coordinator_created = False
         self.closed = False
         self.sessions: list[_DownloadSession] = []
 
@@ -352,12 +374,27 @@ class DownloadTransport:
                 self.slots.release()
                 raise RuntimeError("Download transport is closed")
             self.active += 1
+            self.active_peak = max(self.active_peak, self.active)
+        lifecycle = request_lifecycle.get()
+        if lifecycle is not None:
+            lifecycle(True)
 
     def _release(self) -> None:
         """Release one acquired global slot after request failure or response disposal."""
         with self.lock:
             self.active -= 1
         self.slots.release()
+        lifecycle = request_lifecycle.get()
+        if lifecycle is not None:
+            lifecycle(False)
+
+    def _record_dispatch(self) -> None:
+        """Count each prepared HTTP hop, including root/auth and failed redirect chains."""
+        with self.lock:
+            self.request_count += 1
+        observer = request_observer.get()
+        if observer is not None:
+            observer(1, 0.0)
 
     def new_session(self) -> requests.Session:
         """Create worker-local mutable state on the shared pool without credential lookup."""
