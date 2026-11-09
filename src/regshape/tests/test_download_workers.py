@@ -23,6 +23,7 @@ from regshape.libs.transport._coordinator import (
     _Worker,
 )
 from regshape.libs.transport.download import DownloadTransport
+from regshape.libs.transport.middleware import RetryConfig
 from regshape.tests.artifact_fixtures import StreamResponse, address
 from regshape.tests.test_download_transport import (
     server,
@@ -186,6 +187,102 @@ def test_retry_before_any_commit(client, tmp_path, saved):
     ] == ["transport_error"]
     if saved:
         assert path.read_bytes() == payload
+
+
+@pytest.mark.parametrize("stage", ["dispatch", "body", "error_body"])
+@pytest.mark.parametrize("saved", [False, True])
+def test_configured_transport_exception_retries(client, tmp_path, stage, saved):
+    """Configured non-Requests failures retry dispatch or body receipt before commitment."""
+    client.config.retry_config = RetryConfig(exceptions=(OSError,))
+    payload = b"retry succeeds"
+    error = OSError("configured transport fault")
+    first = _fault_response(b"", error)
+    if stage == "error_body":
+        first.status_code = 403
+    responses = [
+        error if stage == "dispatch" else first,
+        StreamResponse(payload),
+    ]
+    path = tmp_path / "blob"
+    blob = _FullBlob(
+        "repo",
+        address(payload),
+        str(path) if saved else None,
+        max_bytes=100,
+    )
+    with patch.object(RegistryClient, "get", side_effect=responses) as get:
+        info, stats = _receive(client, blob, options=DownloadOptions(max_retries=1))
+    assert get.call_count == 2 and info.size == len(payload)
+    assert stats.retry_count == 1
+    assert stats.bytes_received == stats.bytes_accepted == len(payload)
+    if stage != "dispatch":
+        assert first.close_calls == 1
+    if saved:
+        assert path.read_bytes() == payload
+
+
+@pytest.mark.parametrize("committed", [False, True])
+def test_configured_transport_exception_budget_and_commit(client, committed):
+    """Configured exception identity survives budget exhaustion or a committed prefix."""
+    client.config.retry_config = RetryConfig(exceptions=(OSError,))
+    error = OSError("configured body fault")
+    responses = [
+        _fault_response(b"prefix" if committed else b"", error),
+        _fault_response(b"", error),
+    ]
+    with patch.object(RegistryClient, "get", side_effect=responses) as get:
+        with pytest.raises(OSError) as caught:
+            _receive(
+                client,
+                _FullBlob("repo", address(b"prefix rest")),
+                options=DownloadOptions(max_retries=1),
+            )
+    assert caught.value is error
+    assert get.call_count == (1 if committed else 2)
+
+
+@pytest.mark.parametrize("stage", ["open", "write", "close"])
+def test_configured_transport_exception_never_retries_sink(client, tmp_path, stage):
+    """Matching sink failures remain non-retryable, including before any payload commit."""
+    client.config.retry_config = RetryConfig(exceptions=(OSError,))
+    payload = b"" if stage == "close" else b"payload"
+    path = tmp_path / "blob"
+    blob = _FullBlob("repo", address(payload), str(path), max_bytes=100)
+    error = OSError("sink fault")
+    original_close = blob.output.close
+
+    def fail(*args):
+        """Close the real sink before injecting a close fault, leaving no leaked handle."""
+        if stage == "close":
+            original_close()
+        raise error
+
+    with (
+        patch.object(
+            RegistryClient, "get", return_value=StreamResponse(payload)
+        ) as get,
+        patch.object(blob.output, stage, fail),
+    ):
+        with pytest.raises(OSError) as caught:
+            _receive(client, blob, options=DownloadOptions(max_retries=2))
+    assert caught.value is error
+    assert get.call_count == 1
+    assert not path.exists()
+
+
+def test_broad_retry_exception_never_retries_validation(client):
+    """A broad configured exception policy cannot replay a rejected entity budget."""
+    client.config.retry_config = RetryConfig(exceptions=(Exception,))
+    with patch.object(
+        RegistryClient, "get", return_value=StreamResponse(b"payload")
+    ) as get:
+        with pytest.raises(BlobError, match="max_bytes"):
+            _receive(
+                client,
+                _FullBlob("repo", address(b"payload"), max_bytes=1),
+                options=DownloadOptions(max_retries=2),
+            )
+    assert get.call_count == 1
 
 
 @pytest.mark.parametrize("bounded", [False, True])

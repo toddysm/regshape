@@ -184,6 +184,8 @@ Worker clients disable child retry middleware. A single worker retry owner
 uses the resolved download budget and server backoff. A full-stream receive may
 retry only before any bytes have committed to either a file or its hasher,
 including verify-only. Body failures after commitment cannot replay/append.
+Configured retry exception types apply to request/body receive failures, not
+sink, validation or cleanup errors.
 Backoff runs after the discarded response releases its network slot and wakes
 on cancellation.
 

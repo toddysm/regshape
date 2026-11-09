@@ -14,8 +14,6 @@ from pathlib import Path
 from typing import BinaryIO
 from uuid import uuid4
 
-import requests
-
 from regshape.libs._http import (
     ClosingResponse,
     download_total,
@@ -204,6 +202,8 @@ class _FullBlob:
         """Receive/hash/write locally, retrying only before any payload commitment.
 
         The worker closes the response and sink before returning a verified result.
+        Configured retry exceptions apply only to request/body receive failures;
+        sink, validation and cleanup failures are never retried.
         The caller later performs identity-safe failed-output cleanup. Cancellation
         is checked between reads, not by a fictitious whole-read deadline.
         """
@@ -229,13 +229,16 @@ class _FullBlob:
                 retry_after = 0.0
                 closing = False
                 body_finished = False
+                receiving = False
                 try:
+                    receiving = True
                     response = client.get(
                         f"/v2/{self.repo}/blobs/{self.digest}",
                         stream=True,
                         headers={"Accept-Encoding": "identity"},
                         response_hook=_bounded_blob_redirect,
                     )
+                    receiving = False
                     with ClosingResponse(response):
                         status_code = response.status_code
                         if (
@@ -257,9 +260,17 @@ class _FullBlob:
                                     )
                                 payload = bytearray()
                                 error_limit = min(self.max_bytes or 65_536, 65_536)
-                                for error_chunk in entity_chunks(
-                                    response, min(error_limit + 1, 65_536)
-                                ):
+                                error_chunks = iter(
+                                    entity_chunks(
+                                        response, min(error_limit + 1, 65_536)
+                                    )
+                                )
+                                while True:
+                                    receiving = True
+                                    error_chunk = next(error_chunks, None)
+                                    receiving = False
+                                    if error_chunk is None:
+                                        break
                                     worker.check_cancelled()
                                     if len(payload) + len(error_chunk) > error_limit:
                                         raise BlobError(
@@ -296,7 +307,9 @@ class _FullBlob:
                                 worker.check_cancelled()
                                 received_at = time.perf_counter()
                                 try:
+                                    receiving = True
                                     chunk = next(chunks, None)
+                                    receiving = False
                                 finally:
                                     worker.stats = replace(
                                         worker.stats,
@@ -379,9 +392,9 @@ class _FullBlob:
                         if status_code in (429, 503)
                         else 0.0
                     )
-                except retryable as error:
+                except retryable:
                     if (
-                        not isinstance(error, requests.exceptions.RequestException)
+                        not receiving
                         or self.committed
                         or closing
                         or body_finished
