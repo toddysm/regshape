@@ -19,6 +19,7 @@ from urllib3 import ProxyManager
 
 from regshape.libs._http import ClosingResponse, report_secondary_failure
 from regshape.libs.auth.download import DownloadToken, negotiate_download_token
+from regshape.libs.auth.registryauth import _parse_auth_header
 from regshape.libs.errors import AuthError
 from regshape.libs.transport.client import RegistryClient, TransportConfig
 from regshape.libs.transport.middleware import (
@@ -154,6 +155,8 @@ class _DownloadAuth:
         successes pass through without provider headers; foreign 401s fail closed.
         Followers do not dispatch while initial discovery or expiry refresh runs.
         Unsuccessful initial responses leave discovery serialized for later peers.
+        A refreshed generation is reused only for the same parsed challenge;
+        concurrent realm/service changes require their own validated negotiation.
         """
         if request.method not in ("GET", "HEAD"):
             raise ValueError("Download forks only support GET and HEAD")
@@ -184,7 +187,10 @@ class _DownloadAuth:
             return response
         challenge = self._capture_challenge(response)
         with state.lock:
-            if state.generation == generation:
+            same_challenge = bool(challenge) and (
+                _parse_auth_header(challenge) == _parse_auth_header(state.challenge)
+            )
+            if state.generation == generation or not same_challenge:
                 return self._challenge(state, request, challenge, next_handler, session)
             retried = next_handler(self._authorized(request, state.token))
             if retried.status_code == 401:

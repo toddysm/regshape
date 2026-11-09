@@ -94,6 +94,8 @@ Tokens are bound to the registry origin, credential snapshot, validated
 realm/service and repository pull scope. Expiry metadata or rejection of a
 generation causes one shared refresh. Anonymous and Basic flows remain supported;
 foreign 401 responses cannot select token realms or warm this provider.
+Concurrent rejected requests reuse a refreshed generation only when their parsed
+challenges match; a different realm or service is negotiated separately.
 Exchange failures are not cached: a later request can retry without replaying
 another worker's exception. Fractional RFC 3339 `issued_at` timestamps, including
 Docker Hub's nanosecond precision, are normalized for Python 3.10 compatibility.
@@ -103,6 +105,10 @@ named `manifests` or `blobs` remain part of the repository identity.
 Token exchanges use the same instrumented HTTP hook, finite timeout and pool.
 Both GET and refresh-token POST request identity encoding rather than inheriting
 the session's optional compression codecs.
+Token GET connection/timeouts preserve their retryable Requests exception type,
+with sanitized messages, so they share the operation's retry budget. Exhaustion
+surfaces that sanitized transport exception; refresh POST failures retain the
+original GET 401 as described below.
 External registry-issued token realms are supported without credential-bearing
 URLs or HTTPS-to-HTTP downgrade. Token-endpoint redirects are rejected. The
 ACR refresh-token POST fallback requires the sentinel username

@@ -114,6 +114,8 @@ def negotiate_download_token(
     :param timeout: Finite per-request timeout in seconds.
     :returns: Immutable header and expiry metadata.
     :raises AuthError: On unsafe challenge, invalid metadata, or exchange failure.
+    :raises requests.exceptions.RequestException: On retryable GET transport
+        failures, preserving their exception type with a sanitized message.
     """
     parsed = _parse_auth_header(challenge)
     scheme = parsed["scheme"].lower()
@@ -179,6 +181,8 @@ def negotiate_download_token(
                     "ACR refresh-token exchange failed; retaining original token rejection"
                 )
                 raise AuthError("Token request failed", "Status code: 401") from None
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as error:
+        raise type(error)("Download token transport failed") from None
     except requests.exceptions.RequestException:
         raise AuthError("Download token transport failed") from None
     token = payload.get("access_token") or payload.get("token")

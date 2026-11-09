@@ -9,10 +9,13 @@ import base64
 import hashlib
 import io
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
+from threading import Barrier
 from unittest.mock import patch
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import requests
@@ -197,6 +200,186 @@ def test_token_exchanges_request_identity_encoding(refresh: bool) -> None:
         assert worker._session.headers["Accept-Encoding"] == "gzip, deflate, br"
         assert worker._download_context.active == 0
     assert [request.method for request in adapter.sent] == (["GET", "POST"] if refresh else ["GET"])
+    assert all(response.close_calls == 1 for response in adapter.responses)
+
+
+@pytest.mark.parametrize("phase", ["discovery", "expiry"])
+@pytest.mark.parametrize("error_type", [
+    requests.exceptions.Timeout, requests.exceptions.ReadTimeout,
+    requests.exceptions.ConnectionError, requests.exceptions.SSLError,
+])
+@pytest.mark.parametrize("budget", [None, 0, 1])
+@pytest.mark.parametrize("persistent", [False, True])
+def test_token_transport_errors_preserve_retry_policy_and_sanitization(
+    phase: str, error_type: type[requests.exceptions.RequestException],
+    budget: int | None, persistent: bool, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Token discovery/refresh errors retain default or exact subclass retry rules without secrets."""
+    adapter = WireAdapter()
+    attempts = 0
+    fail_enabled = phase == "discovery"
+
+    def object_response(request: requests.PreparedRequest) -> WireResponse:
+        """Challenge anonymous reads and accept the synthetic token after recovery."""
+        if request.headers.get("Authorization") == "Bearer synthetic":
+            return WireResponse(request, 200, PAYLOAD)
+        return WireResponse(request, 401, headers={"WWW-Authenticate": challenge(TOKEN_ORIGIN)})
+
+    def token_response(request: requests.PreparedRequest) -> WireResponse:
+        """Inject a token transport failure with private context that must not escape."""
+        nonlocal attempts
+        attempts += 1
+        if fail_enabled and (persistent or attempts == 1):
+            raise error_type("synthetic private endpoint", request=request)
+        return WireResponse(request, 200, b'{"token":"synthetic","expires_in":3600}')
+
+    def assert_released(delay: float) -> None:
+        """Verify failed token exchanges free the sole operation slot before each retry."""
+        assert worker._download_context.active == 0
+
+    adapter.routes[BASE + BLOB] = object_response
+    adapter.routes[TOKEN_ORIGIN + "/token"] = token_response
+    original = RegistryClient(TransportConfig(
+        "registry.example", username=CREDENTIALS[0], password=CREDENTIALS[1],
+        enable_retries=budget is not None,
+        retry_config=RetryConfig(max_retries=budget, exceptions=(error_type,)) if budget is not None else None,
+    ))
+    retry_budget = 3 if budget is None else budget
+    successful = not persistent and retry_budget > 0
+    with (
+        patch("regshape.libs.transport.download._DownloadAdapter", return_value=adapter),
+        patch("regshape.libs.transport.middleware.time.sleep", side_effect=assert_released) as sleep,
+        DownloadTransport(original, DownloadOptions.sequential()) as worker,
+    ):
+        worker._session.trust_env = False
+        if phase == "expiry":
+            with worker.get(BLOB, stream=True) as response:
+                assert response.content == PAYLOAD
+            auth = worker._download_context.auth.states["repository:repo:pull"]
+            auth.token = replace(auth.token, expires_at=0)
+            attempts = 0
+            fail_enabled = True
+        if successful:
+            with worker.get(BLOB, stream=True) as response:
+                assert response.status_code == 200 and response.content == PAYLOAD
+        else:
+            with pytest.raises(error_type, match="Download token transport failed") as caught:
+                worker.get(BLOB, stream=True)
+            assert type(caught.value) is error_type
+            assert caught.value.request is None and caught.value.response is None
+            assert caught.value.__cause__ is None and caught.value.__suppress_context__
+        assert worker._download_context.active == 0
+    assert attempts == (2 if successful else retry_budget + 1)
+    assert sleep.call_count == (1 if successful else retry_budget)
+    assert "synthetic private endpoint" not in caplog.text
+    assert all(response.close_calls == 1 for response in adapter.responses)
+
+
+@pytest.mark.parametrize("budget", [0, 1, 2])
+def test_token_transport_retry_shares_object_status_budget(budget: int) -> None:
+    """A registry 429 and a later token timeout cannot each allocate a fresh retry budget."""
+    adapter = WireAdapter()
+    objects = 0
+    tokens = 0
+
+    def object_response(request: requests.PreparedRequest) -> WireResponse:
+        """Throttle once, then require a token before returning bytes."""
+        nonlocal objects
+        objects += 1
+        if objects == 1:
+            return WireResponse(request, 429)
+        if not request.headers.get("Authorization"):
+            return WireResponse(request, 401, headers={"WWW-Authenticate": challenge(TOKEN_ORIGIN)})
+        return WireResponse(request, 200, PAYLOAD)
+
+    def token_response(request: requests.PreparedRequest) -> WireResponse:
+        """Fail the first token exchange with a retryable timeout."""
+        nonlocal tokens
+        tokens += 1
+        if tokens == 1:
+            raise requests.exceptions.Timeout("synthetic token timeout")
+        return WireResponse(request, 200, b'{"token":"synthetic"}')
+
+    adapter.routes[BASE + BLOB] = object_response
+    adapter.routes[TOKEN_ORIGIN + "/token"] = token_response
+    with (
+        patch("regshape.libs.transport.download._DownloadAdapter", return_value=adapter),
+        patch("regshape.libs.transport.middleware.time.sleep") as sleep,
+        DownloadTransport(client(True), DownloadOptions(concurrency=1, max_retries=budget)) as worker,
+    ):
+        worker._session.trust_env = False
+        if budget == 1:
+            with pytest.raises(requests.exceptions.Timeout, match="Download token transport failed"):
+                worker.get(BLOB, stream=True)
+        else:
+            with worker.get(BLOB, stream=True) as response:
+                assert response.status_code == (200 if budget == 2 else 429)
+        assert worker._download_context.active == 0
+    assert tokens == budget and sleep.call_count == budget
+    assert all(response.close_calls == 1 for response in adapter.responses)
+
+
+@pytest.mark.parametrize("binding", ["realm", "service"])
+def test_concurrent_changed_challenges_do_not_reuse_incompatible_generation(binding: str) -> None:
+    """Same-repository peers with different realms/audiences negotiate their own accepted token."""
+    adapter = WireAdapter()
+    rejected = Barrier(2)
+    initial_path = BASE + "/v2/repo/manifests/latest"
+    paths = [BASE + f"/v2/repo/blobs/{name}" for name in ("first", "second")]
+    realms = [TOKEN_ORIGIN + f"/{name}" for name in ("first", "second")]
+    services = ["registry.example", "registry.example"]
+    if binding == "service":
+        realms = [TOKEN_ORIGIN + "/shared"] * 2
+        services = ["first", "second"]
+    bindings = dict(zip(paths, zip(realms, services)))
+    token_values = {pair: name for pair, name in zip(bindings.values(), ("first", "second"))}
+    token_values[(TOKEN_ORIGIN + "/initial", "registry.example")] = "initial"
+    exchanges = []
+
+    def token_response(request: requests.PreparedRequest) -> WireResponse:
+        """Issue only the token bound to the exact requested endpoint and service."""
+        parts = urlsplit(request.url)
+        pair = (f"{parts.scheme}://{parts.netloc}{parts.path}", parse_qs(parts.query)["service"][0])
+        exchanges.append(pair)
+        return WireResponse(request, 200, f'{{"token":"{token_values[pair]}"}}'.encode())
+
+    def object_response(request: requests.PreparedRequest) -> WireResponse:
+        """Reject both initial generations together, making incompatible refresh reuse observable."""
+        path = request.url
+        pair = bindings.get(path, (TOKEN_ORIGIN + "/initial", "registry.example"))
+        expected = "Bearer " + token_values[pair]
+        authorization = request.headers.get("Authorization")
+        if authorization == expected:
+            return WireResponse(request, 200, PAYLOAD)
+        if path in bindings and authorization == "Bearer initial":
+            rejected.wait(timeout=5)
+        realm, service = pair
+        header = f'Bearer realm="{realm}",service="{service}"'
+        return WireResponse(request, 401, headers={"WWW-Authenticate": header})
+
+    def receive(worker: RegistryClient, path: str) -> bytes:
+        """Consume and close a worker's object response, asserting successful authentication."""
+        worker._session.trust_env = False
+        with worker.get(path, stream=True) as response:
+            assert response.status_code == 200
+            return response.content
+
+    for realm, _service in token_values:
+        adapter.routes[realm] = token_response
+    for path in [initial_path, *paths]:
+        adapter.routes[path] = object_response
+    with (
+        patch("regshape.libs.transport.download._DownloadAdapter", return_value=adapter),
+        DownloadTransport(client(True), DownloadOptions(concurrency=2)) as root,
+    ):
+        assert receive(root, initial_path) == PAYLOAD
+        context = root._download_context
+        workers = [context.fork(), context.fork()]
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(receive, worker, path) for worker, path in zip(workers, paths)]
+            assert [future.result(timeout=5) for future in futures] == [PAYLOAD, PAYLOAD]
+        assert context.active == 0
+    assert len(exchanges) == 3 and set(exchanges) == set(token_values)
     assert all(response.close_calls == 1 for response in adapter.responses)
 
 
