@@ -383,6 +383,64 @@ def test_concurrent_changed_challenges_do_not_reuse_incompatible_generation(bind
     assert all(response.close_calls == 1 for response in adapter.responses)
 
 
+@pytest.mark.parametrize("peers", [2, 4])
+def test_headerless_concurrent_rejections_share_refreshed_generation(peers: int) -> None:
+    """Waiting headerless 401s reuse one replacement instead of provoking token throttling."""
+    adapter = WireAdapter()
+    rejected = Barrier(peers)
+    tokens = 0
+    probes = 0
+    stale = False
+
+    def object_response(request: requests.PreparedRequest) -> WireResponse:
+        """Reject all old-token peers together without supplying an object-level challenge."""
+        authorization = request.headers.get("Authorization")
+        if stale and authorization == "Bearer token-1":
+            rejected.wait(timeout=5)
+        elif tokens and authorization == f"Bearer token-{tokens}":
+            return WireResponse(request, 200, PAYLOAD)
+        return WireResponse(request, 401)
+
+    def probe_response(request: requests.PreparedRequest) -> WireResponse:
+        """Expose the token realm only on the base endpoint, as in ACR."""
+        nonlocal probes
+        probes += 1
+        return WireResponse(request, 401, headers={"WWW-Authenticate": challenge(TOKEN_ORIGIN)})
+
+    def token_response(request: requests.PreparedRequest) -> WireResponse:
+        """Allow initial issuance and one refresh, then throttle any redundant exchange."""
+        nonlocal tokens
+        tokens += 1
+        if tokens > 2:
+            return WireResponse(request, 429)
+        return WireResponse(request, 200, f'{{"token":"token-{tokens}"}}'.encode())
+
+    def receive(worker: RegistryClient) -> bytes:
+        """Consume a successful worker response and release its pool lease."""
+        worker._session.trust_env = False
+        with worker.get(BLOB, stream=True) as response:
+            assert response.status_code == 200
+            return response.content
+
+    adapter.routes[BASE + BLOB] = object_response
+    adapter.routes[BASE + "/v2/"] = probe_response
+    adapter.routes[TOKEN_ORIGIN + "/token"] = token_response
+    with (
+        patch("regshape.libs.transport.download._DownloadAdapter", return_value=adapter),
+        DownloadTransport(client(True), DownloadOptions(concurrency=peers, max_retries=0)) as root,
+    ):
+        assert receive(root) == PAYLOAD
+        stale = True
+        context = root._download_context
+        workers = [context.fork() for _ in range(peers)]
+        with ThreadPoolExecutor(max_workers=peers) as executor:
+            futures = [executor.submit(receive, worker) for worker in workers]
+            assert [future.result(timeout=5) for future in futures] == [PAYLOAD] * peers
+        assert context.active == 0
+    assert tokens == probes == 2
+    assert all(response.close_calls == 1 for response in adapter.responses)
+
+
 @pytest.mark.parametrize("redirects", [False, True])
 @pytest.mark.parametrize("status", [429, 503])
 @pytest.mark.parametrize("budget", [None, 0, 1, 2])

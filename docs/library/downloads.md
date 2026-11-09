@@ -94,8 +94,9 @@ Tokens are bound to the registry origin, credential snapshot, validated
 realm/service and repository pull scope. Expiry metadata or rejection of a
 generation causes one shared refresh. Anonymous and Basic flows remain supported;
 foreign 401 responses cannot select token realms or warm this provider.
-Concurrent rejected requests reuse a refreshed generation only when their parsed
-challenges match; a different realm or service is negotiated separately.
+Concurrent rejected requests reuse a refreshed generation when their parsed
+challenges match or the response omits its challenge; an explicit different realm
+or service is negotiated separately.
 Exchange failures are not cached: a later request can retry without replaying
 another worker's exception. Fractional RFC 3339 `issued_at` timestamps, including
 Docker Hub's nanosecond precision, are normalized for Python 3.10 compatibility.

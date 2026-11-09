@@ -155,8 +155,8 @@ class _DownloadAuth:
         successes pass through without provider headers; foreign 401s fail closed.
         Followers do not dispatch while initial discovery or expiry refresh runs.
         Unsuccessful initial responses leave discovery serialized for later peers.
-        A refreshed generation is reused only for the same parsed challenge;
-        concurrent realm/service changes require their own validated negotiation.
+        A refreshed generation is reused for matching or absent challenges;
+        explicit realm/service changes require their own validated negotiation.
         """
         if request.method not in ("GET", "HEAD"):
             raise ValueError("Download forks only support GET and HEAD")
@@ -187,7 +187,7 @@ class _DownloadAuth:
             return response
         challenge = self._capture_challenge(response)
         with state.lock:
-            same_challenge = bool(challenge) and (
+            same_challenge = not challenge or (
                 _parse_auth_header(challenge) == _parse_auth_header(state.challenge)
             )
             if state.generation == generation or not same_challenge:
