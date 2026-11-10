@@ -73,6 +73,12 @@ Standalone manifest/blob commands retain their existing semantics;
 [component selection #112](https://github.com/toddysm/regshape/issues/112)
 remains Planned.
 
+The [library batch/status APIs](../../docs/library/downloads.md#public-batch-downloads)
+do not add CLI options or change this command's stdout/progress schemas.
+Artifact blob receipt shares an operation-owned coordinator, but graph
+acquisition is still serial. Parallel graph scheduling, range flags and
+typed-status/deferred-warning rendering remain separate follow-up work.
+
 ## Completed output
 
 Human output contains exactly these fields in this order:

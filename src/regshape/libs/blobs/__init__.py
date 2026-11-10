@@ -11,7 +11,13 @@
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
-from regshape.libs.blobs.download import DownloadOptions
+from regshape.libs.blobs.download import (
+    BlobBatchResult,
+    BlobDownload,
+    DownloadOptions,
+    DownloadStats,
+    DownloadStatus,
+)
 from regshape.libs.blobs.operations import (
     delete_blob,
     get_blob,
@@ -27,15 +33,21 @@ from regshape.libs.progress import (
     TransferPhase,
     TransferProgress,
 )
+from regshape.libs.blobs.batch import get_blobs
 
 __all__ = [
+    "BlobBatchResult",
+    "BlobDownload",
     "DownloadOptions",
+    "DownloadStats",
+    "DownloadStatus",
     "ProgressCallback",
     "TransferDirection",
     "TransferPhase",
     "TransferProgress",
     "delete_blob",
     "get_blob",
+    "get_blobs",
     "head_blob",
     "mount_blob",
     "upload_blob",

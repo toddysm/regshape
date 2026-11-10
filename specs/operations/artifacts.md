@@ -18,7 +18,8 @@ and [command reference](../cli/artifact.md).
 Import `ArtifactError`, `ArtifactFormat`, `ArtifactLimits`, `ArtifactProgress`,
 `ArtifactProgressCallback`, `ArtifactPhase`, `ArtifactPhaseCallback`,
 `ArtifactPullResult`, `preflight_artifact_pull`, `pull_artifact` and
-`DirectorySnapshot`, `ArchiveSnapshot`, `DownloadOptions`, and `snapshot_layout`
+`DirectorySnapshot`, `ArchiveSnapshot`, `DownloadOptions`, `DownloadStats`,
+`DownloadStatus`, and `snapshot_layout`
 from `regshape.libs.artifacts`.
 
 ### Signatures and caller ownership
@@ -31,6 +32,7 @@ pull_artifact(
     progress_callback: ArtifactProgressCallback | None = None,
     phase_callback: ArtifactPhaseCallback | None = None,
     download_options: DownloadOptions | None = None,
+    download_status_callback: Callable[[DownloadStatus], None] | None = None,
 ) -> ArtifactPullResult
 
 preflight_artifact_pull(
@@ -62,6 +64,15 @@ original serial path without the new provider/pool; `sequential()` still uses
 modern pooled transport. This transport foundation does not yet schedule graph
 objects in parallel. See [download policy and transport](../../docs/library/downloads.md)
 for policy fields, retry precedence and downstream feature boundaries.
+
+`download_status_callback` adds immutable caller-thread per-blob observations
+and one aggregate summary after publication/cleanup, without changing
+`ArtifactPullResult` or `ArtifactProgress`. Blob status IDs match artifact
+progress rows. Summary request/retry counts include root and child-manifest
+traffic. The original error remains authoritative, and observer exceptions
+retain their exact identity. Legacy and unsupported custom clients reject this
+new observer before effects; their old omitted-option calls remain compatible.
+See [status and statistics](../../docs/library/downloads.md#status-and-statistics).
 
 Command callers use `preflight_artifact_pull(registry, repo, reference, output_path,
 output_format=ArtifactFormat.OCI, limits=None)` **before constructing the client**

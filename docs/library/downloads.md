@@ -1,15 +1,17 @@
-# Download policy and pooled transport
+# Download policy, batch API and status observations
 
 <!-- doc-type: reference -->
 
 This development-build reference covers the transport foundation from
 [#134](https://github.com/toddysm/regshape/issues/134) and internal coordination
-from [#135](https://github.com/toddysm/regshape/issues/135), targeting 0.2, not a
+from [#135](https://github.com/toddysm/regshape/issues/135), and the public facade
+from [#144](https://github.com/toddysm/regshape/issues/144), targeting 0.2, not a
 published release. See the [approved design](../../specs/operations/parallel-downloads.md).
 The [blob API](../../specs/operations/blobs.md#get_blob) and
 [artifact API](../../specs/operations/artifacts.md#signatures-and-caller-ownership)
 accept keyword-only `download_options`; existing positional arguments, results,
-output ownership and progress observers are unchanged.
+output ownership and progress schemas are unchanged. Both operations also accept
+`download_status_callback` on supported pooled transport.
 
 ## Upgrade note: default transport changes
 
@@ -20,6 +22,9 @@ downloads retry 429/transient 5xx responses up to three times, honor bounded
 `Retry-After` directives, and log each attempt. Responses update the worker's
 `last_response`, not the borrowed client's. Result types and positional
 arguments are unchanged; these transport and observability changes are intentional.
+Pooled full-stream results report the verified requested digest and consumed
+entity size, including when Content-Length is absent; HEAD/legacy metadata keeps
+its existing header-derived behavior.
 
 Pass `download_options=DownloadOptions.legacy()` to either operation to retain
 the original client's retry, logging/middleware and `last_response` behavior.
@@ -226,13 +231,131 @@ cancellation-to-join latency is promised. Sink/scratch cleanup waits until its
 worker stops, and the sole executor is joined before caller namespace cleanup.
 Cleanup errors are reported without masking the original failure.
 
-## Public delivery boundary
+## Public batch downloads
 
-Existing public operations retain **serial graph acquisition and full-stream blob receipt**.
-The policy carries concurrency/range controls for downstream integration; it
-does not yet enable public object/range scheduling, new batch/status result models
-or CLI flags. Those remain owned by
-[#144](https://github.com/toddysm/regshape/issues/144),
+Import `BlobDownload`, `get_blobs`, `BlobBatchResult`, `DownloadStats` and
+`DownloadStatus` from `regshape.libs.blobs`. The artifact package exports the same
+`DownloadStats` and `DownloadStatus` types.
+
+```python
+get_blobs(
+    client, repo, downloads, *,
+    download_options=None, progress_callback=None, download_status_callback=None,
+) -> BlobBatchResult
+```
+
+`downloads` is consumed once and fully validated before authentication, pool
+creation or output writes. It may contain at most **100,000** frozen
+`BlobDownload` requests:
+
+| Field | Default | Contract |
+| --- | --- | --- |
+| `digest` | Required | Strict lowercase SHA-256/SHA-512 address |
+| `output_path` | `None` | Trusted filename; None hashes/discards |
+| `total_size` | `None` | Trusted entity bytes, including zero |
+| `max_bytes` | `None` | Positive pre-write entity cap; saved output is exclusive |
+| `output_dir_fd` | `None` | Borrowed safe directory handle for one bounded filename |
+| `chunk_size` | `65536` | Positive streaming buffer bytes, not range size |
+
+Duplicate digests, aliased output paths and existing hard-link identities are
+rejected. None outputs do not collide. Parent directory identities correlate
+ordinary paths and handle-relative names. This first batch API conservatively
+treats Unicode-normalized/case-folded filenames in the same parent as collisions,
+even on case-sensitive storage. Checks do not reserve paths or protect against
+hostile namespace changes; callers retain the singular API's trust obligations.
+
+One invocation shares the global C cap across all entries, including physical
+HTTP/authentication/redirect requests. Each full-stream blob uses one worker;
+out-of-order completion does not reorder `result.blobs`, a tuple of unchanged
+`BlobInfo` records in input order. `result.stats` is the exact final immutable
+summary snapshot. An empty batch returns an empty tuple and zero byte/request
+counts, with one summary and no requests.
+
+On the first observed failure, scheduling stops, peers drain, workers join and
+the original domain/observer exception propagates. No partial result is returned.
+Earlier verified standalone files may remain: this is **not atomic multi-file
+publication**. Unbounded outputs retain overwrite/partial-file behavior; digest
+mismatch removes only this invocation's invalid output. Bounded outputs are
+exclusive and cleaned on failure by retained file identity. Directory handles
+and the input client remain borrowed.
+
+```python
+from regshape.libs.blobs import BlobDownload, DownloadOptions, get_blobs
+
+# client, digest and other_digest are supplied by the calling application.
+statuses = []
+result = get_blobs(
+    client, "team/image",
+    [BlobDownload(digest, output_path="first.blob"),
+     BlobDownload(other_digest)],  # verify-only
+    download_options=DownloadOptions(concurrency=2),
+    download_status_callback=statuses.append,
+)
+assert result.blobs[0].digest == digest
+assert result.blobs[1].digest == other_digest
+assert result.stats is statuses[-1].stats
+```
+
+Use one batch for a shared cap; manually concurrent singular calls do not share
+a process-global scheduler.
+
+## Status and statistics
+
+`get_blob`, `get_blobs` and `pull_artifact` accept
+`download_status_callback: Callable[[DownloadStatus], None] | None = None`.
+Legacy or unsupported custom transport is rejected before effects when this
+new observer is requested. Existing omitted-option custom singular/artifact
+calls without it retain their one-warning compatibility path. No legacy metrics
+are fabricated.
+
+Every `DownloadStatus` is frozen and contains:
+
+| Field | Meaning |
+| --- | --- |
+| `transfer_id`, `digest` | Blob identity matching its progress row; both None for summary |
+| `event` | `strategy`, `fallback`, `retry`, `completed`, `failed`, `cancelled`, `summary` |
+| `strategy` | `full`, `ranged`, or None before selection/for summary |
+| `reason` | Fixed safe code below, or None |
+| `http_status` | Optional integer HTTP status, never exception/registry text |
+| `attempt` | Logical attempt >=1 for a blob; None for summary |
+| `stats` | Frozen per-blob or aggregate `DownloadStats` |
+| `scratch_root` | Effective caller-owned scratch path; None when unused |
+
+Reasons are `sequential`, `ranges_disabled`, `range_enabled`, `small_blob`,
+`unknown_size`, `no_strong_validator`, `range_ignored`, `nonidentity_encoding`,
+`short_range`, `etag_changed`, `http_status` and `transport_error`.
+The facade preserves `etag_changed` on fallback and verified successful
+completion, enabling a final warning without log parsing. It does not itself
+activate ranges or invent a successful completion after failure.
+
+`DownloadStats` fields are `request_count`, `retry_count`, `bytes_received`,
+`bytes_accepted`, `active_requests_peak`, `scratch_bytes_peak`, `elapsed_seconds`,
+`receive_seconds`, `hash_seconds`, `write_seconds` and `queue_wait_seconds`.
+Counts/durations are nonnegative and durations finite. Physical request counts
+include failed dispatches, authentication exchanges and redirects. Aggregate
+retry counts include root/manifest retries as well as blob retries.
+Received bytes count consumed blob entities, including discarded attempts,
+not auth responses or wire-exact egress. Accepted bytes are the committed prefix
+of the current attempt, not proof of verification; fallback may reset them.
+Work/wait durations sum across jobs and can exceed wall time. Full-stream receipt
+uses no scratch, even when a scratch root was supplied for future range use.
+
+Observers run only on the invoking thread. Strategy precedes payload;
+completion follows verification and owned-file cleanup. Failure/cancellation
+and the single final summary carry available counters. An artifact operation
+shares one coordinator across nested blobs and emits its summary after artifact
+publication/cleanup; graph acquisition remains serial. The original raised
+error remains authoritative. A failed observer is never invoked again, and
+its exact exception propagates after draining, including `OSError` or
+`KeyboardInterrupt`. Passing the same callable to multiple observer parameters
+does not permit another call through a different adapter after it fails.
+
+## Remaining delivery boundary
+
+Public batch downloads overlap independent full-stream blobs. Singular blob
+downloads retain **full-stream receipt**, and artifact acquisition retains
+**serial graph scheduling**. HTTP ranges, parallel artifact graph integration
+and CLI flags/rendering remain owned by
 [#145](https://github.com/toddysm/regshape/issues/145),
 [#136](https://github.com/toddysm/regshape/issues/136) and
 [#137](https://github.com/toddysm/regshape/issues/137).

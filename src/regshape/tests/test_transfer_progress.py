@@ -386,11 +386,10 @@ def test_explicit_total_is_checked_without_an_observer(upload: bool) -> None:
 def test_real_client_preserves_live_download_streaming(
     tmp_path: Path, middleware: bool, write_file: bool,
 ) -> None:
-    """Neither transport mode buffers the body before intermediate progress is delivered."""
-    response = requests.Response()
-    response.status_code = 200
-    response.headers["Content-Length"] = "6"
-    response.raw = io.BytesIO(PAYLOAD)
+    """Both transport modes keep the urllib3 entity lazy through intermediate progress."""
+    from regshape.tests.artifact_fixtures import StreamResponse
+
+    response = StreamResponse(PAYLOAD, headers={"Content-Length": "6"})
     events: list[TransferProgress] = []
 
     def observe(event: TransferProgress) -> None:

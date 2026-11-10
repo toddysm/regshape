@@ -813,13 +813,12 @@ def test_size_probe_unsupported_seek_and_io_errors(
 
 @pytest.mark.parametrize("disabled", [False, True])
 def test_blob_download_real_library_wiring(disabled: bool) -> None:
-    """Exercise the real streaming operation behind the command without network access."""
+    """Exercise the pooled bounded receiver with a real urllib3 stream, without sockets."""
+    from regshape.tests.artifact_fixtures import StreamResponse
+
     data = b"abcdef"
     digest = "sha256:" + hashlib.sha256(data).hexdigest()
-    response = requests.Response()
-    response.status_code = 200
-    response.headers["Content-Length"] = "6"
-    response.raw = io.BytesIO(data)
+    response = StreamResponse(data, headers={"Content-Length": "6"})
     terminal = Terminal()
 
     def display(*, disabled: bool) -> ProgressDisplay:

@@ -35,6 +35,7 @@ from regshape.libs.transport.urls import _url_origin, require_authentication_ori
 
 if TYPE_CHECKING:
     from regshape.libs.blobs.download import DownloadOptions
+    from regshape.libs.transport._coordinator import _Coordinator
 
 NextHandler = Callable[[RegistryRequest], RegistryResponse]
 request_observer: ContextVar[Callable[[int, float], None] | None] = ContextVar(
@@ -309,6 +310,28 @@ class _DownloadSession(requests.Session):
             super().close()
 
 
+class _DownloadRetryMiddleware(RetryMiddleware):
+    """Account for root/manifest retries outside full-blob worker accounting.
+
+    Worker tasks remove RetryMiddleware instances and use their sole pre-commit
+    retry owner instead, so these counts cannot duplicate worker retry totals.
+    """
+
+    def __init__(self, context: "DownloadTransport") -> None:
+        """Bind an isolated retry policy to the operation, never the borrowed client."""
+        super().__init__(copy.deepcopy(context.retry_config), honor_retry_after=True)
+        self.context = context
+
+    def _wait_backoff(self, attempt: int, retry_after: float = 0.0) -> None:
+        """Count a selected non-worker retry, retaining the existing delay policy."""
+        with self.context.lock:
+            self.context.root_retry_count += 1
+        if retry_after:
+            super()._wait_backoff(attempt, retry_after)
+        else:
+            super()._wait_backoff(attempt)
+
+
 class DownloadTransport:
     """Own a bounded pooled download context; borrow the original RegistryClient.
 
@@ -321,7 +344,8 @@ class DownloadTransport:
         """Snapshot built-ins and validate the effective retry budget before allocation.
 
         Custom middleware state is reconstructed only by the safe-fork hook,
-        never traversed while copying connection/retry settings.
+        never traversed while copying connection/retry settings. The operation
+        retains one coordinator and original-observer failure identities.
         """
         if options.transport != "pooled" or not client.supports_download_fork():
             raise ValueError("DownloadTransport requires supported pooled download policy")
@@ -362,7 +386,10 @@ class DownloadTransport:
         self.active = 0
         self.active_peak = 0
         self.request_count = 0
+        self.root_retry_count = 0
         self._coordinator_created = False
+        self.coordinator: _Coordinator | None = None
+        self.observer_failures: set[int] = set()
         self.closed = False
         self.sessions: list[_DownloadSession] = []
 
@@ -419,6 +446,10 @@ class DownloadTransport:
         ):
             raise ValueError("fork_for_download must return an isolated client in this context")
         return worker
+
+    def retry_middleware(self) -> RetryMiddleware:
+        """Create isolated root/manifest retries counted in the operation summary."""
+        return _DownloadRetryMiddleware(self)
 
     def __enter__(self) -> RegistryClient:
         """Return a fresh root/manifest/blob client; clean up if extension construction fails."""

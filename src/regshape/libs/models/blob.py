@@ -26,17 +26,18 @@ _DIGEST_RE = re.compile(r"^(sha256|sha512):[a-f0-9]+$")
 class BlobInfo:
     """Metadata for an existing OCI blob.
 
-    Derived from the response headers of a ``HEAD`` or ``GET`` request to
-    ``/v2/<name>/blobs/<digest>``.  There is no JSON body to parse — all
-    fields come from HTTP headers.
+    HEAD and legacy GET derive metadata from response headers. Verified pooled
+    downloads instead report the requested verified digest and consumed entity
+    size. There is no JSON body to parse.
 
     :param digest: SHA-256 (or SHA-512) content digest, taken from the
-        ``Docker-Content-Digest`` response header.  Must match
+        ``Docker-Content-Digest`` response header or verified requested address.
+        Must match
         ``(sha256|sha512):[a-f0-9]+``.
     :param content_type: MIME type of the blob, taken from ``Content-Type``.
         Must be a non-empty string.
-    :param size: Byte length of the blob, taken from ``Content-Length``.
-        Defaults to ``0`` when the header is absent, non-numeric, or negative. Must
+    :param size: Consumed entity bytes for verified pooled downloads; otherwise
+        ``Content-Length``, defaulting to ``0`` when absent, non-numeric or negative. Must
         be ``>= 0``.
     """
 
