@@ -68,12 +68,16 @@ class _BlobOutput:
             raise OSError("Short write while saving blob")
 
     def verify_identity(self) -> None:
-        """Reject a replaced destination; never use/remove an unproven replacement."""
+        """Reject replacements, following trusted links only for unbounded output.
+
+        Match the opened object's identity: ordinary output follows caller-owned
+        symlinks, while exclusive bounded output must retain its no-follow check.
+        """
         if self.path is None:
             return
         if self.identity is None:
             raise OSError("Blob output identity was not established")
-        current = os.stat(self.path, dir_fd=self.dir_fd, follow_symlinks=False)
+        current = os.stat(self.path, dir_fd=self.dir_fd, follow_symlinks=not self.bounded)
         if not os.path.samestat(current, self.identity):
             raise OSError("Blob output was replaced; refusing to use or remove it")
 
@@ -87,7 +91,9 @@ class _BlobOutput:
         """Called only after joining; remove failed bounded/invalid outputs by identity.
 
         Ordinary transport/disk/callback failures retain unbounded partial files.
-        A digest mismatch removes this invocation's invalid file even after overwrite.
+        A digest mismatch unlinks the output filename even after overwrite.
+        For unbounded symlinks, only the link is removed; its target retains
+        unverified bytes.
         Removal errors propagate to the coordinator's secondary-error reporting.
         """
         primary: BaseException | None = None

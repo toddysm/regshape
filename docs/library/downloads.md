@@ -186,9 +186,15 @@ output's identity is revalidated on the invoking thread after queued callbacks
 drain and before result consumption, so a callback's replacement cannot become
 a verified result. Bounded outputs are exclusive and check entity limits before
 each write. Unbounded outputs
-preserve overwrite and partial-file-on-most-failures behavior. Digest mismatch
-removes the invocation's invalid output, including an overwritten destination,
-but never a filename whose identity no longer matches.
+preserve overwrite and partial-file-on-most-failures behavior, including trusted
+caller-owned symlink outputs. Their identity checks follow the opened target;
+retargeting a link to a different object still fails verification. Bounded outputs
+never overwrite symlinks. On digest mismatch, cleanup unlinks the output filename
+after checking the opened object's identity, including an overwritten regular
+file. For an unbounded symlink output, this removes the caller's link but leaves
+its target containing the unverified bytes; callers must not use that target as
+verified content. Cleanup never removes an output whose identity no longer
+matches.
 
 Worker clients disable child retry middleware. A single worker retry owner
 uses the resolved download budget and server backoff. A full-stream receive may
@@ -352,6 +358,8 @@ error remains authoritative. A failed observer is never invoked again, and
 its exact exception propagates after draining, including `OSError` or
 `KeyboardInterrupt`. Passing the same callable to multiple observer parameters
 does not permit another call through a different adapter after it fails.
+Separate references to the same bound instance method share failure state;
+different receivers or different methods remain independent.
 
 ## Remaining delivery boundary
 

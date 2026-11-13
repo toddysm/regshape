@@ -10,6 +10,8 @@ import unicodedata
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, replace
+from inspect import getattr_static
+from types import BuiltinMethodType, MethodType
 from typing import TypeVar, cast
 
 import requests
@@ -45,16 +47,32 @@ def _stats(snapshot: _Stats) -> DownloadStats:
     return DownloadStats(**asdict(snapshot))
 
 
+def _observer_key(callback: Callable) -> tuple[int, int]:
+    """Identify bound receivers/implementations, not transient method wrappers.
+
+    Static descriptor lookup also covers native bound methods without invoking
+    caller-defined properties. Other callable objects retain their own identity.
+    """
+    if isinstance(callback, MethodType):
+        return id(callback.__self__), id(callback.__func__)
+    if isinstance(callback, BuiltinMethodType) and callback.__self__ is not None:
+        descriptor = getattr_static(callback.__self__, callback.__name__, None)
+        if descriptor is not None:
+            return id(callback.__self__), id(descriptor)
+    return id(callback), 0
+
+
 def _guard_observer(
-    callback: Callable[[T], None] | None, failures: set[int],
+    callback: Callable[[T], None] | None, failures: set[tuple[int, int]],
 ) -> Callable[[T], None] | None:
-    """Disable the original callable across all adapters after its first exception."""
+    """Disable one callable/receiver-method pair across adapters after its first exception."""
     if callback is None:
         return None
+    key = _observer_key(callback)
 
     def observe(record: T) -> None:
         """Preserve exception identity and never reenter an already failed observer."""
-        if id(callback) in failures:
+        if key in failures:
             return
         succeeded = False
         try:
@@ -62,14 +80,14 @@ def _guard_observer(
             succeeded = True
         finally:
             if not succeeded:
-                failures.add(id(callback))
+                failures.add(key)
 
     return observe
 
 
 def _status_observer(
     callback: Callable[[DownloadStatus], None] | None,
-    failures: set[int] | None = None,
+    failures: set[tuple[int, int]] | None = None,
     summary: list[DownloadStats] | None = None,
 ) -> Callable[[_Observation], None] | None:
     """Adapt fixed codes and optionally retain the exact final batch summary."""
@@ -96,7 +114,7 @@ def _status_observer(
 
 def _progress_observer(
     callback: ProgressCallback | None,
-    failures: set[int],
+    failures: set[tuple[int, int]],
 ) -> Callable[[TransferProgress | ArtifactProgress], None] | None:
     """Narrow the coordinator's union for the existing standalone blob observer."""
     guarded = _guard_observer(callback, failures)

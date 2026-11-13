@@ -129,6 +129,10 @@ def get_blob(
         ``"sha512:..."``).
     :param output_path: File path to write the blob to. When ``None`` the
         content is streamed only for digest verification and then discarded.
+        Unbounded output follows trusted caller-owned symlinks; bounded output
+        requires an absent filename and never overwrites a symlink.
+        On digest mismatch, cleanup removes the output filename; for unbounded
+        symlinks this removes only the link, leaving unverified bytes in its target.
     :param chunk_size: Streaming chunk size in bytes (default ``65536``).
         Must be a positive integer.
     :param progress_callback: Optional synchronous observer of immutable transfer

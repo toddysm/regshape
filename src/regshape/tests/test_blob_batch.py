@@ -10,6 +10,7 @@ import threading
 from concurrent.futures import Future
 from dataclasses import FrozenInstanceError, asdict, fields, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -27,7 +28,7 @@ from regshape.libs.blobs import (
     get_blob,
     get_blobs,
 )
-from regshape.libs.blobs.batch import _status_observer
+from regshape.libs.blobs.batch import _guard_observer, _status_observer
 from regshape.libs.errors import BlobError
 from regshape.libs.progress import TransferPhase
 from regshape.libs.transport import RegistryClient, TransportConfig
@@ -50,6 +51,18 @@ def _client(authority="registry.example", **kwargs):
         "regshape.libs.transport.client.resolve_credentials", return_value=(None, None)
     ):
         return RegistryClient(TransportConfig(authority, insecure=True, **kwargs))
+
+
+class _BoundObserver:
+    """Expose one test callback through independently created bound-method references."""
+
+    def __init__(self, callback):
+        """Retain the test's fault injection and observation state."""
+        self.callback = callback
+
+    def observe(self, event):
+        """Forward either public event schema without changing raised exceptions."""
+        self.callback(event)
 
 
 def test_exports_frozen_records_and_original_result_schema():
@@ -392,7 +405,8 @@ def test_observer_error_identity_and_no_further_calls(observer, phase, error_typ
 
 @pytest.mark.parametrize("operation", ["singular", "batch", _ARTIFACT])
 @pytest.mark.parametrize("fail_on", ["progress", "status"])
-def test_same_observer_shared_across_surfaces_never_called_after_failure(tmp_path, operation, fail_on):
+@pytest.mark.parametrize("bound", [False, True])
+def test_same_observer_shared_across_surfaces_never_called_after_failure(tmp_path, operation, fail_on, bound):
     """Disabling a failed original callable applies across its distinct adapter wrappers."""
     error = OSError("shared observer fault")
     calls = []
@@ -410,11 +424,15 @@ def test_same_observer_shared_across_surfaces_never_called_after_failure(tmp_pat
             failed_at.append(len(calls))
             raise error
 
+    observer = _BoundObserver(observe)
     with (
         patch.object(RegistryClient, "get", side_effect=registry.get),
         pytest.raises(OSError) as caught,
     ):
-        kwargs = {"progress_callback": observe, "download_status_callback": observe}
+        kwargs = {
+            "progress_callback": observer.observe if bound else observe,
+            "download_status_callback": observer.observe if bound else observe,
+        }
         if operation == "singular":
             get_blob(_client(), "repo", address(payload), **kwargs)
         elif operation == "batch":
@@ -423,6 +441,102 @@ def test_same_observer_shared_across_surfaces_never_called_after_failure(tmp_pat
             pull_artifact(_client(), "repo", "moving", tmp_path / "layout", **kwargs)
     assert caught.value is error
     assert failed_at == [len(calls)]
+
+
+@pytest.mark.parametrize("distinct_receiver", [False, True])
+def test_other_bound_observers_remain_enabled_after_failure(distinct_receiver):
+    """Disabling a method leaves other receivers and other methods on that receiver active."""
+    error = RuntimeError("progress fault")
+    statuses = []
+
+    class Observers:
+        """Provide independent progress/status consumers with controlled receiver identity."""
+
+        def observe(self, event):
+            """Fail only for the progress receiver, otherwise collect healthy status."""
+            if self is failing:
+                raise error
+            statuses.append(event)
+
+        def status(self, event):
+            """Collect status on the failing receiver through a different implementation."""
+            statuses.append(event)
+
+    failing, healthy = Observers(), Observers()
+    callback = healthy.observe if distinct_receiver else failing.status
+    with (
+        patch.object(RegistryClient, "get", return_value=StreamResponse(b"data")),
+        pytest.raises(RuntimeError) as caught,
+    ):
+        get_blob(
+            _client(), "repo", address(b"data"),
+            progress_callback=failing.observe, download_status_callback=callback,
+        )
+    assert caught.value is error
+    assert statuses[-1].event == "summary"
+
+
+def test_native_bound_observer_is_disabled_across_distinct_wrappers():
+    """A native method failure cannot later mutate its receiver through another adapter."""
+    output = BytesIO()
+    failures = set()
+    first = _guard_observer(output.write, failures)
+    second = _guard_observer(output.write, failures)
+    with pytest.raises(TypeError):
+        first(object())
+    second(b"must not write")
+    assert output.getvalue() == b""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink privilege")
+@pytest.mark.parametrize("operation", ["singular", "batch"])
+@pytest.mark.parametrize("bounded", [False, True])
+def test_trusted_symlink_outputs_follow_only_for_unbounded_receipt(tmp_path, operation, bounded):
+    """Unbounded public downloads preserve symlinks; bounded output cannot overwrite one."""
+    target, link = tmp_path / "target", tmp_path / "link"
+    target.write_bytes(b"untouched")
+    link.symlink_to(target)
+    payload = b"verified blob"
+    options = {"max_bytes": len(payload)} if bounded else {}
+
+    def receive():
+        """Exercise the public entry point with the same trusted symlink filename."""
+        if operation == "singular":
+            return get_blob(_client(), "repo", address(payload), str(link), **options)
+        return get_blobs(_client(), "repo", [
+            BlobDownload(address(payload), str(link), **options),
+        ]).blobs[0]
+
+    with patch.object(RegistryClient, "get", return_value=StreamResponse(payload)):
+        if bounded:
+            with pytest.raises(BlobError, match="Cannot write"):
+                receive()
+        else:
+            result = receive()
+            assert result.digest == address(payload) and result.size == len(payload)
+    assert link.is_symlink()
+    assert target.read_bytes() == (b"untouched" if bounded else payload)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink privilege")
+@pytest.mark.parametrize("operation", ["singular", "batch"])
+def test_symlink_digest_mismatch_removes_link_but_retains_unverified_target(tmp_path, operation):
+    """Mismatch cleanup preserves legacy unlink semantics, not target removal or rollback."""
+    target, link = tmp_path / "target", tmp_path / "link"
+    target.write_bytes(b"old overwritten bytes")
+    link.symlink_to(target)
+    payload = b"unverified bytes"
+    digest = address(b"expected bytes")
+    with (
+        patch.object(RegistryClient, "get", return_value=StreamResponse(payload)),
+        pytest.raises(BlobError, match="Blob digest verification failed"),
+    ):
+        if operation == "singular":
+            get_blob(_client(), "repo", digest, str(link))
+        else:
+            get_blobs(_client(), "repo", [BlobDownload(digest, str(link))])
+    assert not link.is_symlink() and not link.exists()
+    assert target.read_bytes() == payload
 
 
 def test_strategy_observer_runs_before_any_job_dispatch():
@@ -454,7 +568,8 @@ def test_strategy_observer_runs_before_any_job_dispatch():
 
 
 @pytest.mark.skipif(os.name == "nt", reason="artifact storage requires POSIX")
-def test_artifact_phase_failure_disables_shared_status_observer(tmp_path):
+@pytest.mark.parametrize("bound", [False, True])
+def test_artifact_phase_failure_disables_shared_status_observer(tmp_path, bound):
     """A phase observer shared with status is not retried through the final summary."""
     from regshape.libs.artifacts import ArtifactPhase
 
@@ -468,13 +583,15 @@ def test_artifact_phase_failure_disables_shared_status_observer(tmp_path):
         if isinstance(event, ArtifactPhase):
             raise error
 
+    observer = _BoundObserver(observe)
     with (
         patch.object(RegistryClient, "get", side_effect=registry.get),
         pytest.raises(RuntimeError) as caught,
     ):
         pull_artifact(
             _client(), "repo", "moving", tmp_path / "layout",
-            phase_callback=observe, download_status_callback=observe,
+            phase_callback=observer.observe if bound else observe,
+            download_status_callback=observer.observe if bound else observe,
         )
     assert caught.value is error
     assert len(calls) == 1
