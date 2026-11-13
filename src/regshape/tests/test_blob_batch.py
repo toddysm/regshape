@@ -212,7 +212,8 @@ def test_sink_stat_permission_error_preserves_cause_before_effects(tmp_path, tar
     output = tmp_path / "blob"
     denied = tmp_path if target == "parent" else output
     error = PermissionError(errno.EACCES, "permission denied")
-    stat = os.stat
+    stat = type(output).stat if target == "parent" else os.stat
+    method = "pathlib.Path.stat" if target == "parent" else "regshape.libs.blobs.batch.os.stat"
 
     def inspect(path, *args, **kwargs):
         """Inject a permission failure at exactly the selected preflight boundary."""
@@ -221,7 +222,7 @@ def test_sink_stat_permission_error_preserves_cause_before_effects(tmp_path, tar
         return stat(path, *args, **kwargs)
 
     with (
-        patch("regshape.libs.blobs.batch.os.stat", side_effect=inspect),
+        patch(method, autospec=True, side_effect=inspect),
         patch("regshape.libs.transport.download._DownloadAuth") as auth,
         patch("regshape.libs.transport.download._DownloadAdapter") as pool,
         patch("regshape.libs.transport.client._send_http_request") as send,
