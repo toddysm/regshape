@@ -98,14 +98,15 @@ def test_retargeted_symlink_never_becomes_a_verified_result(client, tmp_path):
     target.write_bytes(b"original")
     substitute.write_bytes(b"unverified")
     link.symlink_to(target)
+    replacement = tmp_path / "replacement-link"
+    replacement.symlink_to(substitute)
     payload = b"verified blob"
     blob = _FullBlob("repo", address(payload), str(link))
 
     def retarget(event):
-        """Redirect only after all payload writes; worker or caller revalidation must fail."""
+        """Atomically redirect after payload writes so revalidation sees either target."""
         if event.phase == TransferPhase.VERIFYING:
-            link.unlink()
-            link.symlink_to(substitute)
+            replacement.replace(link)
 
     with (
         patch.object(RegistryClient, "get", return_value=StreamResponse(payload)),
