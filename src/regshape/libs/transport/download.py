@@ -389,7 +389,7 @@ class DownloadTransport:
         self.root_retry_count = 0
         self._coordinator_created = False
         self.coordinator: _Coordinator | None = None
-        self.observer_failures: set[int] = set()
+        self.observer_failures: set[tuple[int, int]] = set()
         self.closed = False
         self.sessions: list[_DownloadSession] = []
 

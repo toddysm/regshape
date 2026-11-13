@@ -91,6 +91,32 @@ def test_full_stream_verify_and_output(client, tmp_path, saved, algorithm, paylo
         assert not path.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="symlink privilege")
+def test_retargeted_symlink_never_becomes_a_verified_result(client, tmp_path):
+    """Following a trusted output link must still reject a different target before publication."""
+    target, link, substitute = tmp_path / "target", tmp_path / "link", tmp_path / "substitute"
+    target.write_bytes(b"original")
+    substitute.write_bytes(b"unverified")
+    link.symlink_to(target)
+    payload = b"verified blob"
+    blob = _FullBlob("repo", address(payload), str(link))
+
+    def retarget(event):
+        """Redirect only after all payload writes; worker or caller revalidation must fail."""
+        if event.phase == TransferPhase.VERIFYING:
+            link.unlink()
+            link.symlink_to(substitute)
+
+    with (
+        patch.object(RegistryClient, "get", return_value=StreamResponse(payload)),
+        pytest.raises(OSError, match="replaced"),
+    ):
+        _receive(client, blob, progress=retarget)
+    assert link.is_symlink() and link.resolve() == substitute
+    assert substitute.read_bytes() == b"unverified"
+    assert target.read_bytes() == payload
+
+
 def test_hash_and_write_stay_on_worker_callbacks_and_publication_on_caller(
     client, tmp_path
 ):

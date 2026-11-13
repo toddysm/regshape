@@ -186,7 +186,10 @@ output's identity is revalidated on the invoking thread after queued callbacks
 drain and before result consumption, so a callback's replacement cannot become
 a verified result. Bounded outputs are exclusive and check entity limits before
 each write. Unbounded outputs
-preserve overwrite and partial-file-on-most-failures behavior. Digest mismatch
+preserve overwrite and partial-file-on-most-failures behavior, including trusted
+caller-owned symlink outputs. Their identity checks follow the opened target;
+retargeting a link to a different object still fails verification. Bounded outputs
+never overwrite symlinks. Digest mismatch
 removes the invocation's invalid output, including an overwritten destination,
 but never a filename whose identity no longer matches.
 
@@ -352,6 +355,8 @@ error remains authoritative. A failed observer is never invoked again, and
 its exact exception propagates after draining, including `OSError` or
 `KeyboardInterrupt`. Passing the same callable to multiple observer parameters
 does not permit another call through a different adapter after it fails.
+Separate references to the same bound instance method share failure state;
+different receivers or different methods remain independent.
 
 ## Remaining delivery boundary
 
