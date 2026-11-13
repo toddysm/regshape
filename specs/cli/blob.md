@@ -151,6 +151,13 @@ Unlike `blob head`, this transfers the entire blob.
    and discard the content without buffering the complete blob.
 6. Print the blob metadata JSON to stdout and exit `0`.
 
+Supported clients use the shared pooled full-stream worker, with up to three
+pre-payload retries by default. A failure after a file/hash prefix commits is
+not replayed. `--chunk-size` remains an I/O buffer size, not an HTTP range size.
+The [batch/status APIs](../../docs/library/downloads.md#public-batch-downloads)
+are library-only additions; this command's options and stdout JSON are unchanged.
+Range flags and typed-status rendering are separate follow-up work.
+
 #### Exit Codes
 
 | Code | Condition |

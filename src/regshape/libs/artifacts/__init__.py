@@ -17,11 +17,12 @@ from regshape.libs.artifacts.operations import (
     snapshot_layout,
 )
 from regshape.libs.errors import ArtifactError
-from regshape.libs.blobs.download import DownloadOptions
+from regshape.libs.blobs.download import DownloadOptions, DownloadStats, DownloadStatus
 
 __all__ = [
     "ArchiveSnapshot", "ArtifactError", "ArtifactFormat", "ArtifactLimits",
     "ArtifactPhase", "ArtifactPhaseCallback", "ArtifactProgress", "ArtifactProgressCallback", "ArtifactPullResult",
     "DirectorySnapshot", "preflight_artifact_pull", "pull_artifact", "snapshot_layout",
     "DownloadOptions",
+    "DownloadStats", "DownloadStatus",
 ]

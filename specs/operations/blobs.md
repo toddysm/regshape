@@ -97,6 +97,7 @@ def get_blob(
     max_bytes: int | None = None,
     output_dir_fd: int | None = None,
     download_options: DownloadOptions | None = None,
+    download_status_callback: Callable[[DownloadStatus], None] | None = None,
 ) -> BlobInfo:
 ```
 
@@ -114,6 +115,7 @@ Downloads a blob and verifies its digest.
 | `max_bytes` | `Optional[int]` | `None` | Positive hard entity-byte cap; enables exclusive output and bounded decoding/error bodies |
 | `output_dir_fd` | `Optional[int]` | `None` | Borrowed safe parent handle for one filename; requires `max_bytes` |
 | `download_options` | `Optional[DownloadOptions]` | `None` | Pooled policy for supported clients, or explicit legacy rollback |
+| `download_status_callback` | `Callable[[DownloadStatus], None]` or `None` | `None` | Caller-thread immutable status/metrics; requires pooled support |
 
 Import `DownloadOptions` from `regshape.libs.blobs` or `regshape.libs.artifacts`.
 Omitted options select one operation-owned pool with C=4/W=1 and three retries
@@ -126,8 +128,16 @@ requests without a safe fork raise `ValueError` before acquisition.
 See [download policy and transport](../../docs/library/downloads.md) for bounds,
 ownership and the separate scheduler/range/batch delivery boundary.
 
-**Returns:** `BlobInfo` built from response headers after successful digest
-verification.
+Supported pooled calls now use the shared coordinator/full-stream worker.
+Status IDs match progress IDs; all observers run on the invoking thread and
+their exceptions propagate unchanged after draining. New status observations
+reject legacy/custom unsupported transports before acquisition. Existing
+omitted-option custom calls without status observers retain their logged legacy
+path. Existing `BlobInfo` fields and CLI JSON are unchanged.
+
+**Returns:** `BlobInfo` after successful digest verification. Pooled receipt
+reports the verified requested digest and consumed entity size. Legacy receipt
+retains its response-header metadata.
 
 **Behaviour:**
 
@@ -146,6 +156,32 @@ verification.
    See [transfer progress](#transfer-progress) for opt-in lifecycle and size checks.
 
 **Decorator:** `@track_time`
+
+---
+
+### `get_blobs`
+
+```python
+get_blobs(
+    client, repo, downloads, *, download_options=None,
+    progress_callback=None, download_status_callback=None,
+) -> BlobBatchResult
+```
+
+Import `BlobDownload`, `get_blobs`, `BlobBatchResult`, `DownloadStats` and
+`DownloadStatus` from `regshape.libs.blobs`. One pooled coordinator enforces
+the batch-wide concurrency cap. At most 100,000 requests are materialized and
+validated before effects; duplicate digests, output aliases and existing
+file-identity collisions fail preflight. Filesystem errors inspecting sinks raise
+`BlobError("Cannot write to blob output path")` from the original `OSError`, before
+acquisition or output creation; a nonexistent target alone is allowed.
+Results retain input order.
+The first observed failure cancels/drains peers and raises the original error,
+not a partial result. Earlier verified standalone files may remain.
+Legacy transport is unsupported; metrics are never fabricated for it.
+See the [batch/status reference](../../docs/library/downloads.md#public-batch-downloads)
+for exact request fields, ownership, conservative portable filename collision
+rules, final statistics and observer examples. Range scheduling remains separate.
 
 ---
 

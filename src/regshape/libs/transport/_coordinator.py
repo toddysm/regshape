@@ -461,7 +461,10 @@ class _Coordinator:
             self.peaks[transfer_id] = max(self.peaks.get(transfer_id, 0), count)
 
     def snapshot(self, transfer_id: str | None = None) -> _Stats:
-        """Return available current-attempt counts; operation durations may overlap."""
+        """Return available counts, including operation-wide root/manifest retries.
+
+        Per-blob retries remain worker-owned; operation work durations may overlap.
+        """
         self._on_caller()
         total = _Stats()
         if transfer_id is None:
@@ -486,6 +489,9 @@ class _Coordinator:
                 self.transport.request_count
                 if transfer_id is None
                 else total.request_count
+            ),
+            retry_count=total.retry_count + (
+                self.transport.root_retry_count if transfer_id is None else 0
             ),
             elapsed_seconds=time.perf_counter() - elapsed_start,
             scratch_bytes_peak=(
@@ -805,6 +811,8 @@ class _Coordinator:
 
         Completion checks visit only sources retaining jobs, never every waiting
         source. Healthy terminal observers run before secondary cleanup diagnostics.
+        Strategy is delivered before dispatch; rejected/unsubmitted jobs still
+        retain a stopped record for invoking-thread cleanup.
 
         :param on_result: Invoking-thread consumer; publish only verified results.
             Range sources are delivered in source order, not completion order.
@@ -884,9 +892,7 @@ class _Coordinator:
                             pending = _Pending(
                                 number,
                                 job,
-                                self.executor.submit(
-                                    Context().run, self._task, number, job
-                                ),
+                                Future(),
                             )
                             self.pending[number] = pending
                             source.pending.append(pending)
@@ -904,11 +910,23 @@ class _Coordinator:
                                 self.scratch_peak, self.scratch_bytes
                             )
                             self.jobs_peak = max(self.jobs_peak, len(self.pending))
-                            if previous is None:
-                                self.status(
-                                    job.transfer_id,
-                                    _Status("strategy", job.strategy, job.reason),
+                            submitted = False
+                            try:
+                                if previous is None:
+                                    self.status(
+                                        job.transfer_id,
+                                        _Status("strategy", job.strategy, job.reason),
+                                    )
+                                pending.future = self.executor.submit(
+                                    Context().run, self._task, number, job
                                 )
+                                submitted = True
+                            finally:
+                                if not submitted:
+                                    pending.future.set_result(_Outcome(
+                                        None, _DownloadCancelled("Download was not dispatched"),
+                                        _Stats(), _Telemetry((0, 0, 0, 0, 0), 0.0, (), ()),
+                                    ))
                     if not source.exhausted or source.pending:
                         ready.append(source)
                     else:

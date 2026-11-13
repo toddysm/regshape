@@ -41,6 +41,7 @@ jobs:
       - name: Test bounded receives and transport compatibility
         run: >-
           python -m pytest -q
+          src/regshape/tests/test_blob_batch.py
           src/regshape/tests/test_download_policy.py
           src/regshape/tests/test_download_transport.py
           src/regshape/tests/test_download_coordinator.py
@@ -102,6 +103,7 @@ jobs:
       - name: Test native safety boundaries and unsupported-platform guards
         run: >-
           python -m pytest -q
+          src/regshape/tests/test_blob_batch.py
           src/regshape/tests/test_download_coordinator.py
           src/regshape/tests/test_download_workers.py
           src/regshape/tests/test_artifact_storage.py

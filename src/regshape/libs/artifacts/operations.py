@@ -10,6 +10,7 @@ import os
 import re
 import stat
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from types import TracebackType
 from typing import Literal, final
@@ -45,7 +46,7 @@ from regshape.libs.artifacts.storage import (
     require_archive_publication,
     require_safe_filesystem,
 )
-from regshape.libs.blobs import DownloadOptions, get_blob
+from regshape.libs.blobs import BlobDownload, DownloadOptions, DownloadStatus, get_blob
 from regshape.libs.blobs.download import resolve_download_options
 from regshape.libs.errors import ArtifactError
 from regshape.libs.manifests import download_manifest
@@ -265,6 +266,7 @@ def pull_artifact(
     progress_callback: ArtifactProgressCallback | None = None,
     phase_callback: ArtifactPhaseCallback | None = None,
     download_options: DownloadOptions | None = None,
+    download_status_callback: Callable[[DownloadStatus], None] | None = None,
 ) -> ArtifactPullResult:
     """Pull every platform/subject/config/layer into a new OCI directory or gzip-tar.
 
@@ -294,19 +296,38 @@ def pull_artifact(
         use one pooled authentication context from the root through all objects.
         Explicit legacy retains the original client and constructs no pool.
         Graph scheduling remains serial until the parallel graph layer is integrated.
+    :param download_status_callback: Optional caller-thread blob status/metrics
+        observer, plus one final operation summary. Requires pooled transport;
+        the raised domain/observer exception remains the failure authority.
     """
-    policy = resolve_download_options(client, download_options)
+    policy = resolve_download_options(
+        client, download_options, requires_pooled=download_status_callback is not None,
+    )
+    for callback in (progress_callback, phase_callback, download_status_callback):
+        if callback is not None and not callable(callback):
+            raise TypeError("Artifact observers must be callable")
     _pull_inputs(client.config.registry, repo, reference, output_path, output_format, limits)
-    if policy.transport == "legacy" or isinstance(getattr(client, "_download_context", None), DownloadTransport):
+    context = getattr(client, "_download_context", None)
+    if policy.transport == "legacy" or (
+        isinstance(context, DownloadTransport) and context.coordinator is None
+        and download_status_callback is None
+    ):
         return _pull_artifact_serial(
             client, repo, reference, output_path, output_format=output_format,
             limits=limits, progress_callback=progress_callback, phase_callback=phase_callback,
             blob_options=policy,
         )
-    with DownloadTransport(client, policy) as worker:
+    from regshape.libs.blobs.batch import _coordinated, _guard_observer
+
+    with _coordinated(
+        client, policy, download_status_callback=download_status_callback,
+    ) as (worker, coordinator):
+        failures = coordinator.transport.observer_failures
         return _pull_artifact_serial(
             worker, repo, reference, output_path, output_format=output_format,
-            limits=limits, progress_callback=progress_callback, phase_callback=phase_callback,
+            limits=limits,
+            progress_callback=_guard_observer(progress_callback, failures),
+            phase_callback=_guard_observer(phase_callback, failures),
             blob_options=None,
         )
 
@@ -353,7 +374,7 @@ def _pull_artifact_serial(
                 store.promote(root_file, root.digest)
 
                 def acquire(edge: Edge, remaining: int) -> tuple[str, str]:
-                    """Receive one reserved unique object into private handle-relative storage."""
+                    """Receive a reserved object, retaining its artifact row identity for status."""
                     if edge.digest == root.digest:
                         return "network", received.media_type
                     row = observers.row(edge)
@@ -368,12 +389,23 @@ def _pull_artifact_serial(
                         )
                         header = result.media_type
                     else:
-                        get_blob(
-                            client, repo, edge.digest, filename, total_size=edge.size,
-                            max_bytes=max(1, min(edge.size, remaining)),
-                            output_dir_fd=staging.fd, progress_callback=row.blob,
-                            download_options=blob_options,
-                        )
+                        context = getattr(client, "_download_context", None)
+                        if context is not None and isinstance(context, DownloadTransport) and context.coordinator is not None:
+                            from regshape.libs.blobs.batch import _receive_blob
+
+                            _receive_blob(
+                                client, context.options, BlobDownload(
+                                    edge.digest, filename, edge.size,
+                                    max(1, min(edge.size, remaining)), staging.fd,
+                                ), repo, progress_callback=row.blob, transfer_id=row.identity,
+                            )
+                        else:
+                            get_blob(
+                                client, repo, edge.digest, filename, total_size=edge.size,
+                                max_bytes=max(1, min(edge.size, remaining)),
+                                output_dir_fd=staging.fd, progress_callback=row.blob,
+                                download_options=blob_options,
+                            )
                     staging.register(filename)
                     store.promote(filename, edge.digest)
                     return "network", header

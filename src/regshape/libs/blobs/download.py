@@ -1,23 +1,173 @@
-"""Validate immutable download policy and select a backend before acquisition.
+"""Define immutable download policy, batch inputs/results and safe observations.
 
-Scheduling, range receipt and public batch/status facades are separate layers.
-This module performs no credential lookup, network request or filesystem write.
+Scheduling and receipt belong to the batch/coordinator layers. These records
+contain no request URLs, headers, payloads, credentials or exception messages.
+Backend selection performs no credential lookup, network request or write.
 """
 
 import logging
+import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Literal
 
+from regshape.libs.models.blob import BlobInfo
+from regshape.libs.progress import TransferDirection, TransferPhase, TransferProgress
 from regshape.libs.transport.client import RegistryClient
 
 logger = logging.getLogger(__name__)
 
+DownloadEvent = Literal[
+    "strategy", "fallback", "retry", "completed", "failed", "cancelled", "summary"
+]
+DownloadStrategy = Literal["full", "ranged"]
+DownloadReason = Literal[
+    "sequential", "ranges_disabled", "range_enabled", "small_blob", "unknown_size",
+    "no_strong_validator", "range_ignored", "nonidentity_encoding", "short_range",
+    "etag_changed", "http_status", "transport_error",
+]
+
+
+@dataclass(frozen=True)
+class BlobDownload:
+    """Describe one batch receive; all entries are validated before acquisition.
+
+    :param digest: Strict lowercase SHA-256/SHA-512 content address.
+    :param output_path: Trusted standalone filename, or None to hash/discard.
+    :param total_size: Optional trusted entity length, including zero.
+    :param max_bytes: Optional positive pre-write cap; saved output is exclusive.
+    :param output_dir_fd: Borrowed safe directory for a bounded single filename.
+    :param chunk_size: Positive streaming buffer bytes, not HTTP range size.
+
+    Ownership, overwrite and partial-file rules match get_blob. Frozen requests
+    do not reserve paths or copy/close borrowed directory handles.
+    """
+
+    digest: str
+    output_path: str | None = None
+    total_size: int | None = None
+    max_bytes: int | None = None
+    output_dir_fd: int | None = None
+    chunk_size: int = 65_536
+
+
+@dataclass(frozen=True)
+class DownloadStats:
+    """Snapshot of one blob or aggregate operation, independent of verification.
+
+    Counts and seconds are nonnegative. Physical requests include auth/redirects;
+    received bytes count consumed blob entities, including discarded attempts,
+    not wire traffic. Accepted bytes describe the current committed attempt and
+    may reset on fallback. Peaks never decrease within a transfer. Work/wait
+    durations sum across jobs and can exceed elapsed wall time.
+    """
+
+    request_count: int = 0
+    retry_count: int = 0
+    bytes_received: int = 0
+    bytes_accepted: int = 0
+    active_requests_peak: int = 0
+    scratch_bytes_peak: int = 0
+    elapsed_seconds: float = 0.0
+    receive_seconds: float = 0.0
+    hash_seconds: float = 0.0
+    write_seconds: float = 0.0
+    queue_wait_seconds: float = 0.0
+
+    def __post_init__(self) -> None:
+        """Reject booleans, negative counters and nonfinite durations."""
+        for field in fields(self):
+            value = getattr(self, field.name)
+            if field.name.endswith("_seconds"):
+                valid = (
+                    type(value) in (int, float) and value >= 0
+                    and (type(value) is int or math.isfinite(value))
+                )
+            else:
+                valid = type(value) is int and value >= 0
+            if not valid:
+                raise ValueError("Download statistics require nonnegative finite values")
+
+
+@dataclass(frozen=True)
+class DownloadStatus:
+    """Safe caller-thread strategy, retry or lifecycle snapshot.
+
+    :param transfer_id: Blob identity matching progress, or None for summary.
+    :param digest: Strict blob address, or None for summary.
+    :param event: Fixed lifecycle code; completed requires verification/cleanup.
+    :param strategy: Selected full/ranged strategy, or None before selection.
+    :param reason: Fixed safe reason; etag_changed survives verified completion.
+    :param http_status: Optional HTTP code, never registry text.
+    :param attempt: Logical attempt starting at one, or None for summary.
+    :param stats: Frozen per-blob or aggregate counters.
+    :param scratch_root: Effective caller-owned scratch path, or None if unused.
+    :raises ValueError: For invalid identity, codes, attempt or statistics.
+
+    Failure events do not replace the original raised exception. Observers may
+    raise to cancel; the exact exception propagates after workers drain.
+    """
+
+    transfer_id: str | None
+    digest: str | None
+    event: DownloadEvent
+    strategy: DownloadStrategy | None
+    reason: DownloadReason | None
+    http_status: int | None
+    attempt: int | None
+    stats: DownloadStats
+    scratch_root: str | None = None
+
+    def __post_init__(self) -> None:
+        """Validate machine-readable fields without echoing untrusted input."""
+        if self.event not in (
+            "strategy", "fallback", "retry", "completed", "failed", "cancelled", "summary"
+        ) or self.strategy not in (None, "full", "ranged"):
+            raise ValueError("Invalid download status")
+        if self.reason not in (
+            None, "sequential", "ranges_disabled", "range_enabled", "small_blob",
+            "unknown_size", "no_strong_validator", "range_ignored",
+            "nonidentity_encoding", "short_range", "etag_changed", "http_status",
+            "transport_error",
+        ):
+            raise ValueError("Invalid download reason")
+        if self.http_status is not None and (
+            type(self.http_status) is not int or not 100 <= self.http_status <= 599
+        ):
+            raise ValueError("Invalid download HTTP status")
+        if not isinstance(self.stats, DownloadStats):
+            raise ValueError("Download status requires DownloadStats")
+        if self.scratch_root is not None and not isinstance(self.scratch_root, str):
+            raise ValueError("Invalid download scratch root")
+        if self.event == "summary":
+            if any(value is not None for value in (self.transfer_id, self.digest, self.attempt)):
+                raise ValueError("Download summary has no blob identity")
+        else:
+            if self.transfer_id is None or self.digest is None or self.attempt is None:
+                raise ValueError("Download blob status requires identity and attempt")
+            TransferProgress(
+                self.transfer_id, self.digest, TransferDirection.DOWNLOAD,
+                TransferPhase.PREPARING, 0, None, self.attempt,
+            )
+
+
+@dataclass(frozen=True)
+class BlobBatchResult:
+    """All verified BlobInfo records in input order, with aggregate final stats.
+
+    No instance is returned on partial failure. Earlier successful standalone
+    files may remain: batch download is not atomic multi-file publication.
+    BlobInfo retains its existing schema and mutability.
+    """
+
+    blobs: tuple[BlobInfo, ...]
+    stats: DownloadStats
+
 
 @dataclass(frozen=True)
 class DownloadOptions:
-    """Policy shared by singular, artifact and future batch downloads.
+    """Policy shared by singular, artifact and batch downloads.
 
     :param concurrency: Global request ceiling, 1..32 (default 4).
     :param ranges_per_blob: Per-blob ceiling, 1..concurrency (default 1).

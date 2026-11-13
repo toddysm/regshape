@@ -21,7 +21,6 @@ concerns — error reporting is the caller's responsibility.
 import hashlib
 import logging
 from collections.abc import Callable
-from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import BinaryIO, Optional
 from urllib.parse import parse_qsl, urlparse
@@ -30,7 +29,9 @@ import requests
 
 from regshape.libs._http import ClosingResponse
 from regshape.libs._http import download_total as _download_total
-from regshape.libs.blobs.download import DownloadOptions, resolve_download_options
+from regshape.libs.blobs.download import (
+    BlobDownload, DownloadOptions, DownloadStatus, resolve_download_options,
+)
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.decorators.timing import track_time
 from regshape.libs.errors import AuthError, BlobError
@@ -106,6 +107,7 @@ def get_blob(
     max_bytes: int | None = None,
     output_dir_fd: int | None = None,
     download_options: DownloadOptions | None = None,
+    download_status_callback: Callable[[DownloadStatus], None] | None = None,
 ) -> BlobInfo:
     """Download a blob and verify its digest.
 
@@ -142,8 +144,12 @@ def get_blob(
         Omitted options select the pool for supported clients and retain original
         serial behavior with a logged notice for unsupported custom clients.
         Range scheduling is implemented by the separate range-download layer.
-    :returns: :class:`~regshape.libs.models.blob.BlobInfo` built from
-        response headers after successful digest verification.
+    :param download_status_callback: Optional caller-thread status/metrics observer;
+        requires pooled support, even when options are omitted. Observer errors
+        retain their exact identity after cancellation and cleanup.
+    :returns: :class:`~regshape.libs.models.blob.BlobInfo` after verification.
+        Pooled receipt reports the requested digest and consumed entity size;
+        legacy receipt retains its response-header metadata.
     :raises AuthError: On authentication failure.
     :raises BlobError: On a non-2xx response, an unsupported digest
         algorithm, a digest mismatch, or an I/O error when *output_path*
@@ -152,21 +158,26 @@ def get_blob(
     :raises ValueError: For invalid policy or unsupported explicit pooled clients,
         before acquisition effects.
     """
-    policy = resolve_download_options(client, download_options)
+    policy = resolve_download_options(
+        client, download_options, requires_pooled=download_status_callback is not None,
+    )
     context = getattr(client, "_download_context", None)
-    transport: AbstractContextManager[RegistryClient]
-    if context is not None and isinstance(context, DownloadTransport):
-        transport = nullcontext(client)
-    elif policy.transport == "legacy":
-        transport = nullcontext(client)
-    else:
-        transport = DownloadTransport(client, policy)
-    with transport as worker:
+    if policy.transport == "legacy" or (
+        isinstance(context, DownloadTransport) and context.coordinator is None
+        and download_status_callback is None
+    ):
         return _get_blob_serial(
-            worker, repo, digest, output_path, chunk_size,
+            client, repo, digest, output_path, chunk_size,
             progress_callback=progress_callback, total_size=total_size,
             max_bytes=max_bytes, output_dir_fd=output_dir_fd,
         )
+    from regshape.libs.blobs.batch import _receive_blob
+
+    return _receive_blob(client, policy, BlobDownload(
+        digest, output_path, total_size, max_bytes, output_dir_fd, chunk_size,
+    ), repo, progress_callback=progress_callback,
+        download_status_callback=download_status_callback,
+    )
 
 
 def _get_blob_serial(
