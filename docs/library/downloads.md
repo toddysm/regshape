@@ -258,7 +258,10 @@ creation or output writes. It may contain at most **100,000** frozen
 | `chunk_size` | `65536` | Positive streaming buffer bytes, not range size |
 
 Duplicate digests, aliased output paths and existing hard-link identities are
-rejected. None outputs do not collide. Parent directory identities correlate
+rejected. Filesystem failures inspecting output paths or directory handles raise
+`BlobError` with the original `OSError` as the cause, before acquisition or output
+creation. A nonexistent target is allowed when its parent is accessible.
+None outputs do not collide. Parent directory identities correlate
 ordinary paths and handle-relative names. This first batch API conservatively
 treats Unicode-normalized/case-folded filenames in the same parent as collisions,
 even on case-sensitive storage. Checks do not reserve paths or protect against

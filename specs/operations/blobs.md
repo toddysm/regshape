@@ -172,7 +172,10 @@ Import `BlobDownload`, `get_blobs`, `BlobBatchResult`, `DownloadStats` and
 `DownloadStatus` from `regshape.libs.blobs`. One pooled coordinator enforces
 the batch-wide concurrency cap. At most 100,000 requests are materialized and
 validated before effects; duplicate digests, output aliases and existing
-file-identity collisions fail preflight. Results retain input order.
+file-identity collisions fail preflight. Filesystem errors inspecting sinks raise
+`BlobError("Cannot write to blob output path")` from the original `OSError`, before
+acquisition or output creation; a nonexistent target alone is allowed.
+Results retain input order.
 The first observed failure cancels/drains peers and raises the original error,
 not a partial result. Earlier verified standalone files may remain.
 Legacy transport is unsupported; metrics are never fabricated for it.

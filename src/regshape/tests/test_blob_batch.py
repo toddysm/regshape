@@ -4,6 +4,7 @@ Synthetic streams exercise faults; ephemeral loopback servers prove physical
 request caps/accounting without relying on throughput or scheduler timing.
 """
 
+import errno
 import os
 import threading
 from concurrent.futures import Future
@@ -181,6 +182,80 @@ def test_colliding_sinks_are_rejected_before_overwrite(tmp_path, kind):
         ])
     pool.assert_not_called()
     assert first.read_bytes() == b"untouched"
+
+
+def test_missing_sink_parent_raises_blob_error_before_effects(tmp_path):
+    """A later inaccessible sink cannot truncate an earlier output or start acquisition."""
+    first = tmp_path / "first"
+    first.write_bytes(b"untouched")
+    with (
+        patch("regshape.libs.transport.download._DownloadAuth") as auth,
+        patch("regshape.libs.transport.download._DownloadAdapter") as pool,
+        patch("regshape.libs.transport.client._send_http_request") as send,
+        pytest.raises(BlobError, match="Cannot write to blob output path") as caught,
+    ):
+        get_blobs(_client(), "repo", [
+            BlobDownload(address(b"one"), str(first)),
+            BlobDownload(address(b"two"), str(tmp_path / "missing" / "blob")),
+        ])
+    assert isinstance(caught.value.__cause__, FileNotFoundError)
+    auth.assert_not_called()
+    pool.assert_not_called()
+    send.assert_not_called()
+    assert first.read_bytes() == b"untouched"
+    assert not (tmp_path / "missing").exists()
+
+
+@pytest.mark.parametrize("target", ["parent", "file"])
+def test_sink_stat_permission_error_preserves_cause_before_effects(tmp_path, target):
+    """Both parent and target stat failures use the singular output-error taxonomy."""
+    output = tmp_path / "blob"
+    denied = tmp_path if target == "parent" else output
+    error = PermissionError(errno.EACCES, "permission denied")
+    stat = os.stat
+
+    def inspect(path, *args, **kwargs):
+        """Inject a permission failure at exactly the selected preflight boundary."""
+        if path == denied and (target == "parent" or "dir_fd" in kwargs):
+            raise error
+        return stat(path, *args, **kwargs)
+
+    with (
+        patch("regshape.libs.blobs.batch.os.stat", side_effect=inspect),
+        patch("regshape.libs.transport.download._DownloadAuth") as auth,
+        patch("regshape.libs.transport.download._DownloadAdapter") as pool,
+        patch("regshape.libs.transport.client._send_http_request") as send,
+        pytest.raises(BlobError, match="Cannot write to blob output path") as caught,
+    ):
+        get_blobs(_client(), "repo", [BlobDownload(address(b"x"), str(output))])
+    assert caught.value.__cause__ is error
+    auth.assert_not_called()
+    pool.assert_not_called()
+    send.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.skipif(os.stat not in os.supports_dir_fd, reason="directory handles unavailable")
+def test_closed_sink_directory_handle_raises_blob_error_before_effects(tmp_path):
+    """A closed borrowed directory handle fails preflight with the original EBADF cause."""
+    client = _client()
+    directory = os.open(tmp_path, os.O_RDONLY)
+    os.close(directory)
+    with (
+        patch("regshape.libs.transport.download._DownloadAuth") as auth,
+        patch("regshape.libs.transport.download._DownloadAdapter") as pool,
+        patch("regshape.libs.transport.client._send_http_request") as send,
+        pytest.raises(BlobError, match="Cannot write to blob output path") as caught,
+    ):
+        get_blobs(client, "repo", [
+            BlobDownload(address(b"x"), "blob", max_bytes=1, output_dir_fd=directory),
+        ])
+    assert isinstance(caught.value.__cause__, OSError)
+    assert caught.value.__cause__.errno == errno.EBADF
+    auth.assert_not_called()
+    pool.assert_not_called()
+    send.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.skipif(os.stat not in os.supports_dir_fd, reason="directory handles unavailable")

@@ -235,6 +235,8 @@ def _sinks(blobs: list[_FullBlob]) -> None:
     are rejected even on a case-sensitive filesystem.
     This is preflight, not a reservation or protection from hostile path changes;
     callers retain singular downloads' trusted-namespace obligation.
+
+    :raises BlobError: For filesystem failures inspecting output paths or handles.
     """
     paths: set[tuple[int, int, str]] = set()
     files: set[tuple[int, int]] = set()
@@ -242,20 +244,23 @@ def _sinks(blobs: list[_FullBlob]) -> None:
         output = blob.output
         if output.path is None:
             continue
-        if output.dir_fd is None:
-            path = output.path.resolve()
-            parent = path.parent.stat()
-        else:
-            path = output.path
-            parent = os.fstat(output.dir_fd)
-        key = (parent.st_dev, parent.st_ino, unicodedata.normalize("NFD", path.name).casefold())
-        if key in paths:
-            raise ValueError("Batch downloads require distinct output paths")
-        paths.add(key)
         try:
-            current = os.stat(path, dir_fd=output.dir_fd)
-        except FileNotFoundError:
-            continue
+            if output.dir_fd is None:
+                path = output.path.resolve()
+                parent = path.parent.stat()
+            else:
+                path = output.path
+                parent = os.fstat(output.dir_fd)
+            key = (parent.st_dev, parent.st_ino, unicodedata.normalize("NFD", path.name).casefold())
+            if key in paths:
+                raise ValueError("Batch downloads require distinct output paths")
+            paths.add(key)
+            try:
+                current = os.stat(path, dir_fd=output.dir_fd)
+            except FileNotFoundError:
+                continue
+        except OSError as error:
+            raise BlobError("Cannot write to blob output path") from error
         identity = (current.st_dev, current.st_ino)
         if identity in files:
             raise ValueError("Batch downloads require distinct output file identities")
@@ -281,7 +286,8 @@ def get_blobs(
     :param download_status_callback: Caller-thread immutable status/metrics observer.
     :returns: All verified infos in input order and aggregate final counters.
     :raises ValueError: For invalid inputs, duplicate digests or colliding sinks.
-    :raises BlobError: For invalid digests, failed verification or output writes.
+    :raises BlobError: For invalid digests, failed verification, sink inspection
+        or output writes.
 
     First observed failure cancels/drains peers and re-raises the original error,
     including exact observer exceptions; no partial result is returned. Earlier
