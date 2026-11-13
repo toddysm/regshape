@@ -424,8 +424,10 @@ cancelled; other transfer exceptions are classified as failed.
 
 Streamed responses and output-file handles are closed on success/failure.
 Existing output-file semantics remain: digest mismatches remove the invalid
-file; other failures may leave partial output, so callers must not use it as a
-successful download. Cleanup errors are surfaced without masking a primary
+output filename. For unbounded symlink outputs, cleanup removes the link but
+leaves its target containing unverified bytes. Other failures may leave partial
+output, so callers must not use either as a successful download.
+Cleanup errors are surfaced without masking a primary
 transfer failure. No automatic remote-session cancellation or resumable-upload
 protocol is introduced.
 

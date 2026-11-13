@@ -91,7 +91,9 @@ class _BlobOutput:
         """Called only after joining; remove failed bounded/invalid outputs by identity.
 
         Ordinary transport/disk/callback failures retain unbounded partial files.
-        A digest mismatch removes this invocation's invalid file even after overwrite.
+        A digest mismatch unlinks the output filename even after overwrite.
+        For unbounded symlinks, only the link is removed; its target retains
+        unverified bytes.
         Removal errors propagate to the coordinator's secondary-error reporting.
         """
         primary: BaseException | None = None

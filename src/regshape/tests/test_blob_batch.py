@@ -518,6 +518,27 @@ def test_trusted_symlink_outputs_follow_only_for_unbounded_receipt(tmp_path, ope
     assert target.read_bytes() == (b"untouched" if bounded else payload)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="symlink privilege")
+@pytest.mark.parametrize("operation", ["singular", "batch"])
+def test_symlink_digest_mismatch_removes_link_but_retains_unverified_target(tmp_path, operation):
+    """Mismatch cleanup preserves legacy unlink semantics, not target removal or rollback."""
+    target, link = tmp_path / "target", tmp_path / "link"
+    target.write_bytes(b"old overwritten bytes")
+    link.symlink_to(target)
+    payload = b"unverified bytes"
+    digest = address(b"expected bytes")
+    with (
+        patch.object(RegistryClient, "get", return_value=StreamResponse(payload)),
+        pytest.raises(BlobError, match="Blob digest verification failed"),
+    ):
+        if operation == "singular":
+            get_blob(_client(), "repo", digest, str(link))
+        else:
+            get_blobs(_client(), "repo", [BlobDownload(digest, str(link))])
+    assert not link.is_symlink() and not link.exists()
+    assert target.read_bytes() == payload
+
+
 def test_strategy_observer_runs_before_any_job_dispatch():
     """Synchronous submission makes premature dispatch deterministic, without payload I/O."""
     submitted = []

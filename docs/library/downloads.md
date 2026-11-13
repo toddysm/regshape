@@ -189,9 +189,12 @@ each write. Unbounded outputs
 preserve overwrite and partial-file-on-most-failures behavior, including trusted
 caller-owned symlink outputs. Their identity checks follow the opened target;
 retargeting a link to a different object still fails verification. Bounded outputs
-never overwrite symlinks. Digest mismatch
-removes the invocation's invalid output, including an overwritten destination,
-but never a filename whose identity no longer matches.
+never overwrite symlinks. On digest mismatch, cleanup unlinks the output filename
+after checking the opened object's identity, including an overwritten regular
+file. For an unbounded symlink output, this removes the caller's link but leaves
+its target containing the unverified bytes; callers must not use that target as
+verified content. Cleanup never removes an output whose identity no longer
+matches.
 
 Worker clients disable child retry middleware. A single worker retry owner
 uses the resolved download budget and server backoff. A full-stream receive may
