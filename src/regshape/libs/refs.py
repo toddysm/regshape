@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 
 """
-:mod:`regshape.libs.refs` - OCI image reference utilities
+:mod:`regshape.libs.refs` - OCI artifact reference utilities
 ==========================================================
 
 .. module:: regshape.libs.refs
    :platform: Unix, Windows
-   :synopsis: Helpers for parsing and formatting OCI image references of the
-              form ``registry/repo:tag`` or ``registry/repo@digest``.
+   :synopsis: Helpers for parsing and formatting registry artifact references
+              of the form ``registry/repo:tag`` or ``registry/repo@digest``,
+              retaining the legacy image-named parser interface.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
@@ -70,6 +71,22 @@ def parse_image_ref(image_ref: str) -> tuple[str, str, str]:
         raise ValueError(f"Cannot determine repository from {image_ref!r}")
 
     return registry, repo, ref
+
+
+def parse_artifact_ref(artifact_ref: str) -> tuple[str, str, str]:
+    """Parse an artifact reference using the existing image-reference grammar.
+
+    This additive name delegates to :func:`parse_image_ref`; it does not add
+    digest validation or change default-tag, registry, or repository handling.
+    The legacy parser and its ``image_ref`` keyword remain supported.
+
+    :param artifact_ref: Reference with an embedded registry and repository.
+    :returns: ``(registry, repository, tag_or_digest)`` with the existing default
+        of ``"latest"`` when no tag/digest is supplied.
+    :raises ValueError: If the existing parser cannot determine registry or
+        repository.
+    """
+    return parse_image_ref(artifact_ref)
 
 
 def format_ref(registry: str, repo: str, reference: str) -> str:

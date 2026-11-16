@@ -1,5 +1,7 @@
 # RegShape
 
+<!-- doc-type: overview -->
+
 ![GitHub issues](https://img.shields.io/github/issues-raw/toddysm/regshape?link=https%3A%2F%2Fgithub.com%2Ftoddysm%2Fregshape%2Fissues)
 ![GitHub pull requests](https://img.shields.io/github/issues-pr-raw/toddysm/regshape?link=https%3A%2F%2Fgithub.com%2Ftoddysm%2Fregshape%2Fpulls)
 
@@ -14,8 +16,8 @@
   </sub>
 </p>
 
-RegShape (from **REG**istry re**SHAPE**) is a CLI tool and a Python library for
-manipulating artifacts in an [OCI](https://opencontainers.org) registry. While
+RegShape (from **REG**istry re**SHAPE**) is a command-line interface (CLI) tool and a Python library for
+manipulating artifacts in an [Open Container Initiative (OCI)](https://opencontainers.org) registry. While
 there are many other tools that can do this (see
 [ORAS](https://oras.land),
 [regclient](https://github.com/regclient/regclient), or Google's
@@ -62,21 +64,55 @@ regshape ping registry-1.docker.io
 Retrieve a manifest:
 
 ```bash
-regshape manifest get -i docker.io/library/alpine:latest
+regshape manifest get -a docker.io/library/alpine:latest
 ```
+
+Development builds containing manifest progress show one live stderr row for a
+manifest or index, completing only after output succeeds. Check installed help
+for `--no-progress`. See the [manifest download workflow](docs/guides/live-transfer-progress.md#download-a-manifest-or-index)
+for file/raw/part examples and the distinction between receipt and success.
 
 List tags for a repository:
 
 ```bash
-regshape tag list -i docker.io/library/alpine
+regshape tag list -a docker.io/library/alpine
 ```
+
+Retrieve every page of tags:
+
+```bash
+regshape tag list -a docker.io/library/alpine --all
+```
+
+Use `--n` to set the all-pages request size and `--last` to start after a tag.
+See the [tag command reference](specs/cli/tag.md) for pagination and output options.
+
+`--artifact / -a` is the preferred selector in versions containing the 0.2
+artifact-option change. Older `--image-ref / -i` aliases remain functional but
+are deprecated in 0.2 help/docs; there is no runtime warning or removal date.
+Check installed command help if using an older release. See the
+[artifact-option migration guide](docs/guides/artifact-options.md) for the eight
+affected commands and unchanged Docker/blob options.
 
 ## Documentation
 
+Development builds targeting 0.2 also support
+[complete artifact download, offline verification, and round-trip push](docs/guides/artifact-pull.md),
+including all platforms and directory/gzip-tar output. **These operations require
+Linux/macOS, a supported filesystem, and a trusted private namespace; Windows
+fails closed.** See the guide's prerequisites before running them. This is not
+a release announcement or the separate planned config/layer-position selector.
+
 ### Guides
 
+- [Complete Artifact Download and Round-trip](docs/guides/artifact-pull.md)
 - [Creating OCI Layouts](docs/guides/create-oci-layout.md)
 - [Docker Desktop Integration](docs/guides/docker-desktop-integration.md)
+- [Live Transfer Progress](docs/guides/live-transfer-progress.md)
+- [Manifest/Index Download Progress](docs/guides/live-transfer-progress.md#download-a-manifest-or-index)
+- [Library Transfer Callbacks](docs/library/transfer-progress.md)
+- [Manifest Receive Observations](docs/library/transfer-progress.md#manifest-receive-observations)
+- [Artifact Options and Migration](docs/guides/artifact-options.md)
 
 ### Architecture & Design
 
@@ -86,6 +122,7 @@ regshape tag list -i docker.io/library/alpine
 
 | Command | Spec |
 |---------|------|
+| Artifact Pull | [specs/cli/artifact.md](specs/cli/artifact.md) |
 | Auth | [specs/cli/auth.md](specs/cli/auth.md) |
 | Blob | [specs/cli/blob.md](specs/cli/blob.md) |
 | Catalog | [specs/cli/catalog.md](specs/cli/catalog.md) |
@@ -101,6 +138,7 @@ regshape tag list -i docker.io/library/alpine
 
 - [Models](specs/models/) — Blob, Catalog, Error, Manifest, Referrer, Tags
 - [Operations](specs/operations/) — Blobs, Catalog, Manifests, Referrers, Tags
+- [Complete Artifact Library](specs/operations/artifacts.md) — pull, observations, limits, and snapshots
 
 ## Contributing
 

@@ -15,14 +15,14 @@
 import click
 import requests
 
-from regshape.cli.formatting import emit_error, emit_json, emit_list, emit_text
+from regshape.cli.formatting import emit_error, emit_json, emit_list
+from regshape.cli.options import artifact_option
 from regshape.libs.decorators import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import AuthError, TagError
-from regshape.libs.refs import format_ref, parse_image_ref
-from regshape.libs.tags import delete_tag, list_tags
+from regshape.libs.refs import format_ref, parse_artifact_ref
+from regshape.libs.tags import delete_tag, list_tags, list_tags_all
 from regshape.libs.transport import RegistryClient, TransportConfig
-
 
 # ===========================================================================
 # Public Click group
@@ -30,7 +30,7 @@ from regshape.libs.transport import RegistryClient, TransportConfig
 
 @click.group()
 def tag():
-    """Manage OCI image tags (list, delete)."""
+    """Manage OCI artifact tags (list, delete)."""
     pass
 
 
@@ -40,12 +40,9 @@ def tag():
 
 @tag.command("list")
 @telemetry_options
-@click.option(
-    "--image-ref",
-    "-i",
-    required=True,
-    metavar="IMAGE_REF",
-    help=(
+@artifact_option(
+    metavar="REPOSITORY",
+    help_text=(
         "Repository reference — registry must be embedded "
         "(e.g. registry/repo or registry/repo:tag). "
         "Any tag or digest suffix is ignored for list operations."
@@ -57,7 +54,7 @@ def tag():
     type=int,
     default=None,
     metavar="COUNT",
-    help="Maximum number of tags to return (pagination page size).",
+    help="Tags requested per page; with --all, must be positive (default: 100).",
 )
 @click.option(
     "--last",
@@ -67,6 +64,13 @@ def tag():
         "Return tags lexicographically after this value. "
         "Used together with --n to page through results."
     ),
+)
+@click.option(
+    "--all",
+    "fetch_all",
+    is_flag=True,
+    default=False,
+    help="Retrieve all remaining pages (default: one page only).",
 )
 @click.option(
     "--json",
@@ -84,29 +88,43 @@ def tag():
 )
 @click.pass_context
 @track_scenario("tag list")
-def tag_list(ctx, image_ref, page_size, last, as_json, output):
-    """List tags for the repository identified by IMAGE_REF.
+def tag_list(
+    ctx: click.Context,
+    image_ref: str,
+    page_size: int | None,
+    last: str | None,
+    fetch_all: bool,
+    as_json: bool,
+    output: str | None,
+) -> None:
+    """List tags for REPOSITORY.
 
-    IMAGE_REF must embed the registry (``registry/repo`` or
+    REPOSITORY must embed the registry (``registry/repo`` or
     ``registry/repo:tag``). Any tag or digest suffix is ignored — only the
     registry and repository namespace are used.  Credentials are resolved
     automatically from the credential store populated by ``auth login``.
 
-    Use ``--n`` and ``--last`` to page through large tag lists.  Use
-    ``--json`` to receive the full response object instead of one tag per
-    line.
+    Use ``--n`` and ``--last`` for one-page requests, or ``--all`` to retrieve
+    every remaining page after the optional cursor. All-pages mode uses 100
+    tags per request by default and rejects non-positive page sizes. Use
+    ``--json`` for the full response object instead of one tag per line.
+    No results are emitted until the entire requested traversal succeeds.
     """
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
+    if fetch_all and page_size is not None and page_size <= 0:
+        raise click.BadParameter("must be positive with --all", param_hint="--n")
+
     try:
-        registry, repo, _ = parse_image_ref(image_ref)
+        registry, repo, _ = parse_artifact_ref(image_ref)
     except ValueError as exc:
         emit_error(image_ref, str(exc))
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
     try:
-        tag_list = list_tags(
+        operation = list_tags_all if fetch_all else list_tags
+        result = operation(
             client=client,
             repo=repo,
             page_size=page_size,
@@ -116,9 +134,9 @@ def tag_list(ctx, image_ref, page_size, last, as_json, output):
         emit_error(image_ref, str(exc))
 
     if as_json:
-        emit_json(tag_list.to_dict(), output)
+        emit_json(result.to_dict(), output)
     else:
-        emit_list(tag_list.tags, output)
+        emit_list(result.tags, output)
 
 
 # ===========================================================================
@@ -127,22 +145,18 @@ def tag_list(ctx, image_ref, page_size, last, as_json, output):
 
 @tag.command("delete")
 @telemetry_options
-@click.option(
-    "--image-ref",
-    "-i",
-    required=True,
-    metavar="IMAGE_REF",
-    help=(
-        "Image reference with embedded registry and tag "
+@artifact_option(
+    help_text=(
+        "Artifact reference with embedded registry and tag "
         "(e.g. registry/repo:tag). Digest references are rejected."
     ),
 )
 @click.pass_context
 @track_scenario("tag delete")
 def delete(ctx, image_ref):
-    """Delete a tag from the repository identified by IMAGE_REF.
+    """Delete the tag identified by ARTIFACT.
 
-    IMAGE_REF must be a tag reference (``registry/repo:tag``). Digest
+    ARTIFACT must be a tag reference (``registry/repo:tag``). Digest
     references are rejected with exit code 2 — to delete a manifest by
     digest use ``manifest delete``.  Deleting a tag does **not** delete the
     underlying manifest, which remains addressable by digest.  Credentials
@@ -152,7 +166,7 @@ def delete(ctx, image_ref):
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo, reference = parse_image_ref(image_ref)
+        registry, repo, reference = parse_artifact_ref(image_ref)
     except ValueError as exc:
         emit_error(image_ref, str(exc))
 
@@ -181,5 +195,3 @@ def delete(ctx, image_ref):
 # ===========================================================================
 # Internal helpers — output and error
 # ===========================================================================
-
-

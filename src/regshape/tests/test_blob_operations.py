@@ -251,6 +251,7 @@ def _make_put_response(digest: str, status_code: int = 201) -> MagicMock:
     r = MagicMock()
     r.status_code = status_code
     r.headers = {"Docker-Content-Digest": digest}
+    r.request = None
     r.text = ""
     return r
 

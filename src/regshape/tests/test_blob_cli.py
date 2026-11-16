@@ -313,7 +313,7 @@ class TestBlobUpload:
         test_file = tmp_path / "layer.tar.gz"
         test_file.write_bytes(b"test blob content")
 
-        with patch("regshape.cli.blob.upload_blob", return_value=DIGEST):
+        with patch("regshape.cli.blob.upload_blob_stream", return_value=DIGEST):
             result = _runner().invoke(
                 regshape,
                 [
@@ -332,7 +332,7 @@ class TestBlobUpload:
         test_file = tmp_path / "layer.tar.gz"
         test_file.write_bytes(b"content")
 
-        with patch("regshape.cli.blob.upload_blob", return_value=DIGEST):
+        with patch("regshape.cli.blob.upload_blob_stream", return_value=DIGEST):
             result = _runner().invoke(
                 regshape,
                 ["blob", "upload", "--repo", REPO, "--file", str(test_file), "--digest", DIGEST],
@@ -363,7 +363,7 @@ class TestBlobUpload:
         test_file = tmp_path / "layer.tar.gz"
         test_file.write_bytes(b"content")
 
-        with patch("regshape.cli.blob.upload_blob") as mock_mono, \
+        with patch("regshape.cli.blob.upload_blob_stream") as mock_mono, \
              patch("regshape.cli.blob.upload_blob_chunked", return_value=DIGEST):
             _runner().invoke(
                 regshape,
@@ -376,7 +376,7 @@ class TestBlobUpload:
         test_file = tmp_path / "layer.tar.gz"
         test_file.write_bytes(b"content")
 
-        with patch("regshape.cli.blob.upload_blob", return_value=DIGEST), \
+        with patch("regshape.cli.blob.upload_blob_stream", return_value=DIGEST), \
              patch("regshape.cli.blob.upload_blob_chunked") as mock_chunked:
             _runner().invoke(
                 regshape,
@@ -398,7 +398,7 @@ class TestBlobUpload:
         test_file.write_bytes(b"content")
 
         with patch(
-            "regshape.cli.blob.upload_blob",
+            "regshape.cli.blob.upload_blob_stream",
             side_effect=BlobError("Upload session not found: abc", "HTTP 404"),
         ):
             result = _runner().invoke(
@@ -412,7 +412,7 @@ class TestBlobUpload:
         test_file.write_bytes(b"content")
 
         with patch(
-            "regshape.cli.blob.upload_blob",
+            "regshape.cli.blob.upload_blob_stream",
             side_effect=AuthError(f"Authentication failed for {REGISTRY}", "HTTP 401"),
         ):
             result = _runner().invoke(
@@ -426,7 +426,7 @@ class TestBlobUpload:
         test_file.write_bytes(b"content")
         custom_type = "application/vnd.oci.image.layer.v1.tar+gzip"
 
-        with patch("regshape.cli.blob.upload_blob", return_value=DIGEST) as mock_upload:
+        with patch("regshape.cli.blob.upload_blob_stream", return_value=DIGEST) as mock_upload:
             _runner().invoke(
                 regshape,
                 [

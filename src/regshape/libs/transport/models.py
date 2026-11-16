@@ -15,7 +15,7 @@
 
 from dataclasses import dataclass
 from typing import Optional, Union, Iterable, Dict, Any
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 import requests
 
@@ -35,6 +35,10 @@ class RegistryRequest:
     :param stream: Whether to stream the response body
     :param params: Query parameters as key-value dict
     :param timeout: Request timeout in seconds
+    :param allow_redirects: Whether the HTTP layer may follow redirects.
+        Defaults to True; False is preserved through authentication retries.
+    :param response_hook: Optional Requests response hook, preserved through auth
+        retries/probes. Runs before Requests can consume redirect bodies.
     """
     method: str
     url: str
@@ -43,6 +47,8 @@ class RegistryRequest:
     stream: bool = False
     params: Optional[Dict[str, Any]] = None
     timeout: Optional[int] = None
+    allow_redirects: bool = True
+    response_hook: Callable[..., requests.Response] | None = None
 
     def __post_init__(self) -> None:
         """Validate request fields."""

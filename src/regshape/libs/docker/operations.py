@@ -30,10 +30,12 @@ from docker.errors import APIError, DockerException, ImageNotFound
 
 from regshape.libs.errors import DockerError, LayoutError
 from regshape.libs.layout.operations import (
+    LayoutPushPlan,
     PushResult,
     add_blob,
+    execute_layout_push,
     init_layout,
-    push_layout,
+    parse_push_destination,
 )
 from regshape.libs.models.descriptor import Descriptor, Platform
 from regshape.libs.models.manifest import ImageIndex, ImageManifest
@@ -43,6 +45,7 @@ from regshape.libs.models.mediatype import (
     OCI_IMAGE_LAYER_TAR_GZIP,
     OCI_IMAGE_MANIFEST,
 )
+from regshape.libs.progress import ProgressCallback
 
 logger = logging.getLogger(__name__)
 
@@ -490,11 +493,14 @@ def push_image(
     force: bool = False,
     chunked: bool = False,
     chunk_size: int = 65536,
+    transfer_callback: ProgressCallback | None = None,
 ) -> PushResult:
     """Export a Docker image and push it to a remote OCI registry.
 
-    Creates a temporary OCI layout, then delegates to
-    :func:`~regshape.libs.layout.operations.push_layout`.
+    Creates a temporary OCI layout, then uses the same strict snapshot/plan and
+    executor as push_layout. Validate the destination before daemon work and
+    finish local graph verification before constructing the credentialed client.
+    Omitted destination tags retain Docker push's historical ``latest`` default.
 
     :param image_ref: Docker image reference (e.g. ``nginx:latest``).
     :param dest: Destination registry reference (``registry/repo[:tag]``).
@@ -503,37 +509,39 @@ def push_image(
     :param force: Skip blob existence checks.
     :param chunked: Use chunked upload protocol for blobs.
     :param chunk_size: Chunk size in bytes for chunked uploads.
+    :param transfer_callback: Typed per-blob observer forwarded unchanged to
+        layout push, including unique skipped blobs. Export/conversion happens
+        before these observations; no image size is substituted as a byte total.
+        Observer exceptions propagate unchanged.
     :returns: :class:`~regshape.libs.layout.operations.PushResult`.
     :raises DockerError: On daemon errors.
     :raises LayoutError: On layout errors.
+    :raises regshape.libs.errors.ArtifactError: On strict graph/native storage errors.
+    :raises ValueError: On invalid destination or chunk size before daemon/client work.
+    :raises TypeError: If the transfer observer is not callable.
     """
-    from regshape.libs.refs import parse_image_ref
     from regshape.libs.transport.client import RegistryClient, TransportConfig
 
-    tmp_dir = tempfile.mkdtemp(prefix="regshape-docker-")
+    if transfer_callback is not None and not callable(transfer_callback):
+        raise TypeError("Transfer callback must be callable")
+    if type(chunk_size) is not int or chunk_size <= 0:
+        raise ValueError("chunk_size must be a positive integer")
+    registry, repo, tag = parse_push_destination(dest)
+    # Resolve the system-selected temporary parent before creating our directory;
+    # Darwin's /var alias is not a permissible symlink in a strict source path.
+    tmp_dir = tempfile.mkdtemp(prefix="regshape-docker-", dir=Path(tempfile.gettempdir()).resolve())
     tmp_layout = Path(tmp_dir) / "layout"
 
     try:
         export_image(image_ref, tmp_layout, platform=platform)
 
-        registry, repo, reference = parse_image_ref(dest)
-
-        config = TransportConfig(
-            registry=registry,
-            insecure=insecure,
-        )
-        client = RegistryClient(config)
-
-        result = push_layout(
-            layout_path=tmp_layout,
-            client=client,
-            repo=repo,
-            tag_override=reference,
-            force=force,
-            chunked=chunked,
-            chunk_size=chunk_size,
-        )
-        return result
+        with LayoutPushPlan(tmp_layout, tag or "latest") as plan:
+            config = TransportConfig(registry=registry, insecure=insecure)
+            client = RegistryClient(config)
+            return execute_layout_push(
+                plan=plan, client=client, repo=repo, force=force, chunked=chunked,
+                chunk_size=chunk_size, transfer_callback=transfer_callback,
+            )
     finally:
         # Clean up temp directory
         import shutil

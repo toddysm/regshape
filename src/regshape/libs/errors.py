@@ -86,6 +86,10 @@ class LayoutError(RegShapeError):
     pass
 
 
+class ArtifactError(RegShapeError):
+    """A graph, resource-budget, safe-storage or artifact-publication failure."""
+
+
 class DockerError(RegShapeError):
     """
     Error caused by a Docker daemon interaction failure.

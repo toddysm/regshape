@@ -12,23 +12,32 @@
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
+import errno
+import logging
+import os
+import stat
+from typing import BinaryIO
+
 import click
 import requests
 
 from regshape.cli.formatting import emit_error, emit_json
+from regshape.cli.progress import ProgressDisplay
 from regshape.libs.blobs import (
     delete_blob,
     get_blob,
     head_blob,
     mount_blob,
-    upload_blob,
     upload_blob_chunked,
+    upload_blob_stream,
 )
 from regshape.libs.decorators import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import AuthError, BlobError
 from regshape.libs.refs import parse_image_ref
 from regshape.libs.transport import RegistryClient, TransportConfig
+
+logger = logging.getLogger(__name__)
 
 
 # ===========================================================================
@@ -103,6 +112,7 @@ def blob_head(ctx, repo, digest):
 
 @blob.command("get")
 @telemetry_options
+@click.option("--no-progress", is_flag=True, default=False, help="Disable interactive transfer progress.")
 @click.option(
     "--repo",
     "-r",
@@ -135,7 +145,7 @@ def blob_head(ctx, repo, digest):
 )
 @click.pass_context
 @track_scenario("blob get")
-def blob_get(ctx, repo, digest, output, chunk_size):
+def blob_get(ctx, repo, digest, output, chunk_size, no_progress):
     """Download a blob and verify its digest.
 
     The blob content is streamed from the registry and the SHA-256 digest is
@@ -166,14 +176,16 @@ def blob_get(ctx, repo, digest, output, chunk_size):
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
     try:
-        info = get_blob(
-            client=client,
-            repo=repo_name,
-            digest=digest,
-            output_path=output,
-            chunk_size=chunk_size,
-        )
-    except (AuthError, BlobError, requests.exceptions.RequestException) as exc:
+        with ProgressDisplay(disabled=no_progress) as progress:
+            info = get_blob(
+                client=client,
+                repo=repo_name,
+                digest=digest,
+                output_path=output,
+                chunk_size=chunk_size,
+                progress_callback=progress.observe,
+            )
+    except (AuthError, BlobError, requests.exceptions.RequestException, OSError) as exc:
         emit_error(f"{repo}@{digest}", str(exc))
 
     emit_json(info.to_dict())
@@ -239,6 +251,7 @@ def blob_delete(ctx, repo, digest):
 
 @blob.command("upload")
 @telemetry_options
+@click.option("--no-progress", is_flag=True, default=False, help="Disable interactive transfer progress.")
 @click.option(
     "--repo",
     "-r",
@@ -285,11 +298,11 @@ def blob_delete(ctx, repo, digest):
 )
 @click.pass_context
 @track_scenario("blob upload")
-def blob_upload(ctx, repo, source_file, digest, media_type, chunked, chunk_size):
+def blob_upload(ctx, repo, source_file, digest, media_type, chunked, chunk_size, no_progress):
     """Upload a blob to a repository.
 
-    By default uses the monolithic upload protocol (POST + PUT), which reads
-    the file into memory.  With --chunked the streaming protocol is used
+    By default streams a monolithic upload (POST + PUT) from the file.
+    With --chunked the chunked registry protocol is used
     (POST + N×PATCH + PUT), which is suitable for large blobs.
 
     Both modes verify the confirmed digest returned by the registry against
@@ -307,26 +320,19 @@ def blob_upload(ctx, repo, source_file, digest, media_type, chunked, chunk_size)
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
     try:
-        if chunked:
-            with open(source_file, "rb") as fh:
+        with ProgressDisplay(disabled=no_progress) as progress, open(source_file, "rb") as fh:
+            if chunked:
                 confirmed = upload_blob_chunked(
-                    client=client,
-                    repo=repo_name,
-                    source=fh,
-                    digest=digest,
-                    content_type=media_type,
-                    chunk_size=chunk_size,
+                    client=client, repo=repo_name, source=fh, digest=digest,
+                    content_type=media_type, chunk_size=chunk_size,
+                    total_size=_trusted_file_size(fh),
+                    progress_callback=progress.observe,
                 )
-        else:
-            with open(source_file, "rb") as fh:
-                data = fh.read()
-            confirmed = upload_blob(
-                client=client,
-                repo=repo_name,
-                data=data,
-                digest=digest,
-                content_type=media_type,
-            )
+            else:
+                confirmed = upload_blob_stream(
+                    client=client, repo=repo_name, source=fh, digest=digest,
+                    content_type=media_type, progress_callback=progress.observe,
+                )
     except OSError as exc:
         emit_error(source_file, str(exc))
     except (AuthError, BlobError, requests.exceptions.RequestException) as exc:
@@ -412,6 +418,38 @@ def blob_mount(ctx, repo, digest, from_repo):
 # Internal helpers
 # ===========================================================================
 
+
+
+def _trusted_file_size(source: BinaryIO) -> int | None:
+    """Verify a regular file's hinted bounds without consuming its upload bytes.
+
+    Virtual files can report zero or an allocation size instead of their content
+    length. Return ``None`` for unverified bounds or unsupported seeking; retain
+    known zero for genuinely empty files. The caller must keep content stable.
+
+    :raises OSError: On read errors or inability to restore the original position.
+    """
+    info = os.fstat(source.fileno())
+    if not stat.S_ISREG(info.st_mode) or not source.seekable():
+        return None
+    position = source.tell()
+    try:
+        source.seek(info.st_size)
+        if source.read(1):
+            return None
+        if info.st_size:
+            source.seek(info.st_size - 1)
+            if not source.read(1):
+                return None
+        return info.st_size
+    except OSError as exc:
+        if exc.errno not in (errno.EINVAL, errno.ESPIPE, errno.ENOTSUP):
+            raise
+        logger.debug("File size probe unsupported (%s); using an unknown total", type(exc).__name__)
+        return None
+    finally:
+        if source.tell() != position:
+            source.seek(position)
 
 
 def _file_size(path: str) -> int:

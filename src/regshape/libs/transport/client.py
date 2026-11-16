@@ -11,7 +11,8 @@
               construction, handles the WWW-Authenticate challenge /
               401 -> authenticate -> retry cycle, and delegates every actual
               HTTP call to http_request so that --debug-calls telemetry
-              is available for free.
+              is available for free. Only responses from the configured registry
+              origin may initiate credential negotiation, including auth probes.
 
               TransportConfig is a plain dataclass that carries the
               per-registry connection settings.
@@ -19,21 +20,49 @@
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
-from dataclasses import dataclass, field
-from typing import Optional, List
+import copy
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any, List, Optional
 
 import requests
 
+from regshape.libs._http import ClosingResponse
 from regshape.libs.auth import registryauth
 from regshape.libs.auth.credentials import resolve_credentials
 from regshape.libs.decorators.call_details import http_request
 from regshape.libs.errors import AuthError
+from regshape.libs.transport.body import _UploadBody
 from regshape.libs.transport.middleware import (
-    MiddlewarePipeline, Middleware, AuthMiddleware, LoggingMiddleware,
-    RetryMiddleware, CachingMiddleware, RetryConfig,
+    AuthMiddleware,
+    CachingMiddleware,
+    LoggingMiddleware,
+    Middleware,
+    MiddlewarePipeline,
+    NextHandler,
+    RetryConfig,
+    RetryMiddleware,
     _normalize_www_authenticate,
 )
 from regshape.libs.transport.models import RegistryRequest, RegistryResponse
+from regshape.libs.transport.urls import require_authentication_origin
+
+if TYPE_CHECKING:
+    from regshape.libs.transport.download import DownloadTransport
+
+
+def _send_http_request(*args: Any, **kwargs: Any) -> requests.Response:
+    """Prepare counted bodies and optional pre-redirect hooks without changing ordinary calls."""
+    response_hook = kwargs.pop("response_hook", None)
+    if response_hook is not None:
+        kwargs["hooks"] = {"response": response_hook}
+    body = kwargs.get("data")
+    if isinstance(body, _UploadBody):
+        body.prepare_attempt()
+        try:
+            return http_request(*args, **kwargs)
+        finally:
+            body.raise_if_failed()
+    return http_request(*args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -60,8 +89,8 @@ class TransportConfig:
         pipeline. Defaults to False.
     :param enable_retries: When True, adds retry middleware with exponential
         backoff. Defaults to False.
-    :param enable_caching: When True, adds caching middleware for GET
-        requests. Defaults to False.
+    :param enable_caching: When True, caches buffered GET responses. Streamed
+        requests bypass the cache to avoid exhausted-response reuse. Defaults to False.
     :param retry_config: Configuration for retry middleware. Only used when
         enable_retries is True.
     :param cache_size: Maximum number of cached responses. Only used when
@@ -120,6 +149,7 @@ class RegistryClient:
     """
 
     def __init__(self, config: TransportConfig) -> None:
+        """Resolve credentials once and construct private request/middleware state."""
         self.config = config
         # Resolve credentials once - domain modules and CLI commands never
         # call resolve_credentials() directly.
@@ -128,11 +158,107 @@ class RegistryClient:
         )
         # Store the last response for access to headers (e.g., pagination)
         self.last_response: Optional[requests.Response] = None
+        self._session: requests.Session | None = None
+        self._download_context: DownloadTransport | None = None
         
         # Initialize middleware pipeline if enabled
         self._pipeline: Optional[MiddlewarePipeline] = None
         if config.enable_middleware:
             self._pipeline = self._setup_middleware_pipeline()
+
+    def supports_download_fork(self) -> bool:
+        """Check base-client configuration or an explicit custom safe-fork override.
+
+        The base hook only supports its configured built-ins. Subclasses and
+        runtime pipeline changes must opt in rather than silently lose behavior.
+        """
+        if type(self).fork_for_download is not RegistryClient.fork_for_download:
+            return True
+        if type(self) is not RegistryClient or self.config.middlewares:
+            return False
+        if set(vars(self)) - {
+            "config", "_username", "_password", "last_response",
+            "_pipeline", "_session", "_download_context",
+        }:
+            return False
+        if self._download_context is not None:
+            return True
+        if not self.config.enable_middleware:
+            return self._pipeline is None
+        if type(self._pipeline) is not MiddlewarePipeline:
+            return False
+        expected: list[type] = [AuthMiddleware]
+        if self.config.enable_logging:
+            expected.append(LoggingMiddleware)
+        if self.config.enable_retries:
+            expected.append(RetryMiddleware)
+        if self.config.enable_caching:
+            expected.append(CachingMiddleware)
+        if [type(item) for item in self._pipeline._middleware] != expected:
+            return False
+        allowed = {
+            AuthMiddleware: {"_username", "_password", "_registry", "_base_url"},
+            LoggingMiddleware: {"logger", "level"},
+            RetryMiddleware: {"config", "honor_retry_after"},
+            CachingMiddleware: {"cache", "max_size", "ttl"},
+        }
+        if any(set(vars(item)) != allowed[type(item)] for item in self._pipeline._middleware):
+            return False
+        auth = self._pipeline._middleware[0]
+        if not isinstance(auth, AuthMiddleware):
+            return False
+        return (
+            auth._username == self._username and auth._password == self._password
+            and auth._base_url == self.base_url and auth._registry == self.config.registry
+        )
+
+    def fork_for_download(self, *, context: "DownloadTransport") -> "RegistryClient":
+        """Create an isolated worker from the operation's resolved configuration snapshot.
+
+        No credential-store lookup occurs. The worker borrows the context's auth
+        provider and connection pool, but owns its headers, cookies, middleware,
+        cache and last_response. Custom extensions must explicitly override this
+        hook and preserve their semantics with equivalent isolation. Call only
+        from the context before worker I/O; the original client is never closed.
+        Only built-in settings are copied; the override reconstructs custom
+        middleware without copying the original middleware's mutable state.
+        One outer retry owner shares the status/transport retry budget across
+        authentication dispatches rather than resetting it on auth resends.
+        Root/manifest retries are counted by the context for aggregate status;
+        blob workers replace this middleware with their pre-commit retry owner.
+
+        :param context: Open operation-owned pooled transport.
+        :returns: Fresh base client with worker-local mutable request state.
+        :raises ValueError: If customization has no explicit safe override.
+        """
+        if not self.supports_download_fork():
+            raise ValueError("Custom client requires an explicit safe download fork")
+        if context.borrowed is not self and self._download_context is not context:
+            raise ValueError("Download fork requires its client's operation context")
+        worker = object.__new__(RegistryClient)
+        worker.config = replace(
+            context.config, retry_config=copy.deepcopy(context.config.retry_config), middlewares=[],
+        )
+        worker._username, worker._password = context.username, context.password
+        worker.last_response = None
+        worker._download_context = context
+        session = context.new_session()
+        worker._session = session
+        worker._pipeline = MiddlewarePipeline()
+
+        def authenticate(request: RegistryRequest, next_handler: NextHandler) -> RegistryResponse:
+            """Bind the shared provider to this worker's private session and request chain."""
+            return context.auth.execute(request, next_handler, session)
+
+        worker._pipeline.add_middleware(context.retry_middleware())
+        worker._pipeline.add_middleware(authenticate)
+        if context.logging_config is not None:
+            worker._pipeline.add_middleware(LoggingMiddleware(*context.logging_config))
+        if context.cache_config is not None:
+            worker._pipeline.add_middleware(
+                CachingMiddleware(*context.cache_config)
+            )
+        return worker
 
     # ------------------------------------------------------------------
     # Properties
@@ -169,6 +295,7 @@ class RegistryClient:
                 username=self._username,
                 password=self._password,
                 registry=self.config.registry,
+                base_url=self.base_url,
             )
         )
         
@@ -197,20 +324,27 @@ class RegistryClient:
         """Terminal handler that performs the actual HTTP request.
         
         This is the final handler in the middleware pipeline that converts
-        RegistryRequest to a requests call and wraps the response.
+        RegistryRequest to a requests call and wraps the response. Preserve
+        an explicit redirect opt-out before authentication sees the response.
         """
         # Convert RegistryRequest to requests parameters
         url = f"{self.base_url}{request.url}" if request.url.startswith('/') else request.url
         
         # Use http_request for telemetry (--debug-calls)
-        response = http_request(
+        redirect_options: dict[str, Any] = {} if request.allow_redirects else {"allow_redirects": False}
+        if request.response_hook is not None:
+            redirect_options["response_hook"] = request.response_hook
+        if self._session is not None:
+            redirect_options["session"] = self._session
+        response = _send_http_request(
             url=url,
             method=request.method,
             headers=request.headers,
             data=request.body,
             stream=request.stream,
             params=request.params,
-            timeout=request.timeout or self.config.timeout
+            timeout=request.timeout or self.config.timeout,
+            **redirect_options,
         )
         
         # Store for backward compatibility
@@ -230,22 +364,44 @@ class RegistryClient:
         timeout: int, 
         **kwargs
     ) -> requests.Response:
-        """Legacy authentication handling for when middleware is disabled."""
-        response = http_request(url, method, headers=req_headers, timeout=timeout, **kwargs)
+        """Validate 401 issuers before legacy negotiation, disposing owned challenges and probes.
+
+        A foreign/missing-origin 401 fails before header interpretation or the
+        no-challenge fallback. Valid external token realms remain registry policy.
+        Successful off-origin responses are unchanged; rejected retry responses
+        are closed while valid final responses remain caller-owned.
+        """
+        response = _send_http_request(url, method, headers=req_headers, timeout=timeout, **kwargs)
         self.last_response = response
 
         if response.status_code != 401:
             return response
 
         # -- 401 handling --------------------------------------------------------
-        www_auth = response.headers.get("WWW-Authenticate", "")
+        require_authentication_origin(response, self.base_url)
+        with ClosingResponse(response):
+            www_auth = response.headers.get("WWW-Authenticate", "")
         if not www_auth:
             # Some registries (e.g. ACR) only return WWW-Authenticate on
             # the /v2/ endpoint.  Fall back to a /v2/ probe.
-            v2_url = f"{self.base_url}/v2/"
-            v2_resp = http_request(v2_url, "GET", headers={}, timeout=timeout)
-            if v2_resp.status_code == 401:
-                www_auth = v2_resp.headers.get("WWW-Authenticate", "")
+            if kwargs.get("allow_redirects", True) and kwargs.get("response_hook") is None:
+                v2_url = f"{self.base_url}/v2/"
+                v2_resp = http_request(v2_url, "GET", headers={}, timeout=timeout)
+                if v2_resp.status_code == 401:
+                    require_authentication_origin(v2_resp, self.base_url)
+                with ClosingResponse(v2_resp):
+                    if v2_resp.status_code == 401:
+                        www_auth = v2_resp.headers.get("WWW-Authenticate", "")
+            else:
+                original_request = RegistryRequest(
+                    method=method, url=url, headers=req_headers,
+                    timeout=timeout, allow_redirects=kwargs.get("allow_redirects", True),
+                    stream=kwargs.get("stream", False),
+                    response_hook=kwargs.get("response_hook"),
+                )
+                www_auth = AuthMiddleware._probe_v2_challenge(
+                    self._terminal_handler, original_request, self.base_url,
+                )
             if not www_auth:
                 raise AuthError(
                     "Authentication failed",
@@ -270,8 +426,10 @@ class RegistryClient:
         )
         req_headers["Authorization"] = f"{normalized_scheme} {auth_value}"
 
-        response = http_request(url, method, headers=req_headers, timeout=timeout, **kwargs)
+        response = _send_http_request(url, method, headers=req_headers, timeout=timeout, **kwargs)
         self.last_response = response
+        if response.status_code == 401:
+            require_authentication_origin(response, self.base_url)
         return response
 
     # ------------------------------------------------------------------
@@ -303,7 +461,11 @@ class RegistryClient:
         :param headers: Optional request headers. A shallow copy is taken so
             that the caller dict is never mutated.
         :param kwargs: Additional keyword arguments forwarded to the HTTP
-            request (e.g. data, params, stream).
+            request (e.g. data, params, stream). ``allow_redirects=False``
+            disables automatic redirects, including authentication probes
+            and retries, in both transport modes.
+            ``response_hook`` runs before Requests redirect processing and is
+            retained through auth retries/probes; callers own any hook-failure cleanup.
         :returns: The HTTP response from the registry.
         :raises AuthError: If authentication fails.
         :raises requests.exceptions.RequestException: On transport errors.
@@ -320,7 +482,9 @@ class RegistryClient:
                 body=kwargs.get('data'),
                 stream=kwargs.get('stream', False),
                 params=kwargs.get('params'),
-                timeout=timeout
+                timeout=timeout,
+                allow_redirects=kwargs.get("allow_redirects", True),
+                response_hook=kwargs.get("response_hook"),
             )
             
             try:

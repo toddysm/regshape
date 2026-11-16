@@ -8,12 +8,13 @@
     :platform: Unix, Windows
     :synopsis: Top-level Click command group for regshape. Parses global options,
                resolves credentials, constructs context, and registers all
-               subcommand groups.
+               subcommand groups, including complete artifact pulls.
     moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
 import click
 
+from regshape.cli.artifact import artifact
 from regshape.cli.auth import auth
 from regshape.cli.blob import blob
 from regshape.cli.catalog import catalog
@@ -67,6 +68,7 @@ def regshape(
 # Register subcommand groups
 # ---------------------------------------------------------------------------
 
+regshape.add_command(artifact)
 regshape.add_command(auth)
 regshape.add_command(blob)
 regshape.add_command(catalog)

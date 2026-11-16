@@ -18,14 +18,15 @@
 
 import functools
 import sys
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from typing import IO, Callable, Optional
 
 import click
 
-from contextvars import ContextVar
-from dataclasses import dataclass, field
-from typing import Callable, IO, Optional
-
+from regshape.libs._http import report_secondary_failure
 from regshape.libs.decorators.metrics import PerformanceMetrics
+from regshape.libs.decorators.streams import TextOutput
 
 
 @dataclass
@@ -61,7 +62,7 @@ class TelemetryConfig:
     metrics_enabled: bool = False
     verbosity: int = 1
     output_format: str = "text"
-    output: IO = field(default_factory=lambda: sys.stderr)
+    output: TextOutput = field(default_factory=lambda: sys.stderr)
     log_file_path: Optional[str] = None
     log_file: Optional[IO] = field(default=None, repr=False)
     method_timings: list[tuple[str, float]] = field(default_factory=list)
@@ -112,6 +113,9 @@ def telemetry_options(func: Callable) -> Callable:
     the original function, so the command callback does not need to declare
     them.
 
+    Cleanup preserves an active command exception and closes the owned log file
+    even if flushing telemetry fails. A cleanup-only failure still propagates.
+
     :param func: The Click command callback to decorate.
     :return: Wrapped callback with telemetry options registered.
     """
@@ -153,6 +157,7 @@ def telemetry_options(func: Callable) -> Callable:
     )
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
+        """Run one command and close its log even when flushing diagnostics fails."""
         ctx = click.get_current_context()
         log_file_path = ctx.obj.get("log_file") if ctx.obj else None
 
@@ -194,15 +199,31 @@ def telemetry_options(func: Callable) -> Callable:
             config.log_file = open(config.log_file_path, "a")  # noqa: SIM115
 
         configure_telemetry(config)
+        primary_error: BaseException | None = None
         try:
             result = func(*args, **kwargs)
+        except BaseException as error:
+            primary_error = error
+            raise
         finally:
             # flush any method timings not already consumed by a @track_scenario block;
             # runs even when the command calls sys.exit() (raises SystemExit)
             from regshape.libs.decorators.output import flush_telemetry
-            flush_telemetry()
-            if config.log_file is not None:
-                config.log_file.close()
+            try:
+                flush_telemetry()
+            except BaseException as diagnostic_error:
+                if primary_error is None:
+                    primary_error = diagnostic_error
+                    raise
+                report_secondary_failure(primary_error, diagnostic_error, "Telemetry flush")
+            finally:
+                if config.log_file is not None:
+                    try:
+                        config.log_file.close()
+                    except BaseException as close_error:
+                        if primary_error is None:
+                            raise
+                        report_secondary_failure(primary_error, close_error, "Telemetry log cleanup")
         return result
     return wrapper
 
@@ -211,16 +232,30 @@ def telemetry_options(func: Callable) -> Callable:
 # The three decorator modules import `get_telemetry_config` from this package;
 # because that name is already bound by the time Python executes those imports,
 # the circular reference resolves cleanly.
-from regshape.libs.decorators.sanitization import SENSITIVE_HEADERS, redact_header_value, redact_headers  # noqa: E402
-from regshape.libs.decorators.timing import track_time                                          # noqa: E402
-from regshape.libs.decorators.scenario import track_scenario                                    # noqa: E402
-from regshape.libs.decorators.call_details import debug_call, format_curl_debug, format_curl_debug_json, http_request  # noqa: E402
-from regshape.libs.decorators.output import flush_telemetry, print_telemetry_block, telemetry_write  # noqa: E402
-from regshape.libs.decorators.metrics import PerformanceMetrics                                # noqa: E402
+from regshape.libs.decorators.call_details import (  # noqa: E402
+    debug_call,
+    format_curl_debug,
+    format_curl_debug_json,
+    http_request,
+)
+from regshape.libs.decorators.metrics import PerformanceMetrics  # noqa: E402
+from regshape.libs.decorators.output import (  # noqa: E402
+    flush_telemetry,
+    print_telemetry_block,
+    telemetry_write,
+)
+from regshape.libs.decorators.sanitization import (  # noqa: E402
+    SENSITIVE_HEADERS,
+    redact_header_value,
+    redact_headers,
+)
+from regshape.libs.decorators.scenario import track_scenario  # noqa: E402
+from regshape.libs.decorators.timing import track_time  # noqa: E402
 
 __all__ = [
     'TelemetryConfig',
     'PerformanceMetrics',
+    'TextOutput',
     'configure_telemetry',
     'get_telemetry_config',
     'telemetry_options',

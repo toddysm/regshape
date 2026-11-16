@@ -24,9 +24,10 @@ from regshape.libs.transport.models import RegistryRequest, RegistryResponse
 
 
 def _create_mock_response(status_code: int, headers: dict, body: bytes) -> RegistryResponse:
-    """Helper to create RegistryResponse with mock requests.Response."""
+    """Model a registry-origin response for isolated middleware tests, including issuer identity."""
     mock_raw_response = Mock()
     mock_raw_response.status_code = status_code
+    mock_raw_response.url = "https://example.com/v2/"
     mock_raw_response.headers = headers
     mock_raw_response.content = body
     mock_raw_response.text = body.decode('utf-8') if body else ""
@@ -478,7 +479,7 @@ class TestConcreteMiddleware:
         from unittest.mock import patch
         from regshape.libs.transport.middleware import AuthMiddleware
         
-        middleware = AuthMiddleware(
+        middleware = AuthMiddleware(base_url="https://example.com",
             username="user", password="pass", registry="example.com"
         )
         request = RegistryRequest("GET", "/v2/repo/manifests/latest", {})
@@ -508,7 +509,7 @@ class TestConcreteMiddleware:
         from unittest.mock import patch
         from regshape.libs.transport.middleware import AuthMiddleware
         
-        middleware = AuthMiddleware(
+        middleware = AuthMiddleware(base_url="https://example.com",
             username="user", password="pass", registry="example.com"
         )
         request = RegistryRequest("GET", "/v2/", {})
@@ -536,7 +537,7 @@ class TestConcreteMiddleware:
         from regshape.libs.transport.middleware import AuthMiddleware
         
         # No credentials — anonymous flow
-        middleware = AuthMiddleware(registry="public.example.com")
+        middleware = AuthMiddleware(registry="public.example.com", base_url="https://example.com")
         request = RegistryRequest("GET", "/v2/library/alpine/manifests/latest", {})
         
         challenge_response = _create_mock_response(
@@ -563,7 +564,7 @@ class TestConcreteMiddleware:
         from regshape.libs.transport.middleware import AuthMiddleware
         from regshape.libs.errors import AuthError
         
-        middleware = AuthMiddleware(registry="example.com")
+        middleware = AuthMiddleware(registry="example.com", base_url="https://example.com")
         request = RegistryRequest("GET", "/v2/", {})
         challenge_response = _create_mock_response(401, {}, b"Unauthorized")
         next_handler = Mock(return_value=challenge_response)
@@ -576,7 +577,7 @@ class TestConcreteMiddleware:
         from regshape.libs.transport.middleware import AuthMiddleware
         from regshape.libs.errors import AuthError
         
-        middleware = AuthMiddleware(registry="private.example.com")
+        middleware = AuthMiddleware(registry="private.example.com", base_url="https://example.com")
         request = RegistryRequest("GET", "/v2/", {})
         challenge_response = _create_mock_response(
             401,

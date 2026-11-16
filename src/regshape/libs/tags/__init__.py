@@ -14,9 +14,11 @@
 from regshape.libs.tags.operations import (
     delete_tag,
     list_tags,
+    list_tags_all,
 )
 
 __all__ = [
     "delete_tag",
     "list_tags",
+    "list_tags_all",
 ]

@@ -18,6 +18,8 @@ from typing import Optional
 
 import click
 
+from regshape.libs._http import report_secondary_failure
+
 
 def emit_json(data: dict | list, output_path: Optional[str] = None, err: bool = False) -> None:
     """Format and emit a JSON object with 2-space indentation.
@@ -33,16 +35,31 @@ def emit_json(data: dict | list, output_path: Optional[str] = None, err: bool = 
 def emit_text(content: str, output_path: Optional[str] = None, err: bool = False) -> None:
     """Emit plain text content to stdout or a file.
 
+    Owned files are closed on every path. A secondary close failure is reported
+    without replacing an active write/cancellation error; stdout is borrowed.
+
     :param content: Text string to output.
     :param output_path: If provided, write to file instead of stdout.
     :param err: If ``True``, write to stderr instead of stdout (ignored
         when *output_path* is set).
     """
     if output_path:
-        with open(output_path, "w", encoding="utf-8") as fh:
+        fh = open(output_path, "w", encoding="utf-8")  # noqa: SIM115 - preserve a primary write error
+        primary_error: BaseException | None = None
+        try:
             fh.write(content)
             if not content.endswith("\n"):
                 fh.write("\n")
+        except BaseException as error:
+            primary_error = error
+            raise
+        finally:
+            try:
+                fh.close()
+            except BaseException as close_error:
+                if primary_error is None:
+                    raise
+                report_secondary_failure(primary_error, close_error, "Output file cleanup")
     else:
         click.echo(content, err=err)
 

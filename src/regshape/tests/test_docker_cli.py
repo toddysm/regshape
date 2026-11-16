@@ -171,8 +171,8 @@ class TestDockerPushCLI:
         mock_result = MagicMock()
         mock_result.manifests = [
             MagicMock(blobs=[
-                MagicMock(uploaded=True),
-                MagicMock(uploaded=False),
+                MagicMock(action="uploaded"),
+                MagicMock(action="skipped"),
             ])
         ]
         mock_push.return_value = mock_result
@@ -193,8 +193,8 @@ class TestDockerPushCLI:
         mock_result = MagicMock()
         mock_result.manifests = [
             MagicMock(blobs=[
-                MagicMock(uploaded=True),
-                MagicMock(uploaded=True),
+                MagicMock(action="uploaded"),
+                MagicMock(action="uploaded"),
             ])
         ]
         mock_push.return_value = mock_result

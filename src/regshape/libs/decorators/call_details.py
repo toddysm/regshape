@@ -21,15 +21,15 @@ import inspect
 import json
 import sys
 import time
-
-import requests
-
 from datetime import datetime, timezone
 from typing import IO, Optional
 from urllib.parse import urlparse
 
-from regshape.libs.decorators.sanitization import redact_headers
+import requests
 
+from regshape.libs._http import close_response
+from regshape.libs.decorators.sanitization import redact_headers
+from regshape.libs.decorators.streams import TextOutput
 
 # Body preview limit at verbosity level 1; unlimited at level 2.
 _BODY_PREVIEW_LIMIT = 200
@@ -74,7 +74,7 @@ def format_curl_debug(
     status_code: int,
     reason: str,
     resp_headers: dict,
-    out: IO = None,
+    out: TextOutput | None = None,
     *,
     elapsed: Optional[float] = None,
     resp_body: Optional[bytes] = None,
@@ -169,7 +169,7 @@ def format_curl_debug_json(
     status_code: int,
     reason: str,
     resp_headers: dict,
-    out: IO = None,
+    out: TextOutput | None = None,
     *,
     elapsed: Optional[float] = None,
     resp_body: Optional[bytes] = None,
@@ -242,6 +242,9 @@ def debug_call(func):
     Enhanced with per-call elapsed time measurement, response body preview,
     and automatic metrics recording.
 
+    An acquired streamed HTTP response is closed if post-response diagnostics
+    fail before handoff. Cleanup failures never replace the diagnostic exception.
+
     :param func: The function to wrap.
     :type func: callable
     :return: The wrapped function.
@@ -249,6 +252,7 @@ def debug_call(func):
     """
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
+        """Run the request and retain stream ownership until diagnostics complete."""
         # Import here to avoid circular import at module load time
         from regshape.libs.decorators import get_telemetry_config
         config = get_telemetry_config()
@@ -287,79 +291,90 @@ def debug_call(func):
         if data is not None:
             if isinstance(data, (bytes, str)):
                 req_content_length = len(data) if isinstance(data, bytes) else len(data.encode('utf-8'))
+            else:
+                raw_length = next(
+                    (value for key, value in req_headers.items() if key.lower() == "content-length"),
+                    None,
+                )
+                if isinstance(raw_length, str) and raw_length.isascii() and raw_length.isdecimal():
+                    try:
+                        req_content_length = int(raw_length)
+                    except ValueError:
+                        req_content_length = None
 
         # Measure elapsed time
         start = time.perf_counter()
         result = func(*args, **kwargs)
         elapsed = time.perf_counter() - start
 
-        if hasattr(result, 'status_code') and hasattr(result, 'headers'):
-            # When streaming is enabled, avoid materializing the full body to preserve streaming semantics.
-            is_streaming = bool(kwargs.get('stream'))
-            resp_body = None
-            if not is_streaming and hasattr(result, 'content'):
-                resp_body = result.content
+        try:
+            if hasattr(result, 'status_code') and hasattr(result, 'headers'):
+                # Do not consume a streamed body merely to report diagnostics.
+                is_streaming = bool(kwargs.get('stream'))
+                resp_body = None
+                if not is_streaming and hasattr(result, 'content'):
+                    resp_body = result.content
 
-            # Parse Content-Length defensively; fall back to body length if needed
-            raw_content_length = result.headers.get('Content-Length')
-            resp_content_length = None
-            if raw_content_length is not None:
-                try:
-                    resp_content_length = int(raw_content_length)
-                except (ValueError, TypeError):
-                    pass
+                raw_content_length = result.headers.get('Content-Length')
+                resp_content_length = None
+                if raw_content_length is not None:
+                    try:
+                        resp_content_length = int(raw_content_length)
+                    except (ValueError, TypeError):
+                        pass
 
-            # In streaming mode, rely only on Content-Length (if present) for received bytes.
-            if is_streaming:
-                resp_bytes_received = resp_content_length or 0
-            else:
-                resp_bytes_received = resp_content_length or len(resp_body or b"")
-
-            # Record metrics if enabled
-            if config.metrics_enabled:
-                config.metrics.record_request(
-                    status_code=result.status_code,
-                    bytes_sent=req_content_length or 0,
-                    bytes_received=resp_bytes_received,
-                    elapsed=elapsed,
-                )
-
-            # Emit debug output if enabled
-            if config.debug_calls_enabled:
-                if config.output_format == "json":
-                    format_curl_debug_json(
-                        method, url, req_headers,
-                        result.status_code,
-                        getattr(result, 'reason', ''),
-                        dict(result.headers),
-                        config.output,
-                        elapsed=elapsed,
-                        resp_body=resp_body,
-                        req_content_length=req_content_length,
-                        verbosity=config.verbosity,
-                        log_file=config.log_file,
-                    )
+                if is_streaming:
+                    resp_bytes_received = resp_content_length or 0
                 else:
-                    format_curl_debug(
-                        method, url, req_headers,
-                        result.status_code,
-                        getattr(result, 'reason', ''),
-                        dict(result.headers),
-                        config.output,
+                    resp_bytes_received = resp_content_length or len(resp_body or b"")
+
+                if config.metrics_enabled:
+                    config.metrics.record_request(
+                        status_code=result.status_code,
+                        bytes_sent=req_content_length or 0,
+                        bytes_received=resp_bytes_received,
                         elapsed=elapsed,
-                        resp_body=resp_body,
-                        req_content_length=req_content_length,
-                        verbosity=config.verbosity,
-                        log_file=config.log_file,
                     )
+
+                if config.debug_calls_enabled:
+                    if config.output_format == "json":
+                        format_curl_debug_json(
+                            method, url, req_headers,
+                            result.status_code,
+                            getattr(result, 'reason', ''),
+                            dict(result.headers),
+                            config.output,
+                            elapsed=elapsed,
+                            resp_body=resp_body,
+                            req_content_length=req_content_length,
+                            verbosity=config.verbosity,
+                            log_file=config.log_file,
+                        )
+                    else:
+                        format_curl_debug(
+                            method, url, req_headers,
+                            result.status_code,
+                            getattr(result, 'reason', ''),
+                            dict(result.headers),
+                            config.output,
+                            elapsed=elapsed,
+                            resp_body=resp_body,
+                            req_content_length=req_content_length,
+                            verbosity=config.verbosity,
+                            log_file=config.log_file,
+                        )
+        except BaseException as error:
+            if kwargs.get("stream") and isinstance(result, requests.Response):
+                close_response(result, primary_error=error)
+            raise
 
         return result
     return wrapper
 
 
 @debug_call
-def http_request(url: str, method: str = "GET", headers: dict = None, **kwargs):
-    """Thin wrapper around :func:`requests.request` decorated with
+def http_request(url: str, method: str = "GET", headers: dict | None = None, **kwargs) -> requests.Response:
+    """Thin wrapper around Requests, optionally using an owned session, decorated with
     ``@debug_call``.
 
     Use this instead of calling ``requests.get`` / ``requests.request``
@@ -368,8 +383,23 @@ def http_request(url: str, method: str = "GET", headers: dict = None, **kwargs):
     :param url: Full request URL.
     :param method: HTTP method (default ``"GET"``).
     :param headers: Optional request headers dict.
+    :param session: Optional worker-owned Requests Session, supplied in kwargs.
+        Uses the same instrumentation and preserves environment/proxy settings.
     :param kwargs: Additional keyword arguments forwarded to
         :func:`requests.request` (e.g. ``timeout``).
     :return: :class:`requests.Response`
+    :raises requests.exceptions.RequestException: A sanitized transport failure
+        if Requests raises a parsing/argument ValueError with automatic redirects
+        disabled. This occurs before telemetry or middleware can log the error.
     """
-    return requests.request(method, url, headers=headers or {}, **kwargs)
+    session = kwargs.pop("session", None)
+    try:
+        if session is not None:
+            return session.request(method, url, headers=headers or {}, **kwargs)
+        return requests.request(method, url, headers=headers or {}, **kwargs)
+    except ValueError:
+        if kwargs.get("allow_redirects", True):
+            raise
+        raise requests.exceptions.RequestException(
+            "Invalid registry request or redirect response"
+        ) from None

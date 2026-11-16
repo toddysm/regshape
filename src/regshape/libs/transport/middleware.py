@@ -8,17 +8,28 @@
    :platform: Unix, Windows
    :synopsis: Defines the middleware protocol for the transport pipeline.
               Middleware components can inspect and modify both requests
-              and responses as they flow through the pipeline.
+              and responses as they flow through the pipeline. Authentication
+              validates the actual 401 issuer before negotiating credentials.
+              Pooled retries opt into Retry-After without changing legacy timing.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
 from abc import ABC
-from typing import Protocol, Callable
+from collections.abc import Mapping
+from typing import Callable, Protocol
 
+from regshape.libs._http import ClosingResponse, close_response
 from regshape.libs.auth import registryauth
 from regshape.libs.errors import AuthError
+from regshape.libs.transport.body import _UploadBody
 from regshape.libs.transport.models import RegistryRequest, RegistryResponse
+from regshape.libs.transport.urls import (
+    MAX_REDIRECTS,
+    REDIRECT_STATUSES,
+    require_authentication_origin,
+    resolve_registry_url,
+)
 
 
 class Middleware(Protocol):
@@ -69,7 +80,7 @@ class BaseMiddleware(ABC):
         request: RegistryRequest, 
         next_handler: Callable[[RegistryRequest], RegistryResponse]
     ) -> RegistryResponse:
-        """Main middleware entry point."""
+        """Run hooks, closing an unbuffered response if postprocessing prevents handoff."""
         processed_request = request
         try:
             # Allow subclasses to modify the request
@@ -79,7 +90,7 @@ class BaseMiddleware(ABC):
             response = next_handler(processed_request)
             
             # Allow subclasses to modify the response  
-            processed_response = self.process_response(processed_request, response)
+            processed_response = self._process_response(processed_request, response)
             
             return processed_response
             
@@ -87,6 +98,17 @@ class BaseMiddleware(ABC):
             # Allow subclasses to handle errors
             return self.handle_error(processed_request, exc)
     
+    def _process_response(
+        self, request: RegistryRequest, response: RegistryResponse,
+    ) -> RegistryResponse:
+        """Guard response-hook ownership; secondary close failures preserve the hook error."""
+        try:
+            return self.process_response(request, response)
+        except BaseException as error:
+            if response.body is None:
+                close_response(response.raw_response, primary_error=error)
+            raise
+
     def process_request(self, request: RegistryRequest) -> RegistryRequest:
         """Hook for request preprocessing.
         
@@ -243,22 +265,23 @@ class MiddlewarePipeline:
 # ===================================
 
 
-import time
 import logging
-from typing import Optional, Dict, Any
+import time
 from dataclasses import dataclass, field
+from datetime import timezone
+from email.utils import parsedate_to_datetime
+from typing import Any, Dict, Optional
 
 import requests.exceptions
-
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _get_header_ci(headers: dict, name: str, default: str = "") -> str:
+def _get_header_ci(headers: Mapping[str, str], name: str, default: str = "") -> str:
     """Case-insensitive header lookup.
 
-    ``RegistryResponse.headers`` is a plain ``dict`` whose keys preserve
+    ``RegistryResponse.headers`` is a mapping whose keys preserve
     the original casing from the server (e.g. ``Www-Authenticate`` from
     Azure Container Registry).  This helper performs a case-insensitive
     search so that header checks work regardless of server casing.
@@ -334,7 +357,8 @@ class AuthMiddleware(BaseMiddleware):
     replies with **401 Unauthorized** and a ``WWW-Authenticate`` header,
     the middleware:
 
-    1. Parses and normalises the challenge via
+    1. Requires the actual 401 response to originate at the configured registry,
+       then parses and normalises the challenge via
        :func:`_normalize_www_authenticate`.
     2. Calls :func:`registryauth.authenticate` to perform the actual
        token / credential exchange (Basic base64 encoding *or* Bearer
@@ -348,6 +372,9 @@ class AuthMiddleware(BaseMiddleware):
     :param username: Username for authentication, or ``None``.
     :param password: Password for authentication, or ``None``.
     :param registry: Registry hostname, used only in error messages.
+    :param base_url: Configured registry origin for validating 401 issuers and
+        probe redirects. When omitted, an absolute original request URL can
+        supply the origin; relative requests cannot establish a trusted origin.
     """
 
     def __init__(
@@ -355,10 +382,13 @@ class AuthMiddleware(BaseMiddleware):
         username: Optional[str] = None,
         password: Optional[str] = None,
         registry: str = "<unknown>",
-    ):
+        base_url: Optional[str] = None,
+    ) -> None:
+        """Configure credentials and the trusted origin used for negotiation and challenge discovery."""
         self._username = username
         self._password = password
         self._registry = registry
+        self._base_url = base_url
 
     # -- Override __call__ to get access to next_handler for the retry ------
 
@@ -367,7 +397,12 @@ class AuthMiddleware(BaseMiddleware):
         request: RegistryRequest,
         next_handler: Callable[[RegistryRequest], RegistryResponse],
     ) -> RegistryResponse:
-        """Execute the request and handle 401 challenges."""
+        """Verify challenge origin before credentials/fallback, closing discarded responses.
+
+        Off-origin successes still pass through. Every 401, including an auth
+        retry or redirected probe, requires the configured issuer; a registry-
+        issued external token realm remains valid. Rejected responses are closed.
+        """
         processed_request = request
         try:
             processed_request = self.process_request(request)
@@ -379,12 +414,17 @@ class AuthMiddleware(BaseMiddleware):
             return response
 
         # ---- 401 handling ------------------------------------------------
-        www_auth = _get_header_ci(response.headers, "WWW-Authenticate")
+        origin = self._base_url or processed_request.url
+        require_authentication_origin(response.raw_response, origin)
+        with ClosingResponse(response.raw_response):
+            www_auth = _get_header_ci(response.headers, "WWW-Authenticate")
         if not www_auth:
             # Some registries (e.g. ACR) only return WWW-Authenticate on
             # the /v2/ endpoint.  Fall back to a /v2/ probe to obtain the
             # challenge, then retry the original request.
-            www_auth = self._probe_v2_challenge(next_handler, processed_request)
+            www_auth = self._probe_v2_challenge(
+                next_handler, processed_request, self._base_url,
+            )
             if not www_auth:
                 raise AuthError(
                     "Authentication failed",
@@ -421,9 +461,14 @@ class AuthMiddleware(BaseMiddleware):
             stream=processed_request.stream,
             params=processed_request.params,
             timeout=processed_request.timeout,
+            allow_redirects=processed_request.allow_redirects,
+            response_hook=processed_request.response_hook,
         )
 
-        return next_handler(retry_request)
+        retried = next_handler(retry_request)
+        if retried.status_code == 401:
+            require_authentication_origin(retried.raw_response, origin)
+        return retried
 
     # -- Private helpers ---------------------------------------------------
 
@@ -431,27 +476,105 @@ class AuthMiddleware(BaseMiddleware):
     def _probe_v2_challenge(
         next_handler: Callable[[RegistryRequest], RegistryResponse],
         original_request: RegistryRequest,
+        base_url: Optional[str] = None,
     ) -> str:
+        """Return the base-endpoint challenge and close the final probe.
+
+        Legacy callers retain the empty-string result for a non-401 or missing
+        header; response ownership and redirect validation are delegated to the
+        shared probe helper.
+        """
+        probe_response = AuthMiddleware._probe_v2_response(
+            next_handler, original_request, base_url,
+        )
+        with ClosingResponse(probe_response.raw_response):
+            if probe_response.status_code == 401:
+                return _get_header_ci(probe_response.headers, "WWW-Authenticate")
+            return ""
+
+    @staticmethod
+    def _probe_v2_response(
+        next_handler: Callable[[RegistryRequest], RegistryResponse],
+        original_request: RegistryRequest,
+        base_url: str | None = None,
+        *,
+        stream: bool = False,
+    ) -> RegistryResponse:
         """Issue ``GET /v2/`` to obtain a ``WWW-Authenticate`` challenge.
 
         Some registries only return the challenge header on the ``/v2/``
         base endpoint rather than on every 401 response.  This helper
         sends a lightweight probe so that the caller can still negotiate
-        authentication.
+        authentication. The probe inherits the original redirect policy so
+        an unvalidated redirect cannot introduce a foreign challenge. Every 401
+        issuer is checked against the trusted origin, including when Requests
+        followed redirects automatically. When
+        automatic redirects are disabled, follow only validated same-origin
+        targets, with cycle detection and a 30-hop limit. Optional response hooks
+        are retained on probes; a rejecting hook may abort before redirect handling.
 
-        :returns: The ``WWW-Authenticate`` header value, or an empty
-            string if the probe also lacks one.
+        :param stream: Keep the final response unbuffered even without a response
+            hook, allowing a pooled caller to transfer it to its outer retry owner.
+        :returns: The final response, owned by the caller. This helper closes
+            intermediate manual redirects and invalid responses. A response hook
+            or ``stream=True`` keeps probe bodies unbuffered.
+        :raises AuthError: For unsafe, malformed, or non-terminating probe redirects.
         """
         probe = RegistryRequest(
             method="GET",
             url="/v2/",
             headers={},
             timeout=original_request.timeout,
+            allow_redirects=original_request.allow_redirects,
+            response_hook=original_request.response_hook,
+            stream=stream or original_request.response_hook is not None,
         )
-        probe_response = next_handler(probe)
-        if probe_response.status_code == 401:
-            return _get_header_ci(probe_response.headers, "WWW-Authenticate")
-        return ""
+        origin = base_url or original_request.url
+        if original_request.allow_redirects:
+            probe_response = next_handler(probe)
+            if probe_response.status_code == 401:
+                require_authentication_origin(probe_response.raw_response, origin)
+            return probe_response
+
+        try:
+            current_url = resolve_registry_url(origin, "/v2/", origin)
+        except ValueError:
+            raise AuthError("Cannot safely resolve the authentication probe origin") from None
+        visited: set[str] = set()
+        redirects = 0
+        while True:
+            if current_url in visited:
+                raise AuthError("Authentication probe redirect cycle detected")
+            visited.add(current_url)
+            probe_response = next_handler(probe)
+            if probe_response.status_code == 401:
+                require_authentication_origin(probe_response.raw_response, origin)
+            try:
+                response_url = resolve_registry_url(
+                    origin, probe_response.raw_response.url or current_url, current_url,
+                )
+            except ValueError:
+                with ClosingResponse(probe_response.raw_response):
+                    raise AuthError("Unsafe authentication probe response origin") from None
+            if probe_response.status_code not in REDIRECT_STATUSES:
+                return probe_response
+            with ClosingResponse(probe_response.raw_response):
+                if redirects >= MAX_REDIRECTS:
+                    raise AuthError("Authentication probe redirect limit exceeded")
+                location = _get_header_ci(probe_response.headers, "Location")
+                if not location:
+                    raise AuthError("Authentication probe redirect is missing Location")
+                try:
+                    current_url = resolve_registry_url(origin, location, response_url)
+                except ValueError:
+                    raise AuthError("Unsafe authentication probe redirect") from None
+            probe = RegistryRequest(
+                method="GET", url=current_url, headers={},
+                timeout=original_request.timeout, allow_redirects=False,
+                response_hook=original_request.response_hook,
+                stream=stream or original_request.response_hook is not None,
+            )
+            redirects += 1
 
 
 class LoggingMiddleware(BaseMiddleware):
@@ -471,11 +594,13 @@ class LoggingMiddleware(BaseMiddleware):
     
     def process_request(self, request: RegistryRequest) -> RegistryRequest:
         """Log the outgoing request."""
+        from regshape.libs._logging import emit_log
+
         if self.logger.isEnabledFor(self.level):
             from regshape.libs.decorators.sanitization import redact_headers
 
-            self.logger.log(
-                self.level,
+            emit_log(
+                self.logger, self.level,
                 f"HTTP Request: {request.method} {request.url}",
                 extra={
                     'method': request.method,
@@ -489,9 +614,11 @@ class LoggingMiddleware(BaseMiddleware):
     
     def process_response(self, request: RegistryRequest, response: RegistryResponse) -> RegistryResponse:
         """Log the incoming response."""
+        from regshape.libs._logging import emit_log
+
         if self.logger.isEnabledFor(self.level):
-            self.logger.log(
-                self.level,
+            emit_log(
+                self.logger, self.level,
                 f"HTTP Response: {response.status_code} for {request.method} {request.url}",
                 extra={
                     'status_code': response.status_code,
@@ -505,7 +632,9 @@ class LoggingMiddleware(BaseMiddleware):
     
     def handle_error(self, request: RegistryRequest, error: Exception) -> RegistryResponse:
         """Log errors that occur during request processing."""
-        self.logger.error(
+        from regshape.libs._logging import emit_log
+
+        emit_log(self.logger, logging.ERROR,
             f"HTTP Error for {request.method} {request.url}: {error}",
             extra={
                 'method': request.method,
@@ -513,7 +642,7 @@ class LoggingMiddleware(BaseMiddleware):
                 'error_type': type(error).__name__,
                 'error_message': str(error)
             },
-            exc_info=True
+            exc_info=True, method="error",
         )
         
         # Re-raise the error after logging
@@ -527,19 +656,29 @@ class RetryMiddleware(BaseMiddleware):
     Uses exponential backoff to avoid overwhelming the server.
     """
     
-    def __init__(self, config: Optional[RetryConfig] = None):
+    def __init__(self, config: Optional[RetryConfig] = None, *, honor_retry_after: bool = False):
         """Initialize retry middleware.
         
         :param config: RetryConfig instance, or None for default settings
+        :param honor_retry_after: Opt-in pooled-download policy for server-requested
+            429/503 delays. Defaults to False to preserve legacy timing behavior.
         """
         self.config = config or RetryConfig()
+        self.honor_retry_after = honor_retry_after
     
     def __call__(self, request: RegistryRequest, next_handler: NextHandler) -> RegistryResponse:
-        """Execute request with retry logic."""
+        """Retry with configured policy, closing discarded streams before backoff.
+
+        A sole cleanup failure propagates rather than becoming another retry.
+        The final successful/exhausted response remains owned by the caller.
+        Opt-in pooled 429/503 delays are parsed after response disposal and never
+        shorten the configured backoff; malformed directives are diagnosed.
+        """
         last_exception = None
         processed_request = request
         
         for attempt in range(self.config.max_retries + 1):
+            closing_for_retry = False
             try:
                 # Process request through parent hooks
                 processed_request = self.process_request(request)
@@ -549,13 +688,29 @@ class RetryMiddleware(BaseMiddleware):
                 
                 # Check if we should retry based on status code
                 if response.status_code in self.config.status_codes and attempt < self.config.max_retries:
-                    self._wait_backoff(attempt)
+                    if response.body is None:
+                        closing_for_retry = True
+                        close_response(response.raw_response)
+                        closing_for_retry = False
+                    retry_after = (
+                        self._retry_after(response)
+                        if self.honor_retry_after and response.status_code in (429, 503)
+                        else None
+                    )
+                    if retry_after is None:
+                        self._wait_backoff(attempt)
+                    else:
+                        self._wait_backoff(attempt, retry_after)
                     continue
                 
                 # Process response and return
-                return self.process_response(processed_request, response)
+                return self._process_response(processed_request, response)
                 
             except self.config.exceptions as exc:
+                if closing_for_retry:
+                    raise
+                if isinstance(processed_request.body, _UploadBody):
+                    processed_request.body.raise_if_failed()
                 last_exception = exc
                 
                 if attempt < self.config.max_retries:
@@ -571,16 +726,62 @@ class RetryMiddleware(BaseMiddleware):
         # Fallback - should never happen
         raise RuntimeError("Retry logic reached unexpected state")
     
-    def _wait_backoff(self, attempt: int) -> None:
-        """Wait for exponential backoff delay."""
+    @staticmethod
+    def _retry_after(response: RegistryResponse) -> float | None:
+        """Parse delay-seconds or an HTTP date after the retry response was disposed.
+
+        Malformed headers emit a sanitized protocol diagnostic and retain normal
+        backoff. Delays above 300 seconds fail explicitly rather than hanging
+        acquisition or retrying sooner than a valid server directive.
+
+        :returns: Nonnegative delay in seconds, or None for missing/malformed input.
+        :raises ValueError: For a delay exceeding the 300-second download limit.
+        """
+        if not any(key.lower() == "retry-after" for key in response.headers):
+            return None
+        value = _get_header_ci(response.headers, "Retry-After").strip()
+        try:
+            if value.isascii() and value.isdecimal():
+                significant = value.lstrip("0") or "0"
+                if len(significant) > 19:
+                    raise OverflowError("Unrepresentable retry delay")
+                delay = float(int(significant))
+            else:
+                date = parsedate_to_datetime(value)
+                if date.tzinfo is None:
+                    date = date.replace(tzinfo=timezone.utc)
+                delay = max(0.0, date.timestamp() - time.time())
+        except (TypeError, ValueError):
+            from regshape.libs._logging import emit_log
+
+            emit_log(logging.getLogger(__name__), logging.WARNING,
+                "Malformed Retry-After on a pooled download; using configured backoff",
+                method="warning",
+            )
+            return None
+        except OverflowError:
+            raise ValueError("Retry-After exceeds the supported download wait") from None
+        if delay > 300:
+            raise ValueError("Retry-After exceeds the supported download wait (300-second limit)")
+        return delay
+
+    def _wait_backoff(self, attempt: int, retry_after: float = 0.0) -> None:
+        """Wait at least the greater of configured backoff and a validated server delay.
+
+        :param attempt: Zero-based retry index.
+        :param retry_after: Nonnegative parsed server delay; zero retains legacy timing.
+        """
         delay = self.config.backoff_factor * (2 ** attempt)
+        if retry_after:
+            delay = max(delay, retry_after)
         time.sleep(delay)
 
 
 class CachingMiddleware(BaseMiddleware):
-    """Middleware that caches GET responses for immutable content.
+    """Middleware that caches buffered GET responses for immutable content.
     
-    Caches responses based on URL, Accept header, and query parameters.
+    Caches responses based on URL, Accept header, query parameters, and
+    redirect policy.
     Suitable for registry manifests and blobs that are content-addressed
     and therefore immutable.
 
@@ -588,6 +789,8 @@ class CachingMiddleware(BaseMiddleware):
     older than *ttl* seconds are treated as stale and transparently
     re-fetched.  When *ttl* is ``None`` (the default) entries never
     expire — appropriate for content-addressed registry objects.
+    Streamed requests bypass cache reads and writes; unbuffered responses are
+    never inserted because their live iterators cannot safely be replayed.
     
     :param max_size: Maximum number of cached responses.
     :param ttl: Time-to-live in seconds for cached entries.  ``None``
@@ -606,9 +809,9 @@ class CachingMiddleware(BaseMiddleware):
         self.ttl = ttl
     
     def __call__(self, request: RegistryRequest, next_handler: NextHandler) -> RegistryResponse:
-        """Execute request with caching logic."""
+        """Reuse buffered responses only; streamed requests keep independent ownership."""
         # Only cache GET requests
-        if request.method != "GET":
+        if request.method != "GET" or request.stream:
             return super().__call__(request, next_handler)
         
         cache_key = self._get_cache_key(request)
@@ -624,7 +827,7 @@ class CachingMiddleware(BaseMiddleware):
         # Execute request
         processed_request = self.process_request(request)
         response = next_handler(processed_request)
-        processed_response = self.process_response(request, response)
+        processed_response = self._process_response(request, response)
         
         # Cache successful responses for immutable content
         if self._should_cache(processed_response):
@@ -636,8 +839,8 @@ class CachingMiddleware(BaseMiddleware):
         """Generate cache key from request.
         
         Includes HTTP method, URL, relevant headers (e.g. Accept),
-        and query parameters (if available) to avoid collisions
-        between requests that can yield different representations.
+        query parameters, and redirect policy to avoid collisions between
+        requests that can yield different representations.
         """
         # Base components
         method = getattr(request, "method", "")
@@ -658,10 +861,13 @@ class CachingMiddleware(BaseMiddleware):
             sorted_items = sorted(params.items())
             params_component = "&".join(f"{k}={v}" for k, v in sorted_items)
 
-        return f"{method}:{url}:accept={accept}:params={params_component}"
+        redirects = getattr(request, "allow_redirects", True)
+        return f"{method}:{url}:accept={accept}:params={params_component}:redirects={redirects}"
     
     def _should_cache(self, response: RegistryResponse) -> bool:
-        """Determine if response should be cached."""
+        """Reject live/unbuffered responses before applying existing cacheability rules."""
+        if response.body is None:
+            return False
         # Cache successful responses
         if not response.ok:
             return False

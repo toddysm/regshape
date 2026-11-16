@@ -63,9 +63,10 @@ def _cred_helper_config(registry: str, helper: str) -> dict:
 
 
 def _make_response(status_code: int, www_auth: str = None, text: str = "{}") -> MagicMock:
-    """Build a mock requests.Response."""
+    """Build a synthetic registry-origin response so auth challenges carry actual issuer metadata."""
     resp = MagicMock(spec=requests.Response)
     resp.status_code = status_code
+    resp.url = f"https://{REGISTRY}/v2/"
     resp.text = text
     resp.content = text.encode("utf-8")
     headers = {}

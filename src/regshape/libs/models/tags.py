@@ -33,9 +33,9 @@ class TagList:
     :param namespace: Repository namespace as returned in the ``"name"`` wire
         field (e.g. ``"myrepo/myimage"``).
     :param tags: Ordered list of tag strings. The OCI spec requires tags to be
-        in lexical ("ASCIIbetical") order; this class preserves the order as
-        received without re-sorting. Normalised from ``null`` to ``[]`` during
-        deserialization.
+        in lexical (case-insensitive alphanumeric) order; this class preserves
+        the order and spelling as received without re-sorting. Normalised
+        from ``null`` to ``[]`` during deserialization.
     """
 
     namespace: str

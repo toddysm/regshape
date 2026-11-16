@@ -1,3 +1,3 @@
 #!/usr/bin/env python3
 
-__all__ = ["constants", "errors", "models"]
+__all__ = ["constants", "errors", "models", "progress"]
