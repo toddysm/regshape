@@ -10,7 +10,9 @@ Click test runner, with domain functions patched at the CLI import path.
 import io
 import json
 import logging
+import os
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -196,6 +198,58 @@ def test_changed_etag_shared_result_sink_failure_is_not_retried(
         ])
     assert failed and result.exception is primary
     assert not after_failure and "Warning:" not in console.err.text
+
+
+@pytest.mark.parametrize("boundary", ["write", "flush"])
+@pytest.mark.parametrize("shared", [False, True])
+def test_changed_etag_result_failure_respects_distinct_stream_destinations(
+    tmp_path: Path, boundary: str, shared: bool,
+) -> None:
+    """Do not retry a broken pipe through another descriptor, but retain healthy stderr."""
+    read_fd, write_fd = os.pipe()
+    with (
+        os.fdopen(read_fd, "rb") as reader,
+        os.fdopen(write_fd, "wb", buffering=0) as raw_output,
+        io.TextIOWrapper(raw_output, write_through=boundary == "write") as output,
+        (
+            io.TextIOWrapper(
+                os.fdopen(os.dup(write_fd), "wb", buffering=0), write_through=True,
+            ) if shared else (tmp_path / "stderr.txt").open("w+", encoding="utf-8")
+        ) as errors,
+    ):
+        reader.close()
+        primary: OSError | None = None
+        try:
+            with (
+                patch("sys.stdout", output),
+                patch("sys.stderr", errors),
+                patch.object(errors, "write", wraps=errors.write) as write,
+                pytest.raises(OSError) as caught,
+                DownloadWarnings() as warnings,
+            ):
+                warnings.observe(DownloadStatus(
+                    "blob", DIGEST, "fallback", "full", "etag_changed", None, 2, DownloadStats(),
+                ))
+                try:
+                    output.write("result")
+                except OSError as error:
+                    primary = error
+                    warnings.result_failed()
+                    raise
+            if primary is not None:
+                assert caught.value is primary
+            writes = [call.args[0] for call in write.call_args_list if call.args[0]]
+            if shared:
+                assert not writes
+                assert caught.value.__cause__ is None
+            else:
+                errors.seek(0)
+                diagnostics = errors.read()
+                assert diagnostics.startswith("Error: Download did not complete")
+                assert diagnostics.count("Warning: ETag changed") == 1
+                assert "verified" not in diagnostics
+        finally:
+            raw_output.close()
 
 
 @pytest.mark.parametrize("mode", ["terminal", "no-progress", "structured", "nonterminal"])

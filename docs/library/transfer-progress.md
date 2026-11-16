@@ -121,7 +121,9 @@ blob addresses rather than parts or reused references. Suppressing progress
 does not suppress these diagnostics; failures never claim verified recovery
 and a failed terminal sink is not reused for warning delivery. Invocation-scoped
 stderr tracking remains active through post-display error reporting and telemetry
-cleanup, including disabled, structured and noninteractive progress.
+cleanup, including disabled, structured and noninteractive progress. Distinct
+stdout/stderr streams referencing the same OS destination are treated as shared.
+Where descriptor identity is unavailable, only object identity establishes sharing.
 
 ## Collect state without printing per-event lines
 

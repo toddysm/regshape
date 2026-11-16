@@ -6,6 +6,7 @@ outside telemetry, progress and result output; it owns neither workers nor sinks
 
 import io
 import logging
+import os
 import sys
 from types import TracebackType
 from typing import IO, Literal, final
@@ -19,6 +20,10 @@ from regshape.cli.progress import (
 )
 from regshape.libs.blobs.download import DownloadStatus
 from regshape.libs.decorators import get_telemetry_config
+
+if sys.platform == "win32":
+    import ctypes
+    import msvcrt
 
 
 class _DownloadOutput(io.TextIOBase, IO[str]):
@@ -109,8 +114,36 @@ class DownloadWarnings:
 
     def result_failed(self) -> None:
         """Do not diagnose through stderr when it aliases a failed final-result destination."""
-        if self._output is not None and (sys.stdout is self._stderr or sys.stdout is sys.stderr):
+        if self._output is not None and self._shares_result_sink():
             self._output.failed = True
+
+    def _shares_result_sink(self) -> bool:
+        """Recognize shared objects or OS destinations without writing to either stream.
+
+        If descriptors or destination identities are unavailable, only object
+        identity can establish sharing; unrelated healthy stderr remains usable.
+        """
+        if sys.stdout is self._stderr or sys.stdout is sys.stderr:
+            return True
+        if self._stderr is None:
+            return False
+        try:
+            output_fd, error_fd = sys.stdout.fileno(), self._stderr.fileno()
+            if output_fd == error_fd:
+                return True
+            if sys.platform == "win32":
+                # Windows pipes have zero stat identities; compare kernel handles instead.
+                compare = getattr(ctypes.WinDLL("kernelbase"), "CompareObjectHandles", None)
+                if compare is not None:
+                    compare.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+                    compare.restype = ctypes.c_int
+                    return bool(compare(
+                        msvcrt.get_osfhandle(output_fd), msvcrt.get_osfhandle(error_fd),
+                    ))
+            output_stat, error_stat = os.fstat(output_fd), os.fstat(error_fd)
+            return output_stat.st_ino != 0 and os.path.samestat(output_stat, error_stat)
+        except (OSError, ValueError):
+            return False
 
     def __exit__(
         self, exc_type: type[BaseException] | None, exc: BaseException | None,
@@ -152,7 +185,7 @@ class DownloadWarnings:
             try:
                 sys.stdout.flush()
             except BaseException as flush_error:
-                if sys.stdout is sys.stderr or sys.stdout is self._stderr:
+                if self._shares_result_sink():
                     raise
                 primary = flush_error
         reported: click.exceptions.Exit | None = None
