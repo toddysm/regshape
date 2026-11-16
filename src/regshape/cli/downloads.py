@@ -142,7 +142,7 @@ class DownloadWarnings:
                     ))
             output_stat, error_stat = os.fstat(output_fd), os.fstat(error_fd)
             return output_stat.st_ino != 0 and os.path.samestat(output_stat, error_stat)
-        except (OSError, ValueError):
+        except (AttributeError, OSError, ValueError):
             return False
 
     def __exit__(

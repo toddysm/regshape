@@ -13,6 +13,7 @@ import logging
 import os
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -123,13 +124,13 @@ def test_changed_etag_warning_follows_result_or_error(
 def test_changed_etag_stdout_flush_failure_does_not_claim_verification(
     error_type: type[BaseException],
 ) -> None:
-    """Final flush faults preserve failure semantics without verified recovery or duplicate aborts."""
+    """Descriptor-less output preserves flush failures without recovery claims or duplicate aborts."""
     output, errors = io.StringIO(), io.StringIO()
     primary = error_type("synthetic stdout flush failure")
     with (
-        patch("sys.stdout", output),
-        patch("sys.stderr", errors),
         patch.object(output, "flush", side_effect=primary),
+        patch("sys.stdout", SimpleNamespace(write=output.write, flush=output.flush)),
+        patch("sys.stderr", errors),
         pytest.raises(OSError if error_type is OSError else click.exceptions.Exit) as caught,
         DownloadWarnings() as warnings,
     ):
