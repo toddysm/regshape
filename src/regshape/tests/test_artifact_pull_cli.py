@@ -39,6 +39,7 @@ from regshape.libs.artifacts import (
 from regshape.libs.artifacts.graph import OCI_INDEX, OCI_MANIFEST
 from regshape.libs.artifacts.native import NativeFilesystem
 from regshape.libs.artifacts.storage import SafeDirectory, SafeFile
+from regshape.libs.blobs import DownloadStats, DownloadStatus
 from regshape.libs.errors import ArtifactError
 from regshape.libs.transport import RegistryClient, TransportConfig
 from regshape.tests.artifact_fixtures import (
@@ -875,6 +876,99 @@ def test_artifact_attempt_restart_has_no_stale_rate_or_double_completion() -> No
         assert len(display._finished) == 1
     assert len([row for row in terminal.rows if row]) == 1
     assert "Downloaded 100 B/100 B" in terminal.rows[-2]
+
+
+@_NATIVE
+@pytest.mark.parametrize(("mode", "outcome"), [
+    (mode, outcome) for mode in ("terminal", "no-progress", "json", "nonterminal")
+    for outcome in ("success", "failure")
+] + [("terminal", "failed-sink")])
+def test_changed_etag_artifact_warning_is_coalesced_after_cleanup_and_output(
+    runner: CliRunner, tmp_path: Path, mode: str, outcome: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fixed status fixtures exercise deferred command warnings, not the pending ranged engine."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    root, objects = _graph("simple", "sha256")
+    console = ArtifactConsole(shared=False, interactive=mode != "nonterminal")
+    registry = ObjectRegistry(root, objects)
+    digests = [digest for digest in objects if digest != address(root)]
+    output = tmp_path / "out"
+    primary = OSError("synthetic progress sink failure")
+    if outcome == "failed-sink" and mode == "terminal":
+        console.err.failure = primary
+        console.err.failure_when = lambda text: "Downloading" in text
+    stdout_flushes: list[str] = []
+    original_flush, original_write = console.out.flush, console.err.write
+
+    def receive(*args: Any, download_status_callback: Any, **kwargs: Any) -> Any:
+        """Inject repeated valid reasons around real verification/publication and resource cleanup."""
+        for digest in [*digests, digests[0]]:
+            download_status_callback(DownloadStatus(
+                digest, digest, "fallback", "full", "etag_changed", None, 2, DownloadStats(),
+            ))
+        assert "ETag changed" not in console.err.text
+        result = pull_artifact(
+            *args, **kwargs, download_status_callback=download_status_callback,
+        )
+        for digest in digests:
+            download_status_callback(DownloadStatus(
+                digest, digest, "completed", "full", "etag_changed", None, 2, DownloadStats(),
+            ))
+        assert "ETag changed" not in console.err.text
+        if outcome == "failure":
+            raise ArtifactError("synthetic post-publication failure")
+        return result
+
+    def flush() -> None:
+        """Record successful stdout flushes, not a result writer merely returning."""
+        original_flush()
+        if console.out.text:
+            stdout_flushes.append(console.out.text)
+
+    def write(text: str) -> int:
+        """Require complete command/telemetry cleanup and successful-output flush before warning."""
+        if "Warning: ETag changed" in text:
+            display = console.displays[0]
+            assert not display._active
+            assert display.config.log_file is not None and display.config.log_file.closed
+            if outcome == "success":
+                assert stdout_flushes and output.exists()
+            else:
+                assert "Error [" in console.err.text
+        return original_write(text)
+
+    with (
+        patch("regshape.cli.artifact.pull_artifact", side_effect=receive),
+        patch.object(console.out, "flush", side_effect=flush),
+        patch.object(console.err, "write", side_effect=write),
+    ):
+        result, _ = _invoke(
+            runner, console, registry, output,
+            ["--json"] if mode == "json" else ["--no-progress"] if mode == "no-progress" else [],
+            global_options=["--log-file", str(tmp_path / "telemetry.log")],
+        )
+    if outcome == "failed-sink":
+        assert result.exception is primary
+        assert "Warning: ETag" not in console.err.text and not console.out.text
+        return
+    assert console.err.text.count("Warning: ETag changed") == 1
+    assert "ETag changed for 2 blobs;" in console.err.text
+    assert "\x1b" not in console.out.text and "ETag" not in console.out.text
+    if outcome == "success":
+        assert result.exit_code == 0, result.exception
+        assert console.err.text.endswith(
+            "Warning: ETag changed for 2 blobs; restarted them as full-stream downloads "
+            "and verified their digests.\n"
+        )
+        if mode == "json":
+            assert json.loads(console.out.text)["blobs"] == 2
+    else:
+        assert result.exit_code == 1 and not console.out.text
+        assert "verified their digests" not in console.err.text
+        assert console.err.text.endswith(
+            "Warning: ETag changed for 2 blobs; full-stream fallbacks were attempted, "
+            "but the operation did not complete.\n"
+        )
 
 
 @_NATIVE

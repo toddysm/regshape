@@ -7,17 +7,22 @@ Exercises blob head, get, delete, upload, and mount subcommands through the
 Click test runner, with domain functions patched at the CLI import path.
 """
 
+import io
 import json
+from collections.abc import Callable
+from typing import Any
+from unittest.mock import patch
 
 import pytest
 import requests
 from click.testing import CliRunner
-from unittest.mock import patch
 
+from regshape.cli.downloads import DownloadWarnings
 from regshape.cli.main import regshape
+from regshape.cli.progress import ProgressDisplay
+from regshape.libs.blobs import DownloadStats, DownloadStatus
 from regshape.libs.errors import AuthError, BlobError
 from regshape.libs.models.blob import BlobInfo
-
 
 # ---------------------------------------------------------------------------
 # Shared constants
@@ -31,6 +36,123 @@ CONTENT_TYPE = "application/vnd.oci.image.layer.v1.tar+gzip"
 SIZE = 4_194_304
 
 _BLOB_INFO = BlobInfo(digest=DIGEST, content_type=CONTENT_TYPE, size=SIZE)
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "cancel", "observer"])
+@pytest.mark.parametrize("no_progress", [False, True])
+def test_changed_etag_warning_follows_result_or_error(
+    outcome: str, no_progress: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Defer one fixed warning beyond cleanup/output, even with no progress and NO_COLOR."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    primary = RuntimeError("synthetic observer fault")
+    status = DownloadStatus(
+        "blob", DIGEST, "fallback", "full", "etag_changed", None, 2,
+        DownloadStats(), scratch_root="https://invalid.example/private?token=synthetic",
+    )
+    order: list[str] = []
+    original_close = ProgressDisplay.__exit__
+    original_message = DownloadWarnings._message
+
+    def download(
+        *, download_status_callback: Callable[[DownloadStatus], None], **kwargs: Any,
+    ) -> BlobInfo:
+        """Deliver repeated fallback/final reasons without implementing the separate range engine."""
+        download_status_callback(status)
+        download_status_callback(status)
+        assert order == []
+        order.append("workers-cleaned")
+        if outcome == "failure":
+            raise BlobError("synthetic download failure")
+        if outcome == "cancel":
+            raise KeyboardInterrupt
+        if outcome == "observer":
+            raise primary
+        download_status_callback(DownloadStatus(
+            "blob", DIGEST, "completed", "full", "etag_changed", None, 2, DownloadStats(),
+        ))
+        return _BLOB_INFO
+
+    def close(display: ProgressDisplay, *args: Any) -> bool:
+        """Record the real display cleanup completing before deferred warning formatting."""
+        result = original_close(display, *args)
+        order.append("progress-closed")
+        return result
+
+    def message(warnings: DownloadWarnings, *, success: bool) -> str:
+        """Require worker/display cleanup before generating the fixed final warning."""
+        assert order == ["workers-cleaned", "progress-closed"]
+        order.append("warning")
+        return original_message(warnings, success=success)
+
+    with (
+        patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
+        patch("regshape.cli.blob.get_blob", side_effect=download),
+        patch.object(ProgressDisplay, "__exit__", autospec=True, side_effect=close),
+        patch.object(DownloadWarnings, "_message", autospec=True, side_effect=message),
+    ):
+        result = _runner().invoke(regshape, [
+            "blob", "get", "--repo", REPO, "--digest", DIGEST,
+            *(["--no-progress"] if no_progress else []),
+        ])
+    assert order == ["workers-cleaned", "progress-closed", "warning"]
+    assert result.stderr.count("Warning: ETag changed") == 1
+    assert "private" not in result.stderr and "\x1b" not in result.stderr
+    if outcome == "success":
+        assert result.exit_code == 0 and json.loads(result.stdout) == _BLOB_INFO.to_dict()
+        assert result.stderr == (
+            f"Warning: ETag changed during ranged download of {DIGEST}; restarted "
+            "as a full-stream download and verified the digest.\n"
+        )
+    else:
+        assert result.exit_code == 1 and not result.stdout
+        assert "verified" not in result.stderr
+        before = result.stderr.index("Warning:")
+        assert ("Aborted!" if outcome == "cancel" else "Error") in result.stderr[:before]
+        if outcome == "observer":
+            assert result.exception is primary
+
+
+def test_changed_etag_stdout_flush_failure_does_not_claim_verification() -> None:
+    """A final stdout flush failure stays primary and permits only failed-operation wording."""
+    output, errors = io.StringIO(), io.StringIO()
+    primary = OSError("synthetic stdout flush failure")
+    with (
+        patch("sys.stdout", output),
+        patch("sys.stderr", errors),
+        patch.object(output, "flush", side_effect=primary),
+        pytest.raises(OSError) as caught,
+        DownloadWarnings() as warnings,
+    ):
+        warnings.observe(DownloadStatus(
+            "blob", DIGEST, "fallback", "full", "etag_changed", None, 2, DownloadStats(),
+        ))
+    assert caught.value is primary
+    assert errors.getvalue().startswith("Error: Download did not complete (OSError).\n")
+    assert errors.getvalue().count("Warning: ETag changed") == 1
+    assert "verified" not in errors.getvalue()
+
+
+@pytest.mark.parametrize("operation_failed", [False, True])
+def test_changed_etag_warning_sink_failure_preserves_the_primary(operation_failed: bool) -> None:
+    """Never retry a failed warning/diagnostic sink or replace an existing operation failure."""
+    output, errors = io.StringIO(), io.StringIO()
+    primary = RuntimeError("synthetic download failure")
+    sink_failure = OSError("synthetic warning sink failure")
+    with (
+        patch("sys.stdout", output),
+        patch("sys.stderr", errors),
+        patch.object(errors, "write", side_effect=sink_failure) as write,
+        pytest.raises(RuntimeError if operation_failed else OSError) as caught,
+        DownloadWarnings() as warnings,
+    ):
+        warnings.observe(DownloadStatus(
+            "blob", DIGEST, "fallback", "full", "etag_changed", None, 2, DownloadStats(),
+        ))
+        if operation_failed:
+            raise primary
+    assert caught.value is (primary if operation_failed else sink_failure)
+    assert sum(bool(call.args[0]) for call in write.call_args_list) == 1
 
 
 def _runner():

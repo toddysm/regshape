@@ -156,7 +156,12 @@ pre-payload retries by default. A failure after a file/hash prefix commits is
 not replayed. `--chunk-size` remains an I/O buffer size, not an HTTP range size.
 The [batch/status APIs](../../docs/library/downloads.md#public-batch-downloads)
 are library-only additions; this command's options and stdout JSON are unchanged.
-Range flags and typed-status rendering are separate follow-up work.
+The command collects typed status independently of animation and emits any
+changed-ETag warning only after cleanup and the flushed JSON result. Failure
+warnings do not claim verification; failed renderer sinks retain their original
+exception rather than being reused for formatted errors/warnings. Range requests
+and range flags remain separate follow-up work; the current full-stream engine
+does not generate changed-ETag fallback events.
 
 #### Exit Codes
 
