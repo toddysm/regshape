@@ -1,16 +1,19 @@
 # OCI Image Spec Reference
 
-Quick reference for the OCI Image Format Specification v1.1.0 relevant to RegShape.
+Quick reference for the OCI Image Format Specification at upstream revision
+[`af26a05fba5ee648512f4ea3c9fda1fcc1b6d6dc`](https://github.com/opencontainers/image-spec/tree/af26a05fba5ee648512f4ea3c9fda1fcc1b6d6dc)
+(2026-07-09), relevant to RegShape. This is a development snapshot, not the v1.1.0 release.
 
 This reference complements [oci-distribution-spec.md](oci-distribution-spec.md): the
 distribution spec describes how content moves over the wire (endpoints, uploads,
 auth), while the image spec describes the *content itself* — descriptors, image
 manifests, image indexes, image configuration, and filesystem layers.
 
-This is a condensed summary. The full upstream OCI Image Format Specification is
+This is a condensed summary. The upstream OCI Image Format Specification documents are
 saved locally under [oci-image-spec-source/](oci-image-spec-source/) (mirrored from
-<https://github.com/opencontainers/image-spec>). Consult these files for authoritative,
-normative detail:
+the pinned revision above). The mirror includes the upstream Apache-2.0
+[LICENSE](oci-image-spec-source/LICENSE) and referenced diagrams.
+Consult these files for authoritative, normative detail:
 
 - [spec.md](oci-image-spec-source/spec.md) — top-level overview
 - [descriptor.md](oci-image-spec-source/descriptor.md) — content descriptors
@@ -97,9 +100,12 @@ image index. `data` allows small content to be embedded inline (must match `dige
 
 - `layers` are ordered from base (first) to top (last); this order is applied when
    building the rootfs.
-- `config.mediaType` determines whether this is a runnable image or a generic
-   artifact. For artifacts, set `artifactType` and use `application/vnd.oci.empty.v1+json`
-   as the config.
+- Runnable images use `application/vnd.oci.image.config.v1+json` for `config.mediaType`.
+   Artifacts with configuration metadata may use an artifact-specific config blob
+   and media type. For artifacts without configuration metadata, use the empty
+   `application/vnd.oci.empty.v1+json` config descriptor and set `artifactType`
+   (required when using the empty config media type). See
+   [Guidelines for Artifact Usage](oci-image-spec-source/manifest.md#guidelines-for-artifact-usage).
 - `subject` links this manifest to another manifest for the referrers API.
 
 ## Image Index
@@ -116,12 +122,13 @@ image index. `data` allows small content to be embedded inline (must match `dige
           "platform": { "architecture": "amd64", "os": "linux" }
         }
       ],
-      "subject": {},
       "annotations": {}
     }
 
 Each entry SHOULD carry a `platform` object so clients can select the right manifest.
 Optional platform fields: `os.version`, `os.features`, `variant` (e.g. `v7` for arm).
+An optional `subject` must be a descriptor with `mediaType`, `digest`, and `size`,
+as in the image manifest example above.
 
 ## Image Configuration
 
@@ -181,7 +188,12 @@ is taken over the __uncompressed__ tar.
 
 ## Digests and Verification
 
-- Digests use the form `<algorithm>:<hex>`, e.g. `sha256:...` (sha512 also allowed).
+- Digests use the general form `<algorithm>:<encoded>`; the algorithm defines the
+   encoding. SHA-256 and SHA-512 require lowercase hexadecimal encoding (64 and
+   128 characters, respectively). Other algorithms may use non-hexadecimal
+   encodings; see [Digests](oci-image-spec-source/descriptor.md#digests).
+- SHA-256 verification is required; SHA-512 and BLAKE3 verification are optional
+   in this pinned specification snapshot.
 - A blob is valid only if its computed digest matches the descriptor `digest` AND its
    byte length matches `size`.
 - The manifest digest is computed over the exact serialized manifest bytes; do not

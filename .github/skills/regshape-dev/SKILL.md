@@ -19,7 +19,8 @@ The recommended workflow is **spec → implement → test → document**, but an
 2. Read [references/spec-templates.md](references/spec-templates.md) for the spec template to use
 3. Read [references/project-conventions.md](references/project-conventions.md) for naming and structure patterns
 
-4. Create the spec as a Markdown file in `/specs/<domain>/<feature>.md`5. Present the spec to the user for review before proceeding
+4. Create the spec as a Markdown file in `/specs/<domain>/<feature>.md`
+5. Present the spec to the user for review before proceeding
 
 ### Phase 2: Implement
 
@@ -64,8 +65,8 @@ The recommended workflow is **spec → implement → test → document**, but an
 | Referrers | `libs/referrers/` | `specs/registry/referrers.md` | `docs/library/referrers.md` |
 | Catalog | `libs/catalog/` | `specs/registry/catalog.md` | `docs/library/catalog.md` |
 | Break Mode | `libs/breakmode/` | `specs/breakmode/` | `docs/guides/break-mode.md` |
-
-| CLI | `cli/` | `specs/cli/` | `docs/cli/` || Models | `libs/models/` | `specs/models/` | `docs/library/models.md` |
+| CLI | `cli/` | `specs/cli/` | `docs/cli/` |
+| Models | `libs/models/` | `specs/models/` | `docs/library/models.md` |
 
 ## GitHub Issue Management
 
