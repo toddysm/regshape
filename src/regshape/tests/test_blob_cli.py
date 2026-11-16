@@ -9,10 +9,12 @@ Click test runner, with domain functions patched at the CLI import path.
 
 import io
 import json
+import logging
 from collections.abc import Callable
 from typing import Any
 from unittest.mock import patch
 
+import click
 import pytest
 import requests
 from click.testing import CliRunner
@@ -23,6 +25,7 @@ from regshape.cli.progress import ProgressDisplay
 from regshape.libs.blobs import DownloadStats, DownloadStatus
 from regshape.libs.errors import AuthError, BlobError
 from regshape.libs.models.blob import BlobInfo
+from regshape.tests.test_artifact_options import runner as runner  # noqa: PLC0414 - minimum Click fixture
 
 # ---------------------------------------------------------------------------
 # Shared constants
@@ -41,7 +44,7 @@ _BLOB_INFO = BlobInfo(digest=DIGEST, content_type=CONTENT_TYPE, size=SIZE)
 @pytest.mark.parametrize("outcome", ["success", "failure", "cancel", "observer"])
 @pytest.mark.parametrize("no_progress", [False, True])
 def test_changed_etag_warning_follows_result_or_error(
-    outcome: str, no_progress: bool, monkeypatch: pytest.MonkeyPatch,
+    runner: CliRunner, outcome: str, no_progress: bool, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Defer one fixed warning beyond cleanup/output, even with no progress and NO_COLOR."""
     monkeypatch.setenv("NO_COLOR", "1")
@@ -91,7 +94,7 @@ def test_changed_etag_warning_follows_result_or_error(
         patch.object(ProgressDisplay, "__exit__", autospec=True, side_effect=close),
         patch.object(DownloadWarnings, "_message", autospec=True, side_effect=message),
     ):
-        result = _runner().invoke(regshape, [
+        result = runner.invoke(regshape, [
             "blob", "get", "--repo", REPO, "--digest", DIGEST,
             *(["--no-progress"] if no_progress else []),
         ])
@@ -133,25 +136,44 @@ def test_changed_etag_stdout_flush_failure_does_not_claim_verification() -> None
     assert "verified" not in errors.getvalue()
 
 
-@pytest.mark.parametrize("operation_failed", [False, True])
-def test_changed_etag_warning_sink_failure_preserves_the_primary(operation_failed: bool) -> None:
+@pytest.mark.parametrize("outcome", ["success", "failure", "cancel", "click"])
+@pytest.mark.parametrize("log_route", ["handler", "last-resort"])
+def test_changed_etag_warning_sink_failure_preserves_the_primary(
+    outcome: str, log_route: str,
+) -> None:
     """Never retry a failed warning/diagnostic sink or replace an existing operation failure."""
     output, errors = io.StringIO(), io.StringIO()
-    primary = RuntimeError("synthetic download failure")
+    primary = (
+        KeyboardInterrupt() if outcome == "cancel"
+        else click.ClickException("synthetic download failure") if outcome == "click"
+        else RuntimeError("synthetic download failure")
+    )
     sink_failure = OSError("synthetic warning sink failure")
+    handler = logging.StreamHandler(errors)
+    expected = (
+        click.exceptions.Exit if outcome in ("cancel", "click")
+        else RuntimeError if outcome == "failure" else OSError
+    )
     with (
         patch("sys.stdout", output),
         patch("sys.stderr", errors),
+        patch.object(logging.getLogger(), "handlers", [handler] if log_route == "handler" else []),
+        patch("logging.lastResort", handler),
         patch.object(errors, "write", side_effect=sink_failure) as write,
-        pytest.raises(RuntimeError if operation_failed else OSError) as caught,
+        pytest.raises(expected) as caught,
         DownloadWarnings() as warnings,
     ):
         warnings.observe(DownloadStatus(
             "blob", DIGEST, "fallback", "full", "etag_changed", None, 2, DownloadStats(),
         ))
-        if operation_failed:
+        if outcome != "success":
             raise primary
-    assert caught.value is (primary if operation_failed else sink_failure)
+    if outcome in ("cancel", "click"):
+        assert caught.value.exit_code == 1
+    else:
+        assert caught.value is (primary if outcome == "failure" else sink_failure)
+    if outcome != "success":
+        assert caught.value.__cause__ is sink_failure
     assert sum(bool(call.args[0]) for call in write.call_args_list) == 1
 
 

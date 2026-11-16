@@ -100,6 +100,9 @@ ordinals across byte updates and attempts. Range producers must deliver the
 parent object's absolute accepted count, not per-part deltas or extra rows.
 An increased attempt resets that object's count/rate without resetting another
 object; observations from an older attempt are ignored.
+Unknown artifact kinds temporarily reserve their ordinal across kind groups,
+so discovery preserves both the number and rate clock. Interleaving during
+discovery can leave gaps in a kind's numbering rather than renumbering live rows.
 
 Only verified `COMPLETED`/`stored`, `SKIPPED`, `FAILED` or `CANCELLED` events
 finalize object rows. Standalone manifest `RECEIVED` still requires explicit

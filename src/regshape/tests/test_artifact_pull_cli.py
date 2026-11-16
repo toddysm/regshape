@@ -318,6 +318,43 @@ def test_normalized_rows_upgrade_identity_rate_and_throttle(known: bool) -> None
     assert not any("Manifest 1" in row for row in terminal.rows)
 
 
+@pytest.mark.parametrize("kind", ["manifest", "index"])
+@pytest.mark.parametrize("known_first", [False, True])
+def test_interleaved_kind_discovery_preserves_unique_ordinals_and_rates(
+    kind: str, known_first: bool,
+) -> None:
+    """Reserve unknown-kind ordinals without renumbering either live object or resetting its clock."""
+    terminal, now = Frames(), [0.0]
+    root = _observation(phase="transferring", count=10, total=100)
+    other = _observation(
+        identity="other", kind=kind, phase="transferring",
+        digest=address(b"other"), count=20, total=100,
+    )
+    root_index, other_index = (2, 1) if known_first else (1, 2)
+    with ProgressDisplay(stream=terminal, columns=lambda: 200, clock=lambda: now[0]) as display:
+        for event in (other, root) if known_first else (root, other):
+            display.observe(event)
+        assert any(row.startswith(f"Manifest {root_index} ") for row in terminal.rows)
+        assert any(row.startswith(f"{kind.title()} {other_index} ") for row in terminal.rows)
+        now[0] = 1
+        root = replace(root, kind=kind, digest=address(b"root"), bytes_completed=50)
+        display.observe(root)
+        root_row = next(row for row in terminal.rows if row.startswith(f"{kind.title()} {root_index} "))
+        assert "50 B/s" in root_row
+        assert any(
+            row.startswith(f"{kind.title()} {other_index} ") and "20 B/s" in row
+            for row in terminal.rows
+        )
+        for event in (other, root):
+            display.observe(replace(event, phase="stored", bytes_completed=100))
+        display.observe(_observation(
+            identity="last", kind=kind, phase="stored", digest=address(b"last"), count=100, total=100,
+        ))
+    rows = [row for row in terminal.rows if row]
+    assert len(rows) == 3 and all("Downloaded" in row for row in rows)
+    assert {row.split()[1] for row in rows} == {"1", "2", "3"}
+
+
 @pytest.mark.parametrize("source", ["embedded", "local"])
 def test_local_source_has_no_network_percentage_or_rate(source: str) -> None:
     """The normalized adapter distinguishes local storage even for caller-supplied transferring states."""

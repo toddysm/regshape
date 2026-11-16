@@ -11,7 +11,6 @@ from typing import Literal, final
 import click
 
 from regshape.cli.progress import ProgressDisplay
-from regshape.libs._http import report_secondary_failure
 from regshape.libs.blobs.download import DownloadStatus
 
 
@@ -50,6 +49,7 @@ class DownloadWarnings:
         For an affected invocation, report them here once before the warning and
         retain their exit codes. Unexpected errors propagate unchanged; only their
         type is reported here, never a potentially sensitive exception message.
+        Secondary sink errors are chained without logging back to the failed sink.
         """
         if not self._affected or (self.display is not None and self.display.sink_failed):
             return False
@@ -64,18 +64,20 @@ class DownloadWarnings:
         reported: click.exceptions.Exit | None = None
         try:
             if isinstance(primary, (KeyboardInterrupt, EOFError, click.Abort)):
-                click.echo("\nAborted!", err=True)
                 reported = click.exceptions.Exit(1)
+                click.echo("\nAborted!", err=True)
             elif isinstance(primary, click.ClickException):
-                primary.show()
                 reported = click.exceptions.Exit(primary.exit_code)
+                primary.show()
             elif primary is not None and not isinstance(primary, (SystemExit, click.exceptions.Exit)):
                 click.echo(f"Error: Download did not complete ({type(primary).__name__}).", err=True)
             click.echo(self._message(success=primary is None), err=True, color=False)
         except BaseException as warning_error:
             if primary is None:
                 raise
-            report_secondary_failure(primary, warning_error, "Deferred download warning")
+            if reported is not None:
+                raise reported from warning_error
+            raise primary from warning_error
         if exc is None and primary is not None:
             raise primary
         if reported is not None:

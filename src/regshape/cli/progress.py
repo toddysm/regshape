@@ -507,9 +507,10 @@ class ProgressDisplay:
     def _observe_row(self, event: _Row) -> None:
         """Replace one absolute object snapshot without touching other active attempts.
 
-        Unknown-root numbering never consumes a real manifest/index ordinal.
-        The existing row key survives that reclassification. Range aggregation
-        belongs to the coordinator; adding absolute snapshots would double count.
+        Unknown artifact kinds reserve their ordinal across kind groups until
+        discovery, so neither identity nor number changes on reclassification.
+        Range aggregation belongs to the coordinator; adding absolute snapshots
+        would double count.
         """
         if event.key in self._finished:
             return
@@ -520,13 +521,28 @@ class ProgressDisplay:
             previous.phase in _TERMINAL or event.attempt < previous.attempt
         ):
             return
-        if event.key not in self._indices or (
-            previous is not None and event.key[0] == "artifact" and previous.kind != event.kind
-        ):
+        if event.key not in self._indices:
             group = f"artifact:{event.kind}" if event.key[0] == "artifact" else event.key[0]
-            self._row_counts[group] = self._row_counts.get(group, 0) + 1
-            self._indices[event.key] = self._row_counts[group]
+            index = self._row_counts.get(group, 0) + 1
+            if event.key[0] == "artifact":
+                if event.kind == "unknown":
+                    index = max(
+                        (count for name, count in self._row_counts.items() if name.startswith("artifact:")),
+                        default=0,
+                    ) + 1
+                else:
+                    reserved = {
+                        self._indices[key] for key, row in self._active.items()
+                        if key[0] == "artifact" and row.kind == "unknown"
+                    }
+                    while index in reserved:
+                        index += 1
+            self._row_counts[group] = index
+            self._indices[event.key] = index
             self._starts[event.key] = None
+        elif previous is not None and event.key[0] == "artifact" and previous.kind != event.kind:
+            group = f"artifact:{event.kind}"
+            self._row_counts[group] = max(self._row_counts.get(group, 0), self._indices[event.key])
         if event.phase == TransferPhase.TRANSFERRING and self._starts.get(event.key) is None:
             self._starts[event.key] = self.clock()
         if previous is not None and previous.attempt != event.attempt:

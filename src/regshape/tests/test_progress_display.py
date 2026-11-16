@@ -38,6 +38,7 @@ from regshape.libs.progress import (
 )
 from regshape.libs.transport import RegistryClient, TransportConfig
 from regshape.tests.artifact_fixtures import StreamResponse
+from regshape.tests.test_artifact_options import runner as runner  # noqa: PLC0414 - minimum Click fixture
 
 DIGEST = "sha256:" + "a" * 64
 
@@ -363,7 +364,7 @@ def test_final_newline_flush_failure_overwrites_original_row(
 @pytest.mark.parametrize("error_type", [OSError, KeyboardInterrupt, SystemExit])
 @pytest.mark.parametrize("failure_point", ["label", "label-flush", "newline-flush"])
 def test_nested_upload_telemetry_cannot_finalize_failed_success(
-    tmp_path: Path, chunked: bool, error_type: type[BaseException], failure_point: str,
+    runner: CliRunner, tmp_path: Path, chunked: bool, error_type: type[BaseException], failure_point: str,
 ) -> None:
     """Real command/library scenario finalizers must not redraw a failed completion as success."""
     data = b"abcdef"
@@ -428,7 +429,7 @@ def test_nested_upload_telemetry_cannot_finalize_failed_success(
         patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
         patch("regshape.libs.decorators.call_details.requests.request", side_effect=respond),
     ):
-        result = CliRunner().invoke(regshape, args)
+        result = runner.invoke(regshape, args)
     assert result.exit_code != 0 and result.stdout == "" and failed
     rows = [r for r in terminal.rows if r.startswith("Blob")]
     assert len(rows) == 1 and "Uploaded" not in rows[0]
@@ -833,7 +834,7 @@ def test_preparation_label_cannot_inject_terminal_controls() -> None:
 ])
 @pytest.mark.parametrize("mode", ["tty", "disabled", "structured"])
 def test_blob_upload_real_library_consumption(
-    upload_source: Path, chunked: bool, source_kind: str, mode: str,
+    runner: CliRunner, upload_source: Path, chunked: bool, source_kind: str, mode: str,
 ) -> None:
     """Both real upload protocols produce intermediate observations through command wiring."""
     data = b"" if source_kind == "empty" else b"abcdef"
@@ -909,7 +910,7 @@ def test_blob_upload_real_library_consumption(
         patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
         patch("regshape.libs.decorators.call_details.requests.request", side_effect=respond),
     ):
-        result = CliRunner().invoke(regshape, args)
+        result = runner.invoke(regshape, args)
     assert result.exit_code == 0, result.output
     assert b"".join(payloads) == data
     assert json.loads(result.stdout)["digest"] == digest
@@ -933,7 +934,9 @@ def test_blob_upload_real_library_consumption(
 
 @pytest.mark.parametrize("chunked", [False, True])
 @pytest.mark.parametrize("disabled", [False, True])
-def test_blob_upload_stream_wiring_preserves_json(tmp_path: Path, chunked: bool, disabled: bool) -> None:
+def test_blob_upload_stream_wiring_preserves_json(
+    runner: CliRunner, tmp_path: Path, chunked: bool, disabled: bool,
+) -> None:
     """The CLI selects the matching file-backed protocol and passes a real observer."""
     path = tmp_path / "blob"
     path.write_bytes(b"abcdef")
@@ -957,7 +960,7 @@ def test_blob_upload_stream_wiring_preserves_json(tmp_path: Path, chunked: bool,
         patch("regshape.cli.blob.RegistryClient"),
         patch("regshape.cli.blob." + name, side_effect=upload),
     ):
-        result = CliRunner().invoke(regshape, args)
+        result = runner.invoke(regshape, args)
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["size"] == 6 and len(seen) == 2
     assert result.stderr == ""
@@ -993,7 +996,7 @@ def test_size_probe_unsupported_seek_and_io_errors(
 
 
 @pytest.mark.parametrize("disabled", [False, True])
-def test_blob_download_real_library_wiring(disabled: bool) -> None:
+def test_blob_download_real_library_wiring(runner: CliRunner, disabled: bool) -> None:
     """Exercise the pooled bounded receiver with a real urllib3 stream, without sockets."""
     from regshape.tests.artifact_fixtures import StreamResponse
 
@@ -1015,7 +1018,7 @@ def test_blob_download_real_library_wiring(disabled: bool) -> None:
         patch("regshape.libs.decorators.call_details.requests.request", return_value=response) as http,
         patch("requests.Session.request", side_effect=http),
     ):
-        result = CliRunner().invoke(regshape, args)
+        result = runner.invoke(regshape, args)
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["digest"] == digest
     assert result.stderr == "" and http.call_count == 1
