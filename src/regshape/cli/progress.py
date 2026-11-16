@@ -33,6 +33,47 @@ from regshape.libs.progress import (
 logger = logging.getLogger(__name__)
 
 
+def _redirect_stderr_handlers(
+    source: IO[str], destination: IO[str],
+    saved: list[tuple[logging.StreamHandler, IO[str]]], *,
+    include_last_resort: bool = False,
+) -> None:
+    """Borrow matching handlers, recording ownership before any assignment can fail.
+
+    An invocation guard may include a static last-resort handler after rebinding
+    sys.stderr; Python's dynamic fallback already follows that rebinding.
+    """
+    loggers = [logging.getLogger()] + [
+        item for item in list(logging.Logger.manager.loggerDict.values())
+        if isinstance(item, logging.Logger)
+    ]
+    handlers = [handler for item in loggers for handler in list(item.handlers)]
+    if include_last_resort and logging.lastResort is not None:
+        handlers.append(logging.lastResort)
+    for handler in handlers:
+        if isinstance(handler, logging.StreamHandler) and handler.stream is source:
+            handler.acquire()
+            try:
+                saved.append((handler, handler.stream))
+                handler.stream = destination
+            finally:
+                handler.release()
+
+
+def _restore_stderr_handlers(
+    destination: IO[str], saved: list[tuple[logging.StreamHandler, IO[str]]],
+) -> None:
+    """Restore only handlers still bound to the borrowed destination, without flushing."""
+    for handler, stream in reversed(saved):
+        handler.acquire()
+        try:
+            if handler.stream is destination:
+                handler.stream = stream
+        finally:
+            handler.release()
+    saved.clear()
+
+
 class _ManifestStage(Enum):
     """CLI-only stages after receipt; library receipt alone never means command success."""
 
@@ -349,19 +390,7 @@ class ProgressDisplay:
 
     def _redirect_logging(self) -> None:
         """Route handlers bound to this exact terminal through the shared diagnostic writer."""
-        loggers = [logging.getLogger()] + [
-            item for item in list(logging.Logger.manager.loggerDict.values())
-            if isinstance(item, logging.Logger)
-        ]
-        for item in loggers:
-            for handler in list(item.handlers):
-                if isinstance(handler, logging.StreamHandler) and handler.stream is self.stream:
-                    handler.acquire()
-                    try:
-                        self._log_streams.append((handler, handler.stream))
-                        handler.stream = self._proxy
-                    finally:
-                        handler.release()
+        _redirect_stderr_handlers(self.stream, self._proxy, self._log_streams)
         fallback = logging.lastResort
         if isinstance(fallback, logging.StreamHandler) and fallback.stream is self.stream:
             self._old_last_resort = fallback
@@ -378,14 +407,7 @@ class ProgressDisplay:
         """Restore only destinations still owned by this display, without fallible I/O."""
         if self.config.output is self._proxy:
             self.config.output = self._old_output
-        for handler, stream in reversed(self._log_streams):
-            handler.acquire()
-            try:
-                if handler.stream is self._proxy:
-                    handler.stream = stream
-            finally:
-                handler.release()
-        self._log_streams.clear()
+        _restore_stderr_handlers(self._proxy, self._log_streams)
         if self._last_resort_proxy is not None:
             if logging.lastResort is self._last_resort_proxy:
                 logging.lastResort = self._old_last_resort

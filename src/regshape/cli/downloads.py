@@ -4,14 +4,68 @@ The collector never prints from a status callback. Commands place this scope
 outside telemetry, progress and result output; it owns neither workers nor sinks.
 """
 
+import io
+import logging
 import sys
 from types import TracebackType
-from typing import Literal, final
+from typing import IO, Literal, final
 
 import click
 
-from regshape.cli.progress import ProgressDisplay
+from regshape.cli.progress import (
+    ProgressDisplay,
+    _redirect_stderr_handlers,
+    _restore_stderr_handlers,
+)
 from regshape.libs.blobs.download import DownloadStatus
+from regshape.libs.decorators import get_telemetry_config
+
+
+class _DownloadOutput(io.TextIOBase, IO[str]):
+    """Track diagnostic failures throughout one command without owning its stderr.
+
+    Existing display cleanup keeps its repaint behavior; the outer warning
+    collector uses the persistent flag to avoid any additional diagnostics.
+    """
+
+    def __init__(self, stream: IO[str]) -> None:
+        """Borrow a text sink before telemetry setup or progress suppression is decided."""
+        super().__init__()
+        self.stream = stream
+        self.failed = False
+
+    def write(self, text: str) -> int:
+        """Record a real text-write failure, excluding Click's empty binary probes."""
+        if not isinstance(text, str):
+            raise TypeError("Download diagnostics require text")
+        try:
+            return self.stream.write(text)
+        except BaseException:
+            self.failed = True
+            raise
+
+    def flush(self) -> None:
+        """Record flush failures without changing their exception identity."""
+        try:
+            self.stream.flush()
+        except BaseException:
+            self.failed = True
+            raise
+
+    def writable(self) -> bool:
+        """Expose the borrowed destination's text-output capability."""
+        return True
+
+    def isatty(self) -> bool:
+        """Preserve progress suppression and Click's platform terminal handling."""
+        return self.stream.isatty()
+
+    def fileno(self) -> int:
+        """Measure the borrowed terminal rather than redirected stdout."""
+        return self.stream.fileno()
+
+    def close(self) -> None:
+        """Never close or flush the borrowed sink, including during adapter destruction."""
 
 
 @final
@@ -20,8 +74,9 @@ class DownloadWarnings:
 
     Only validated digests are retained, not part events, ETags, URLs or diagnostic
     messages. The set is bounded by the invocation's distinct blob inputs/graph
-    budget. A borrowed display identifies a failed terminal sink, which must not
-    be invoked again to deliver a warning.
+    budget. Invocation-scoped stderr tracking outlives the borrowed display and
+    covers telemetry cleanup/error reporting even when progress is suppressed.
+    All borrowed streams and logging handlers are restored without I/O.
     """
 
     def __init__(self, *, artifact: bool = False) -> None:
@@ -29,9 +84,22 @@ class DownloadWarnings:
         self.artifact = artifact
         self.display: ProgressDisplay | None = None
         self._affected: set[str] = set()
+        self._stderr: IO[str] | None = None
+        self._output: _DownloadOutput | None = None
+        self._log_streams: list[tuple[logging.StreamHandler, IO[str]]] = []
 
     def __enter__(self) -> "DownloadWarnings":
-        """Begin collection before the command creates telemetry or transfer resources."""
+        """Track stderr before telemetry setup, retaining renderer/logging stream identity."""
+        self._stderr = sys.stderr
+        self._output = _DownloadOutput(self._stderr)
+        sys.stderr = self._output
+        try:
+            _redirect_stderr_handlers(
+                self._stderr, self._output, self._log_streams, include_last_resort=True,
+            )
+        except BaseException:
+            self._restore_output()
+            raise
         return self
 
     def observe(self, event: DownloadStatus) -> None:
@@ -51,14 +119,35 @@ class DownloadWarnings:
         type is reported here, never a potentially sensitive exception message.
         Secondary sink errors are chained without logging back to the failed sink.
         """
-        if not self._affected or (self.display is not None and self.display.sink_failed):
+        try:
+            return self._finish(exc)
+        finally:
+            self._restore_output()
+
+    def _restore_output(self) -> None:
+        """Restore only invocation-owned bindings, never flushing a possibly failed sink."""
+        if self._output is not None:
+            _restore_stderr_handlers(self._output, self._log_streams)
+            config = get_telemetry_config()
+            if config.output is self._output and self._stderr is not None:
+                config.output = self._stderr
+            if sys.stderr is self._output and self._stderr is not None:
+                sys.stderr = self._stderr
+
+    def _finish(self, exc: BaseException | None) -> Literal[False]:
+        """Emit only after successful stderr use throughout the command's complete lifetime."""
+        if (
+            not self._affected
+            or (self._output is not None and self._output.failed)
+            or (self.display is not None and self.display.sink_failed)
+        ):
             return False
         primary = exc
         if primary is None:
             try:
                 sys.stdout.flush()
             except BaseException as flush_error:
-                if sys.stdout is sys.stderr:
+                if sys.stdout is sys.stderr or sys.stdout is self._stderr:
                     raise
                 primary = flush_error
         reported: click.exceptions.Exit | None = None

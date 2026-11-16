@@ -87,7 +87,7 @@ class ArtifactConsole(Console):
     def artifact_display(self, **kwargs: Any) -> ProgressDisplay:
         """Construct the real normalized renderer after telemetry config is installed."""
         display = ProgressDisplay(
-            **kwargs, stream=self.err, columns=lambda: self.terminal.width, clock=self.clock,
+            **kwargs, stream=sys.stderr, columns=lambda: self.terminal.width, clock=self.clock,
         )
         self.displays.append(display)
         return display

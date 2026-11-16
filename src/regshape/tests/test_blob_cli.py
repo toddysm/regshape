@@ -26,6 +26,7 @@ from regshape.libs.blobs import DownloadStats, DownloadStatus
 from regshape.libs.errors import AuthError, BlobError
 from regshape.libs.models.blob import BlobInfo
 from regshape.tests.test_artifact_options import runner as runner  # noqa: PLC0414 - minimum Click fixture
+from regshape.tests.test_artifact_pull_cli import ArtifactConsole, _console_streams
 
 # ---------------------------------------------------------------------------
 # Shared constants
@@ -134,6 +135,74 @@ def test_changed_etag_stdout_flush_failure_does_not_claim_verification() -> None
     assert errors.getvalue().startswith("Error: Download did not complete (OSError).\n")
     assert errors.getvalue().count("Warning: ETag changed") == 1
     assert "verified" not in errors.getvalue()
+
+
+@pytest.mark.parametrize("mode", ["terminal", "no-progress", "structured", "nonterminal"])
+@pytest.mark.parametrize("boundary", ["error-write", "error-flush", "telemetry"])
+def test_changed_etag_post_display_stderr_failure_is_not_retried(
+    runner: CliRunner, mode: str, boundary: str,
+) -> None:
+    """Track failed error/telemetry stderr after display close, regardless of animation mode."""
+    console = ArtifactConsole(shared=False, interactive=mode != "nonterminal")
+    primary = OSError("synthetic post-display stderr failure")
+    original_write, original_flush = console.err.write, console.err.flush
+    armed = failed = False
+    after_failure: list[str] = []
+    marker = "scenario" if boundary == "telemetry" else "Error ["
+
+    def download(
+        *, download_status_callback: Callable[[DownloadStatus], None], **kwargs: Any,
+    ) -> BlobInfo:
+        """Supply a validated fallback reason before command-owned reporting or scenario cleanup."""
+        download_status_callback(DownloadStatus(
+            "blob", DIGEST, "fallback", "full", "etag_changed", None, 2, DownloadStats(),
+        ))
+        if boundary != "telemetry":
+            raise BlobError("synthetic operation failure")
+        return _BLOB_INFO
+
+    def write(text: str) -> int:
+        """Fail once at the post-display boundary and detect any attempted warning/error reuse."""
+        nonlocal armed, failed
+        if failed and text:
+            after_failure.append(text)
+        if marker in text and not failed:
+            assert console.displays and not console.displays[0]._active
+            armed = True
+            if boundary != "error-flush":
+                failed = True
+                raise primary
+        return original_write(text)
+
+    def flush() -> None:
+        """Inject a real error-report flush fault without failing earlier progress cleanup."""
+        nonlocal failed
+        if boundary == "error-flush" and armed and not failed:
+            failed = True
+            raise primary
+        original_flush()
+
+    options = [
+        *(["--time-scenarios"] if boundary == "telemetry" else []),
+        *(["--no-progress"] if mode == "no-progress" else []),
+        *(["--telemetry-format", "json"] if mode == "structured" else []),
+    ]
+    with (
+        _console_streams(runner, console),
+        patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
+        patch("regshape.cli.blob.get_blob", side_effect=download),
+        patch("regshape.cli.blob.ProgressDisplay", side_effect=console.artifact_display),
+        patch.object(console.err, "write", side_effect=write),
+        patch.object(console.err, "flush", side_effect=flush),
+    ):
+        result = runner.invoke(regshape, [
+            "blob", "get", "--repo", REPO, "--digest", DIGEST, *options,
+        ])
+    assert failed and result.exception is primary
+    assert not after_failure and not console.out.text
+    assert "Warning:" not in console.err.text
+    assert not console.err.closed and not console.out.closed
+    assert console.displays[0].config.output is console.err
 
 
 @pytest.mark.parametrize("outcome", ["success", "failure", "cancel", "click"])
