@@ -73,6 +73,14 @@ class _DownloadOutput(io.TextIOBase, IO[str]):
         """Never close or flush the borrowed sink, including during adapter destruction."""
 
 
+def _raise_silent_exit(exc: BaseException | None) -> None:
+    """Convert Click-reportable errors to silent exits, leaving other primary errors alone."""
+    if isinstance(exc, (KeyboardInterrupt, EOFError, click.Abort)):
+        raise click.exceptions.Exit(1) from exc
+    if isinstance(exc, click.ClickException):
+        raise click.exceptions.Exit(exc.exit_code) from exc
+
+
 @final
 class DownloadWarnings:
     """Coalesce changed-ETag observations by content address, independently of redraws.
@@ -175,10 +183,12 @@ class DownloadWarnings:
     def _finish(self, exc: BaseException | None) -> Literal[False]:
         """Emit only after successful stderr use throughout the command's complete lifetime."""
         if (
-            not self._affected
-            or (self._output is not None and self._output.failed)
+            (self._output is not None and self._output.failed)
             or (self.display is not None and self.display.sink_failed)
         ):
+            _raise_silent_exit(exc)
+            return False
+        if not self._affected:
             return False
         primary = exc
         if primary is None:
@@ -186,6 +196,7 @@ class DownloadWarnings:
                 sys.stdout.flush()
             except BaseException as flush_error:
                 if self._shares_result_sink():
+                    _raise_silent_exit(flush_error)
                     raise
                 primary = flush_error
         reported: click.exceptions.Exit | None = None
@@ -201,6 +212,8 @@ class DownloadWarnings:
             click.echo(self._message(success=primary is None), err=True, color=False)
         except BaseException as warning_error:
             if primary is None:
+                if self._output is not None and self._output.failed:
+                    _raise_silent_exit(warning_error)
                 raise
             if reported is not None:
                 raise reported from warning_error

@@ -124,6 +124,8 @@ stderr tracking remains active through post-display error reporting and telemetr
 cleanup, including disabled, structured and noninteractive progress. Distinct
 stdout/stderr streams referencing the same OS destination are treated as shared.
 Where descriptor identity is unavailable, only object identity establishes sharing.
+Cancellation and Click errors on a failed sink retain their exit codes without
+letting Click print secondary diagnostics to that destination.
 
 ## Collect state without printing per-event lines
 

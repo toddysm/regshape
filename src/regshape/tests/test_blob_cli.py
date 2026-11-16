@@ -253,6 +253,76 @@ def test_changed_etag_result_failure_respects_distinct_stream_destinations(
             raw_output.close()
 
 
+@pytest.mark.parametrize("error_type", [KeyboardInterrupt, EOFError, click.UsageError])
+@pytest.mark.parametrize("boundary", [
+    "result", "result-unaffected", "final-flush", "warning", "healthy-unaffected",
+])
+def test_changed_etag_failed_sink_cancellation_does_not_reenter_click(
+    runner: CliRunner, error_type: type[BaseException], boundary: str,
+) -> None:
+    """Exit silently after shared-sink failure, retaining ordinary healthy-stream diagnostics."""
+    console = ArtifactConsole(shared=True, interactive=False)
+    console.err = console.out
+    primary = error_type("synthetic cancellation")
+    original_write, original_flush = console.out.write, console.out.flush
+    failed = False
+    result_flushes = 0
+    after_failure: list[str] = []
+
+    def download(
+        *, download_status_callback: Callable[[DownloadStatus], None], **kwargs: Any,
+    ) -> BlobInfo:
+        """Return metadata after fallback, or cancel before warnings on the healthy control path."""
+        if boundary == "healthy-unaffected":
+            raise primary
+        if boundary != "result-unaffected":
+            download_status_callback(DownloadStatus(
+                "blob", DIGEST, "fallback", "full", "etag_changed", None, 2, DownloadStats(),
+            ))
+        return _BLOB_INFO
+
+    def write(text: str) -> int:
+        """Record any diagnostic after the chosen result or warning write fails."""
+        nonlocal failed
+        if failed and text:
+            after_failure.append(text)
+        if not failed and (
+            (boundary in {"result", "result-unaffected"} and '"digest"' in text)
+            or (boundary == "warning" and "Warning:" in text)
+        ):
+            failed = True
+            raise primary
+        return original_write(text)
+
+    def flush() -> None:
+        """Fail the collector's final flush, after Click has flushed the JSON result."""
+        nonlocal failed, result_flushes
+        if boundary == "final-flush" and '"digest"' in console.out.text:
+            result_flushes += 1
+            if result_flushes == 2:
+                failed = True
+                raise primary
+        original_flush()
+
+    with (
+        _console_streams(runner, console),
+        patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
+        patch("regshape.cli.blob.get_blob", side_effect=download),
+        patch.object(console.out, "write", side_effect=write),
+        patch.object(console.out, "flush", side_effect=flush),
+    ):
+        result = runner.invoke(regshape, [
+            "blob", "get", "--repo", REPO, "--digest", DIGEST, "--no-progress",
+        ])
+    assert result.exit_code == getattr(primary, "exit_code", 1)
+    if boundary == "healthy-unaffected":
+        assert not failed
+        message = "Error: synthetic cancellation" if error_type is click.UsageError else "Aborted!"
+        assert console.err.text.count(message) == 1
+    else:
+        assert failed and not after_failure
+
+
 @pytest.mark.parametrize("mode", ["terminal", "no-progress", "structured", "nonterminal"])
 @pytest.mark.parametrize("boundary", ["error-write", "error-flush", "telemetry"])
 def test_changed_etag_post_display_stderr_failure_is_not_retried(
