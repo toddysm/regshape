@@ -117,24 +117,85 @@ def test_changed_etag_warning_follows_result_or_error(
             assert result.exception is primary
 
 
-def test_changed_etag_stdout_flush_failure_does_not_claim_verification() -> None:
-    """A final stdout flush failure stays primary and permits only failed-operation wording."""
+@pytest.mark.parametrize("error_type", [OSError, KeyboardInterrupt, EOFError])
+def test_changed_etag_stdout_flush_failure_does_not_claim_verification(
+    error_type: type[BaseException],
+) -> None:
+    """Final flush faults preserve failure semantics without verified recovery or duplicate aborts."""
     output, errors = io.StringIO(), io.StringIO()
-    primary = OSError("synthetic stdout flush failure")
+    primary = error_type("synthetic stdout flush failure")
     with (
         patch("sys.stdout", output),
         patch("sys.stderr", errors),
         patch.object(output, "flush", side_effect=primary),
-        pytest.raises(OSError) as caught,
+        pytest.raises(OSError if error_type is OSError else click.exceptions.Exit) as caught,
         DownloadWarnings() as warnings,
     ):
         warnings.observe(DownloadStatus(
             "blob", DIGEST, "fallback", "full", "etag_changed", None, 2, DownloadStats(),
         ))
-    assert caught.value is primary
-    assert errors.getvalue().startswith("Error: Download did not complete (OSError).\n")
+    if error_type is OSError:
+        assert caught.value is primary
+        assert errors.getvalue().startswith("Error: Download did not complete (OSError).\n")
+    else:
+        assert caught.value.exit_code == 1
+        assert errors.getvalue().startswith("\nAborted!\n")
+        assert errors.getvalue().count("Aborted!") == 1
     assert errors.getvalue().count("Warning: ETag changed") == 1
     assert "verified" not in errors.getvalue()
+
+
+@pytest.mark.parametrize("boundary", ["write", "flush"])
+def test_changed_etag_shared_result_sink_failure_is_not_retried(
+    runner: CliRunner, boundary: str,
+) -> None:
+    """A failed final blob JSON writer cannot reuse an aliased stdout/stderr for its warning."""
+    console = ArtifactConsole(shared=True, interactive=False)
+    console.err = console.out
+    primary = OSError("synthetic shared result sink failure")
+    original_write, original_flush = console.out.write, console.out.flush
+    failed = False
+    after_failure: list[str] = []
+
+    def download(
+        *, download_status_callback: Callable[[DownloadStatus], None], **kwargs: Any,
+    ) -> BlobInfo:
+        """Return verified metadata after a validated fallback observation."""
+        download_status_callback(DownloadStatus(
+            "blob", DIGEST, "fallback", "full", "etag_changed", None, 2, DownloadStats(),
+        ))
+        return _BLOB_INFO
+
+    def write(text: str) -> int:
+        """Detect additional writes after the single result failure."""
+        nonlocal failed
+        if failed and text:
+            after_failure.append(text)
+        if boundary == "write" and '"digest"' in text and not failed:
+            failed = True
+            raise primary
+        return original_write(text)
+
+    def flush() -> None:
+        """Fail once when Click flushes the completed JSON result."""
+        nonlocal failed
+        if boundary == "flush" and '"digest"' in console.out.text and not failed:
+            failed = True
+            raise primary
+        original_flush()
+
+    with (
+        _console_streams(runner, console),
+        patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
+        patch("regshape.cli.blob.get_blob", side_effect=download),
+        patch.object(console.out, "write", side_effect=write),
+        patch.object(console.out, "flush", side_effect=flush),
+    ):
+        result = runner.invoke(regshape, [
+            "blob", "get", "--repo", REPO, "--digest", DIGEST, "--no-progress",
+        ])
+    assert failed and result.exception is primary
+    assert not after_failure and "Warning:" not in console.err.text
 
 
 @pytest.mark.parametrize("mode", ["terminal", "no-progress", "structured", "nonterminal"])

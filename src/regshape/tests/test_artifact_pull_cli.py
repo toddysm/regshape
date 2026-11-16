@@ -919,7 +919,7 @@ def test_artifact_attempt_restart_has_no_stale_rate_or_double_completion() -> No
 @pytest.mark.parametrize(("mode", "outcome"), [
     (mode, outcome) for mode in ("terminal", "no-progress", "json", "nonterminal")
     for outcome in ("success", "failure")
-] + [("terminal", "failed-sink")])
+] + [("terminal", "failed-sink"), ("terminal", "shared-result-error")])
 def test_changed_etag_artifact_warning_is_coalesced_after_cleanup_and_output(
     runner: CliRunner, tmp_path: Path, mode: str, outcome: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -927,6 +927,9 @@ def test_changed_etag_artifact_warning_is_coalesced_after_cleanup_and_output(
     monkeypatch.setenv("NO_COLOR", "1")
     root, objects = _graph("simple", "sha256")
     console = ArtifactConsole(shared=False, interactive=mode != "nonterminal")
+    if outcome == "shared-result-error":
+        console = ArtifactConsole(shared=True)
+        console.err = console.out
     registry = ObjectRegistry(root, objects)
     digests = [digest for digest in objects if digest != address(root)]
     output = tmp_path / "out"
@@ -934,6 +937,9 @@ def test_changed_etag_artifact_warning_is_coalesced_after_cleanup_and_output(
     if outcome == "failed-sink" and mode == "terminal":
         console.err.failure = primary
         console.err.failure_when = lambda text: "Downloading" in text
+    elif outcome == "shared-result-error":
+        console.out.failure = primary
+        console.out.failure_when = lambda text: "Downloaded complete artifact." in text
     stdout_flushes: list[str] = []
     original_flush, original_write = console.out.flush, console.err.write
 
@@ -987,6 +993,11 @@ def test_changed_etag_artifact_warning_is_coalesced_after_cleanup_and_output(
     if outcome == "failed-sink":
         assert result.exception is primary
         assert "Warning: ETag" not in console.err.text and not console.out.text
+        return
+    if outcome == "shared-result-error":
+        assert result.exception is primary and output.exists()
+        assert "Warning:" not in console.err.text
+        assert "Error: Download did not complete" not in console.err.text
         return
     assert console.err.text.count("Warning: ETag changed") == 1
     assert "ETag changed for 2 blobs;" in console.err.text

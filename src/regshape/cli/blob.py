@@ -121,7 +121,11 @@ def _after_blob_telemetry(func: Callable[..., BlobInfo]) -> Callable[..., None]:
         """Await all transfer/telemetry cleanup before output and warning delivery."""
         with DownloadWarnings() as warnings:
             info = func(*args, **kwargs, download_warnings=warnings)
-            emit_json(info.to_dict())
+            try:
+                emit_json(info.to_dict())
+            except BaseException:
+                warnings.result_failed()
+                raise
     return wrapper
 
 

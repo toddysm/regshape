@@ -107,6 +107,11 @@ class DownloadWarnings:
         if event.reason == "etag_changed" and event.digest is not None:
             self._affected.add(event.digest)
 
+    def result_failed(self) -> None:
+        """Do not diagnose through stderr when it aliases a failed final-result destination."""
+        if self._output is not None and (sys.stdout is self._stderr or sys.stdout is sys.stderr):
+            self._output.failed = True
+
     def __exit__(
         self, exc_type: type[BaseException] | None, exc: BaseException | None,
         traceback: TracebackType | None,
@@ -167,10 +172,10 @@ class DownloadWarnings:
             if reported is not None:
                 raise reported from warning_error
             raise primary from warning_error
-        if exc is None and primary is not None:
-            raise primary
         if reported is not None:
             raise reported from exc
+        if exc is None and primary is not None:
+            raise primary
         return False
 
     def _message(self, *, success: bool) -> str:

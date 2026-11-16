@@ -90,18 +90,22 @@ def _after_telemetry(func: Callable[..., ArtifactPullResult]) -> Callable[..., N
         """Emit the result, then one deferred warning after diagnostics and log close."""
         with DownloadWarnings(artifact=True) as warnings:
             result = func(*args, **kwargs, download_warnings=warnings)
-            if kwargs["json_output"]:
-                emit_json(_result_data(result))
-            else:
-                emit_text(
-                    "Downloaded complete artifact.\n"
-                    f"Source: {result.source}\n"
-                    f"Resolved: {result.resolved_reference}\n"
-                    f"Output: {result.output_path}\n"
-                    f"Format: {result.output_format.value}\n"
-                    f"Objects: {result.indexes} indexes, {result.manifests} manifests, {result.blobs} blobs\n"
-                    f"Shared references reused: {result.reused_references}"
-                )
+            try:
+                if kwargs["json_output"]:
+                    emit_json(_result_data(result))
+                else:
+                    emit_text(
+                        "Downloaded complete artifact.\n"
+                        f"Source: {result.source}\n"
+                        f"Resolved: {result.resolved_reference}\n"
+                        f"Output: {result.output_path}\n"
+                        f"Format: {result.output_format.value}\n"
+                        f"Objects: {result.indexes} indexes, {result.manifests} manifests, {result.blobs} blobs\n"
+                        f"Shared references reused: {result.reused_references}"
+                    )
+            except BaseException:
+                warnings.result_failed()
+                raise
     return wrapper
 
 
