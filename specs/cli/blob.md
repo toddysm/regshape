@@ -134,13 +134,20 @@ Unlike `blob head`, this transfers the entire blob.
 | `--repo` | `-r` | `TEXT` | required | Repository in `registry/name` format |
 | `--digest` | `-d` | `TEXT` | required | Blob digest (`sha256:...`) |
 | `--output` | `-o` | `PATH` | `None` | File path to write blob content to |
-| `--chunk-size` | | `INT` | `65536` | Streaming chunk size in bytes |
+| `--chunk-size` | | `INT` | `65536` | Positive streaming I/O buffer bytes, not HTTP range size |
 | `--no-progress` | | `FLAG` | `False` | Disable interactive stderr progress |
+| `--concurrency` | | `INT` | `4` | Global pooled request ceiling, 1..32 |
+| `--ranges-per-blob` | | `INT` | `1` | Per-blob ceiling, 1..concurrency; 1 uses full GET |
+| `--range-size` | | `BYTES` | `8388608` | Range/spool bytes, 65536..67108864 |
+| `--sequential` | | `FLAG` | `False` | Use pooled concurrency=1/ranges-per-blob=1 |
+| `--legacy-transport` | | `FLAG` | `False` | Bypass the new pool, coordinator and retry resolver |
+| `--download-retries` | | `N` | resolved `3` | Pooled retry override, 0..10; 0 disables retries |
+| `--scratch-dir` | | `PATH` | system temporary root | Existing trusted parent for private bounded range scratch |
 
 #### Behavior
 
-1. Resolve credentials for the registry.
-2. Issue `GET /v2/{name}/blobs/{digest}`.
+1. Validate download controls and conflicts before resolving credentials.
+2. Resolve credentials and issue full or eligible ranged `GET /v2/{name}/blobs/{digest}`.
 3. If `--output` is provided: stream the response body to the file at
    `--output` in `--chunk-size` byte increments, computing a running
    digest as each chunk is written.
@@ -151,17 +158,31 @@ Unlike `blob head`, this transfers the entire blob.
    and discard the content without buffering the complete blob.
 6. Print the blob metadata JSON to stdout and exit `0`.
 
-Supported clients use the shared pooled full-stream worker, with up to three
-pre-payload retries by default. A failure after a file/hash prefix commits is
+Supported clients use shared pooled workers, with up to three retries by default,
+including HTTP 429. A full-stream failure after a file/hash prefix commits is
 not replayed. `--chunk-size` remains an I/O buffer size, not an HTTP range size.
+With `--ranges-per-blob` above one, the first real range negotiates size and a
+strong ETag; blobs below four range sizes use full receipt. Completed parts stay
+inside a bounded committed-prefix window and are hashed in byte order. Verify-only
+does not save a whole blob. Capability limitations select an explicit one-time
+full-stream fallback. Malformed ranges, wrong lengths and digest failures fail.
+An established ETag change drains the old attempt, safely resets sink/hash/progress
+and verifies one fresh full GET, retaining the original size/digest requirement.
+
+`--sequential` conflicts with explicitly supplied `--concurrency` or
+`--ranges-per-blob`, even if their values match defaults. `--legacy-transport`
+conflicts with explicit sequential/concurrency/range-count/retry/scratch controls;
+`--range-size` remains validated but unused. Legacy keeps the original transport
+and retry behavior; sequential keeps pooled behavior. Pooled retry backoff honors
+`Retry-After` and cancellation. Exhausted throttling errors identify the retry and
+concurrency controls.
+
 The [batch/status APIs](../../docs/library/downloads.md#public-batch-downloads)
-are library-only additions; this command's options and stdout JSON are unchanged.
+are library APIs; this command's stdout JSON is unchanged.
 The command collects typed status independently of animation and emits any
 changed-ETag warning only after cleanup and the flushed JSON result. Failure
 warnings do not claim verification; failed renderer sinks retain their original
-exception rather than being reused for formatted errors/warnings. Range requests
-and range flags remain separate follow-up work; the current full-stream engine
-does not generate changed-ETag fallback events.
+exception rather than being reused for formatted errors/warnings.
 
 #### Exit Codes
 
@@ -173,6 +194,7 @@ does not generate changed-ETag fallback events.
 | `1` | Authentication error |
 | `1` | Output path is not writable |
 | `1` | Any other error |
+| `2` | Invalid or conflicting download controls |
 
 #### Examples
 
@@ -194,6 +216,14 @@ regshape blob get \
   --digest sha256:abc123 \
   --output ./layer.tar.gz \
   --chunk-size 1048576
+
+# Request three concurrent 8 MiB ranges when the blob and registry permit
+regshape blob get --repo registry.example.com/myrepo --digest sha256:abc123 \
+  --concurrency 4 --ranges-per-blob 3 --range-size 8388608
+
+# Keep pooled transport but serialize requests, or explicitly roll back transport
+regshape blob get --repo registry.example.com/myrepo --digest sha256:abc123 --sequential
+regshape blob get --repo registry.example.com/myrepo --digest sha256:abc123 --legacy-transport
 ```
 
 #### Output Format

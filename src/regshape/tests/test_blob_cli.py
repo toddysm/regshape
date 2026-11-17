@@ -25,7 +25,7 @@ from click.testing import CliRunner
 from regshape.cli.downloads import DownloadWarnings
 from regshape.cli.main import regshape
 from regshape.cli.progress import ProgressDisplay
-from regshape.libs.blobs import DownloadStats, DownloadStatus
+from regshape.libs.blobs import DownloadOptions, DownloadStats, DownloadStatus
 from regshape.libs.errors import AuthError, BlobError
 from regshape.libs.models.blob import BlobInfo
 from regshape.tests.test_artifact_options import runner as runner  # noqa: PLC0414 - minimum Click fixture
@@ -43,6 +43,145 @@ CONTENT_TYPE = "application/vnd.oci.image.layer.v1.tar+gzip"
 SIZE = 4_194_304
 
 _BLOB_INFO = BlobInfo(digest=DIGEST, content_type=CONTENT_TYPE, size=SIZE)
+
+
+@pytest.mark.parametrize("arguments,expected", [
+    ([], DownloadOptions()),
+    (["--concurrency", "3", "--ranges-per-blob", "2", "--range-size", "65536",
+      "--download-retries", "0"], DownloadOptions(
+          concurrency=3, ranges_per_blob=2, range_size=65536, max_retries=0,
+      )),
+    (["--sequential"], DownloadOptions.sequential()),
+    (["--legacy-transport"], DownloadOptions.legacy()),
+    (["--legacy-transport", "--range-size", "65536"], DownloadOptions(
+        concurrency=1, ranges_per_blob=1, range_size=65536, transport="legacy",
+    )),
+])
+def test_blob_get_download_controls_reach_sdk(runner, arguments, expected):
+    """CLI controls map to immutable SDK policy without changing the existing JSON result shape."""
+    with (
+        patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
+        patch("regshape.cli.blob.get_blob", return_value=_BLOB_INFO) as download,
+    ):
+        result = runner.invoke(regshape, [
+            "blob", "get", "--repo", REPO, "--digest", DIGEST, "--chunk-size", "1234",
+            *arguments,
+        ])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == _BLOB_INFO.to_dict()
+    options = download.call_args.kwargs
+    assert options["download_options"] == expected
+    assert options["chunk_size"] == 1234
+    assert (options["download_status_callback"] is None) == (expected.transport == "legacy")
+
+
+@pytest.mark.parametrize("arguments", [
+    ["--sequential", "--concurrency", "4"],
+    ["--sequential", "--ranges-per-blob", "1"],
+    ["--legacy-transport", "--sequential"],
+    ["--legacy-transport", "--concurrency", "1"],
+    ["--legacy-transport", "--ranges-per-blob", "1"],
+    ["--legacy-transport", "--download-retries", "0"],
+    ["--ranges-per-blob", "3", "--concurrency", "2"],
+    ["--range-size", "65535"],
+    ["--range-size", "67108865"],
+    ["--download-retries", "11"],
+    ["--chunk-size", "0"],
+])
+def test_blob_get_invalid_download_controls_have_no_credential_or_file_effects(runner, arguments):
+    """Explicit default-valued flags still conflict, and invalid bounds fail before client creation."""
+    with patch("regshape.cli.blob.RegistryClient") as client:
+        result = runner.invoke(regshape, [
+            "blob", "get", "--repo", REPO, "--digest", DIGEST, *arguments,
+        ])
+    assert result.exit_code == 2 and not result.stdout
+    client.assert_not_called()
+
+
+def test_blob_get_scratch_and_legacy_conflict(runner, tmp_path):
+    """A trusted scratch root reaches pooled policy but cannot be silently ignored in legacy mode."""
+    with (
+        patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
+        patch("regshape.cli.blob.get_blob", return_value=_BLOB_INFO) as download,
+    ):
+        result = runner.invoke(regshape, [
+            "blob", "get", "--repo", REPO, "--digest", DIGEST, "--scratch-dir", str(tmp_path),
+        ])
+    assert result.exit_code == 0
+    assert download.call_args.kwargs["download_options"].scratch_dir == tmp_path
+    with patch("regshape.cli.blob.RegistryClient") as client:
+        result = runner.invoke(regshape, [
+            "blob", "get", "--repo", REPO, "--digest", DIGEST, "--scratch-dir", str(tmp_path),
+            "--legacy-transport",
+        ])
+    assert result.exit_code == 2
+    client.assert_not_called()
+
+
+def test_blob_get_exhausted_429_explains_download_controls(runner):
+    """An exhausted throttle budget produces an error, not success JSON or an opaque capability fallback."""
+    with (
+        patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
+        patch("regshape.cli.blob.get_blob", side_effect=BlobError("throttled", status_code=429)),
+    ):
+        result = runner.invoke(regshape, [
+            "blob", "get", "--repo", REPO, "--digest", DIGEST, "--download-retries", "0",
+        ])
+    assert result.exit_code == 1 and not result.stdout
+    assert "--download-retries" in result.stderr and "--sequential" in result.stderr
+
+
+def test_blob_get_real_range_fallback_warns_after_verified_json(runner, tmp_path):
+    """Actual SDK range/ETag recovery reaches the deferred CLI warning with progress disabled."""
+    from regshape.tests.artifact_fixtures import address
+    from regshape.tests.test_blob_ranges import PAYLOAD, R, _registry
+
+    def modify(start, end, headers, response):
+        """Rotate an established validator while preserving the original entity bytes."""
+        if "Range" in headers and start >= R:
+            response.headers["ETag"] = '"rotated"'
+        return response
+
+    get, calls, responses = _registry(modify=modify)
+    with (
+        patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
+        patch("regshape.libs.transport.RegistryClient.get", autospec=True, side_effect=get),
+    ):
+        result = runner.invoke(regshape, [
+            "blob", "get", "--repo", REPO, "--digest", address(PAYLOAD),
+            "--ranges-per-blob", "3", "--range-size", str(R), "--download-retries", "0",
+            "--scratch-dir", str(tmp_path), "--no-progress",
+        ])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == BlobInfo(
+        address(PAYLOAD), "application/octet-stream", len(PAYLOAD),
+    ).to_dict()
+    assert result.stderr.count("Warning: ETag changed") == 1
+    assert "verified the digest" in result.stderr and "\x1b" not in result.stderr
+    assert sum("Range" not in call for call in calls) == 1
+    assert all(response.close_calls == 1 for response in responses)
+    assert not list(tmp_path.iterdir())
+
+
+def test_blob_get_legacy_never_constructs_pooled_transport(runner):
+    """A real legacy command succeeds with the new transport constructor deliberately unavailable."""
+    from regshape.tests.artifact_fixtures import StreamResponse, address
+
+    payload = b"original borrowed-client transport"
+    response = StreamResponse(payload, headers={"Content-Length": str(len(payload))})
+    with (
+        patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
+        patch("regshape.libs.transport.RegistryClient.get", return_value=response) as get,
+        patch("regshape.libs.transport.download.DownloadTransport.__init__",
+              side_effect=AssertionError("legacy must bypass the new context")),
+    ):
+        result = runner.invoke(regshape, [
+            "blob", "get", "--repo", REPO, "--digest", address(payload), "--legacy-transport",
+        ])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["size"] == len(payload)
+    assert get.call_count == response.close_calls == 1
+    assert get.call_args.kwargs == {"stream": True}
 
 
 @pytest.mark.parametrize("outcome", ["success", "failure", "cancel", "observer"])

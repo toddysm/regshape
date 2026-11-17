@@ -5,7 +5,8 @@
 This development-build reference covers the transport foundation from
 [#134](https://github.com/toddysm/regshape/issues/134) and internal coordination
 from [#135](https://github.com/toddysm/regshape/issues/135), and the public facade
-from [#144](https://github.com/toddysm/regshape/issues/144), targeting 0.2, not a
+from [#144](https://github.com/toddysm/regshape/issues/144), and verified ranged
+blob receipt from [#136](https://github.com/toddysm/regshape/issues/136), targeting 0.2, not a
 published release. See the [approved design](../../specs/operations/parallel-downloads.md).
 The [blob API](../../specs/operations/blobs.md#get_blob) and
 [artifact API](../../specs/operations/artifacts.md#signatures-and-caller-ownership)
@@ -87,6 +88,82 @@ info = get_blob(client, "team/image", digest,
 info = get_blob(client, "team/image", digest,
                 download_options=DownloadOptions.legacy())
 ```
+
+## Verified ranged blob downloads
+
+`get_blob` and `get_blobs` share the range engine. `ranges_per_blob=1` deliberately
+uses ordinary full GET; raise it above one to enable range negotiation for blobs
+at least four times `range_size`. `chunk_size` is still an I/O buffer size
+(pooled reads are capped at 64 KiB), not a range size.
+
+```python
+from regshape.libs.blobs import DownloadOptions, get_blob
+
+info = get_blob(
+    client, "team/image", digest, output_path="layer.blob",
+    download_options=DownloadOptions(
+        concurrency=4, ranges_per_blob=3, range_size=8_388_608,
+    ),
+)
+```
+
+Trusted `total_size` skips HEAD. Without it, the first real range discovers size;
+there is no extra one-byte probe or required HEAD. The first valid 206 is retained
+as range zero. Later requests carry the established strong ETag in `If-Range`,
+request identity HTTP encoding, and must agree on numeric complete length and
+exact body bounds. Size metadata is limited to 0..2^63-1. Missing `Accept-Ranges`
+does not prevent negotiation. A valid ignored first-range 200 is consumed as the
+full entity without another GET.
+Reusing that response also retains any retries already consumed while acquiring
+it, including their remaining budget and exponential-backoff position.
+
+The coordinator copies only contiguous completed parts, hashing in original
+byte order. It retains at most W consecutive uncommitted parts per blob and C
+range reservations overall, each at most `range_size` bytes. A later completion
+cannot advance the window past a blocked prefix. Private identity-checked
+temporary spools are removed only after owners stop and the caller consumes or
+discards them. Verify-only hashes/discards ordered bytes; it never saves a whole
+blob. Full streams still hash/write on their owning workers.
+Standalone scratch defaults to the system temporary directory. Nested artifact
+receipts instead create handle-relative scratch in their trusted private staging
+namespace; an explicit `scratch_dir` overrides either default.
+
+Unknown size, absent/weak initial ETag, first-response HTTP coding, correctly
+declared limited ranges and ignored ranges select explicit one-time capability
+fallbacks. A 416 proves nothing by itself: only a validated zero-size first
+response selects an empty full GET, which must still verify. Malformed bounds,
+overflow, contradictory lengths/totals, unexpected later coding, truncated/extra
+bodies, authentication failures and digest mismatch fail without capability
+fallback.
+
+An established ETag rotation on a valid 206 or late full response selects reason
+`etag_changed`. Stop scheduling that blob, cancel/drain/join its old jobs, discard
+old events/spools, validate and truncate/rewind the retained sink, replace the
+hasher, reset accepted progress and increment attempt on the same transfer ID
+before one fresh unconditional full GET. Original size/digest remain mandatory.
+Unrelated batch blobs are not cancelled or replayed. A failed identity/reset
+check prevents the full GET. This strategy reset is available even with zero
+transport retries, and is never recursive. The full receiver still cannot retry
+after a file/hash byte commits.
+An interrupted range connection (including incomplete HTTP framing) can retry
+only that private, uncommitted part under the configured connection-error retry
+policy. Its spool is removed before replay; accepted prefixes are never replayed.
+Exhausted budgets and non-retryable malformed length/body checks still fail.
+Before strategy reset releases old jobs, their queued diagnostics are drained
+on the invoking thread, while cancelled progress/status records are discarded.
+An observed ETag change remains in terminal status even when draining or sink
+reset fails; the failed attempt and accepted-byte count are not reset, and the
+original failure is preserved. Progress observer errors propagate unchanged,
+including `OSError` raised during caller-thread range assembly or verification.
+
+The CLI exposes the same policy with `--concurrency`, `--ranges-per-blob`,
+`--range-size`, `--download-retries`, `--scratch-dir`, `--sequential` and
+`--legacy-transport`; see the [blob command reference](../../specs/cli/blob.md#blob-get)
+for conflicts and examples. Changed-ETag warnings are deferred until command
+cleanup/result reporting, independently of progress rendering. Artifact graph
+parallelization and its command controls remain tracked separately by
+[#137](https://github.com/toddysm/regshape/issues/137); this item does not complete
+the feature's final workflow documentation or registry/benchmark release gates.
 
 ## Scoped authentication and ownership
 

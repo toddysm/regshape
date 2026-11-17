@@ -39,6 +39,7 @@ from regshape.libs.transport.download import (
 from regshape.libs.transport.middleware import RetryMiddleware
 
 T = TypeVar("T")
+T_co = TypeVar("T_co", covariant=True)
 _MAX_RECORD_BYTES = 65_536
 _MAX_SOURCES = 100_000
 _REASONS = frozenset(
@@ -64,6 +65,16 @@ _EVENTS = frozenset(
 
 class _DownloadCancelled(Exception):
     """Internal cooperative cancellation; never a successful partial result."""
+
+
+class _StrategyFallback(Exception):
+    """Request one drained source reset, not a transport retry or transfer failure."""
+
+    def __init__(self, reason: str) -> None:
+        """Retain a validated fixed reason without registry-controlled diagnostics."""
+        _Status("fallback", "full", reason)
+        super().__init__(reason)
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -232,7 +243,7 @@ class _Telemetry:
 
 
 @dataclass(frozen=True)
-class _Job(Generic[T]):
+class _Job(Generic[T_co]):
     """One exclusive-sink task from an ordered per-blob source.
 
     :param cleanup: Invoking-thread callback after the task has stopped. True
@@ -246,11 +257,17 @@ class _Job(Generic[T]):
     :param validate_result: Optional invoking-thread validation after queued
         observers drain, immediately before result consumption. Failures discard
         the stopped job instead of publishing an unproven output.
+    :param barrier: Consume this job before requesting another job from its source.
+    :param cancelled: Optional per-source cancellation, independent of batch failure.
+    :param fallback: Invoking-thread reset returning replacement jobs after all old
+        jobs stop and their spools are removed. A second fallback is not permitted.
+    :param finalize: Optional source cleanup before terminal observations.
+    :param scratch_root: Trusted effective temporary root, or None without scratch.
     """
 
     transfer_id: str
     digest: str
-    run: Callable[["_Worker"], T]
+    run: Callable[["_Worker"], T_co]
     cleanup: Callable[[bool], None]
     scratch_bytes: int = 0
     attempt: int = 1
@@ -258,6 +275,11 @@ class _Job(Generic[T]):
     reason: str | None = None
     terminal: bool = False
     validate_result: Callable[[], None] | None = None
+    barrier: bool = False
+    cancelled: threading.Event | None = None
+    fallback: Callable[[str], Iterable["_Job[T_co]"]] | None = None
+    finalize: Callable[[bool], None] | None = None
+    scratch_root: str | None = None
 
     def __post_init__(self) -> None:
         """Validate identity/attempt using the existing immutable progress contract."""
@@ -314,6 +336,10 @@ class _Source(Generic[T]):
     identity: tuple[str, str, int] | None = None
     exhausted: bool = False
     completed: bool = False
+    fallback: _StrategyFallback | None = None
+    fallback_job: _Job[T] | None = None
+    finalize: Callable[[bool], None] | None = None
+    finalized: bool = False
 
 
 class _Worker:
@@ -330,13 +356,18 @@ class _Worker:
 
     def check_cancelled(self) -> None:
         """Raise cooperative cancellation between reads, never claim to interrupt a socket read."""
-        if self.owner.cancelled.is_set():
+        if self.owner.cancelled.is_set() or (
+            self.job.cancelled is not None and self.job.cancelled.is_set()
+        ):
             raise _DownloadCancelled("Download cancelled")
 
     def wait(self, seconds: float) -> None:
         """Wait without holding a response/slot and wake promptly on cancellation."""
-        if self.owner.cancelled.wait(seconds):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
             self.check_cancelled()
+            self.owner.cancelled.wait(min(0.02, deadline - time.monotonic()))
+        self.check_cancelled()
 
     def request(self, count: int, elapsed: float) -> None:
         """Count physical hops/auth requests; a failed connection counts as one request."""
@@ -428,6 +459,7 @@ class _Coordinator:
         self.last_progress: dict[str, TransferProgress | ArtifactProgress] = {}
         self.completed: set[tuple[str, int]] = set()
         self.failure_transfer: str | None = None
+        self.scratch_roots: dict[str, str] = {}
 
     def __enter__(self) -> "_Coordinator":
         """Create the invocation's sole executor; reject nested/replacement coordinators."""
@@ -532,6 +564,7 @@ class _Coordinator:
                     identity[1] if identity else None,
                     status,
                     self.snapshot(transfer_id),
+                    self.scratch_roots.get(transfer_id) if transfer_id else None,
                 ),
             )
         except BaseException:
@@ -548,21 +581,29 @@ class _Coordinator:
         """Reset a drained transfer through a caller-supplied identity-checked sink reset.
 
         Received bytes remain cumulative; accepted bytes reset to zero and the
-        same transfer ID advances one attempt. A failed reset never permits replay.
-        All previous jobs must have drained and joined before this method is called.
+        same transfer ID advances one attempt. A failed reset retains its reason
+        without advancing the attempt or permitting replay.
+        All previous jobs for this transfer must have drained and joined;
+        unrelated sources may continue inside the same invocation.
         """
         self._on_caller()
-        if self.pending or self.failed_observers:
+        if any(
+            item.job.transfer_id == transfer_id for item in self.pending.values()
+        ) or self.failed_observers:
             raise RuntimeError("Drain and join old jobs before resetting a download")
+        if self.cancelled.is_set():
+            raise _DownloadCancelled("Cannot reset a cancelled operation")
         _Status("fallback", "full", reason)
-        digest, attempt, _, _ = self.identities[transfer_id]
+        digest, attempt, strategy, previous_reason = self.identities[transfer_id]
+        if previous_reason == "etag_changed":
+            reason = previous_reason
+        self.identities[transfer_id] = (digest, attempt, strategy, reason)
         reset_sink()
         self.totals[transfer_id] = replace(
             self.totals.get(transfer_id, _Stats()),
             bytes_accepted=0,
         )
         self.identities[transfer_id] = (digest, attempt + 1, "full", reason)
-        self.cancelled.clear()
         self.status(transfer_id, _Status("fallback", "full", reason))
         previous = self.last_progress.get(transfer_id)
         if previous is not None:
@@ -583,6 +624,27 @@ class _Coordinator:
                 )
             self.last_progress[transfer_id] = event
             self._call(self.progress_callback, event)
+
+    def accept(
+        self, transfer_id: str, count: int, total: int, *,
+        hash_seconds: float, write_seconds: float,
+    ) -> None:
+        """Account and emit a caller-assembled contiguous range prefix, never a part receipt."""
+        self._on_caller()
+        stats = self.totals.get(transfer_id, _Stats())
+        stats = replace(
+            stats, bytes_accepted=stats.bytes_accepted + count,
+            hash_seconds=stats.hash_seconds + hash_seconds,
+            write_seconds=stats.write_seconds + write_seconds,
+        )
+        self.totals[transfer_id] = stats
+        digest, attempt, _, _ = self.identities[transfer_id]
+        progress = TransferProgress(
+            transfer_id, digest, TransferDirection.DOWNLOAD,
+            TransferPhase.TRANSFERRING, stats.bytes_accepted, total, attempt,
+        )
+        self.last_progress[transfer_id] = progress
+        self._call(self.progress_callback, progress)
 
     def _task(self, number: int, job: _Job[T]) -> _Outcome[T]:
         """Run in a fresh Context with isolated metrics, timing and queued diagnostics."""
@@ -658,7 +720,9 @@ class _Coordinator:
             return
         pending.delivered_records += 1
         pending.stats = record.stats
-        if discard:
+        if discard or (
+            pending.job.cancelled is not None and pending.job.cancelled.is_set()
+        ):
             if isinstance(record.payload, LogMessage):
                 logger = logging.getLogger(record.payload.name)
                 if id(logger) not in self.failed_observers:
@@ -671,6 +735,11 @@ class _Coordinator:
             if payload.phase != "completed":
                 self._call(self.progress_callback, payload)
         elif isinstance(payload, _Status):
+            if payload.event == "fallback":
+                digest, attempt, _, _ = self.identities[pending.job.transfer_id]
+                self.identities[pending.job.transfer_id] = (
+                    digest, attempt, payload.strategy or "full", payload.reason,
+                )
             self.status(pending.job.transfer_id, payload)
         elif isinstance(payload, _Text):
             destination = (
@@ -789,6 +858,9 @@ class _Coordinator:
     def _complete_source(self, source: _Source) -> None:
         """Notify completion after consumption/cleanup; never reclassify a committed source."""
         if source.exhausted and not source.pending and not source.completed:
+            if source.finalize is not None and not source.finalized:
+                source.finalized = True
+                source.finalize(True)
             source.completed = True
             if source.identity is not None:
                 identity, _, attempt = source.identity
@@ -827,6 +899,7 @@ class _Coordinator:
             raise ValueError("Invalid download sources or result consumer")
         ready = deque(_Source(iter(source), deque()) for source in sources)
         active_sources: dict[str, _Source[T]] = {}
+        started_sources: dict[str, _Source[T]] = {}
         identities: set[str] = set()
         primary: BaseException | None = None
         cleanup_errors: list[BaseException] = []
@@ -839,9 +912,10 @@ class _Coordinator:
                     if len(self.pending) >= self.transport.options.concurrency:
                         break
                     source = ready.popleft()
-                    if not source.exhausted and (
+                    if not source.exhausted and source.fallback is None and (
                         len(self.pending) < self.transport.options.concurrency
                         and len(source.pending) < self.transport.options.ranges_per_blob
+                        and not any(item.job.barrier for item in source.pending)
                     ):
                         job = next(source.jobs, None)
                         if job is None:
@@ -859,6 +933,8 @@ class _Coordinator:
                                     )
                                 identities.add(job.transfer_id)
                                 source.identity = source_identity
+                                source.finalize = job.finalize
+                                started_sources[job.transfer_id] = source
                             elif source.identity != source_identity:
                                 raise ValueError(
                                     "A source must retain its transfer and attempt"
@@ -884,6 +960,8 @@ class _Coordinator:
                                 job.strategy,
                                 job.reason,
                             )
+                            if job.scratch_root is not None:
+                                self.scratch_roots[job.transfer_id] = job.scratch_root
                             self.blob_started.setdefault(
                                 job.transfer_id, time.perf_counter()
                             )
@@ -938,9 +1016,47 @@ class _Coordinator:
                     if pending.future.done():
                         outcome = pending.future.result()
                         if outcome.error is not None:
+                            source = active_sources[pending.job.transfer_id]
+                            if (
+                                isinstance(outcome.error, _StrategyFallback)
+                                and pending.job.fallback is not None
+                            ):
+                                if source.fallback is None or (
+                                    outcome.error.reason == "etag_changed"
+                                    and source.fallback.reason != "etag_changed"
+                                ):
+                                    source.fallback = outcome.error
+                                    source.fallback_job = pending.job
+                                    digest, attempt, strategy, _ = self.identities[
+                                        pending.job.transfer_id
+                                    ]
+                                    self.identities[pending.job.transfer_id] = (
+                                        digest, attempt, strategy, outcome.error.reason,
+                                    )
+                                    for old in source.pending:
+                                        if old.job.cancelled is not None:
+                                            old.job.cancelled.set()
+                                continue
+                            if (
+                                source.fallback is not None
+                                and isinstance(outcome.error, _DownloadCancelled)
+                            ):
+                                continue
+                            if pending.delivered_records < outcome.produced_records:
+                                continue
                             self.failure_transfer = pending.job.transfer_id
                             raise outcome.error
                 for identity, source in tuple(active_sources.items()):
+                    if source.fallback is not None:
+                        if all(
+                            item.future.done()
+                            and item.delivered_records == item.future.result().produced_records
+                            for item in source.pending
+                        ):
+                            self.failure_transfer = identity
+                            self._restart_source(identity, source)
+                            self.failure_transfer = None
+                        continue
                     while source.pending and source.pending[0].future.done():
                         head = source.pending[0]
                         if (
@@ -1005,6 +1121,13 @@ class _Coordinator:
         if primary is not None:
             failure_transfer = self.failure_transfer
             terminal_errors: list[BaseException] = []
+            for source in started_sources.values():
+                if source.finalize is not None and not source.finalized:
+                    source.finalized = True
+                    try:
+                        source.finalize(False)
+                    except BaseException as cleanup:
+                        cleanup_errors.append(cleanup)
             for identity in identities:
                 _, attempt, _, _ = self.identities[identity]
                 if (identity, attempt) in self.completed:
@@ -1027,6 +1150,33 @@ class _Coordinator:
                 )
             raise primary
         return self.snapshot()
+
+    def _restart_source(self, identity: str, source: _Source[T]) -> None:
+        """Reset only this blob after stopped jobs' queued diagnostics drain and spools close."""
+        fallback, job = source.fallback, source.fallback_job
+        if fallback is None or job is None or job.fallback is None:
+            raise RuntimeError("Missing range fallback handler")
+        restart = job.fallback
+        for pending in source.pending:
+            outcome = self._merge(pending)
+            if outcome.error is not None and not isinstance(
+                outcome.error, (_StrategyFallback, _DownloadCancelled),
+            ):
+                raise outcome.error
+            pending.job.cleanup(False)
+            self._release(pending)
+        source.pending.clear()
+
+        def reset_source() -> None:
+            """Perform the source's identity-checked sink/hash reset before advancing attempt."""
+            source.jobs = iter(restart(fallback.reason))
+
+        self.reset(identity, reset_source, reason=fallback.reason)
+        digest, attempt, _, _ = self.identities[identity]
+        source.identity = identity, digest, attempt
+        source.exhausted = False
+        source.fallback = None
+        source.fallback_job = None
 
     def close(self) -> None:
         """Join the sole executor before returning control to caller scratch cleanup."""

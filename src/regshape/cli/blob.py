@@ -23,7 +23,7 @@ from typing import Any, BinaryIO
 import click
 import requests
 
-from regshape.cli.downloads import DownloadWarnings
+from regshape.cli.downloads import DownloadWarnings, download_options, download_policy
 from regshape.cli.formatting import emit_error, emit_json
 from regshape.cli.progress import ProgressDisplay
 from regshape.libs.blobs import (
@@ -133,6 +133,7 @@ def _after_blob_telemetry(func: Callable[..., BlobInfo]) -> Callable[..., None]:
 @_after_blob_telemetry
 @telemetry_options
 @click.option("--no-progress", is_flag=True, default=False, help="Disable interactive transfer progress.")
+@download_options
 @click.option(
     "--repo",
     "-r",
@@ -157,17 +158,19 @@ def _after_blob_telemetry(func: Callable[..., BlobInfo]) -> Callable[..., None]:
 )
 @click.option(
     "--chunk-size",
-    type=int,
+    type=click.IntRange(min=1),
     default=65536,
     show_default=True,
     metavar="BYTES",
-    help="Streaming chunk size in bytes.",
+    help="Streaming I/O buffer bytes (not HTTP range size).",
 )
 @click.pass_context
 @track_scenario("blob get")
 def blob_get(
     ctx: click.Context, repo: str, digest: str, output: str | None,
     chunk_size: int, no_progress: bool, download_warnings: DownloadWarnings,
+    concurrency: int, ranges_per_blob: int, range_size: int, sequential: bool,
+    legacy_transport: bool, download_retries: int | None, scratch_dir: str | None,
 ) -> BlobInfo:
     """Download a blob and verify its digest.
 
@@ -176,13 +179,28 @@ def blob_get(
     is written to the specified file path; otherwise it is not saved locally.
 
     The --chunk-size option controls the size of streaming chunks used when
-    downloading the blob. Credentials are resolved automatically.
+    downloading the blob, not HTTP ranges. Pooled downloads default to four
+    global slots and one full stream per blob; --ranges-per-blob above one
+    enables eligible ranged receipt. --sequential keeps pooled transport while
+    --legacy-transport bypasses it. Credentials are resolved automatically.
 
     \f
     :param download_warnings: Invocation collector owned outside telemetry/output.
+    :param concurrency: Global pooled request ceiling.
+    :param ranges_per_blob: Per-blob committed-prefix window.
+    :param range_size: Maximum bytes per range spool.
+    :param sequential: Select pooled C=W=1 without overriding explicit ceilings.
+    :param legacy_transport: Retain the original client with no new status observer.
+    :param download_retries: Optional pooled budget, including zero.
+    :param scratch_dir: Existing trusted root for private bounded range scratch.
     :returns: Verified blob metadata after progress cleanup, for the outer result writer.
     """
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
+    policy = download_policy(
+        ctx, concurrency=concurrency, ranges_per_blob=ranges_per_blob,
+        range_size=range_size, sequential=sequential, legacy_transport=legacy_transport,
+        download_retries=download_retries, scratch_dir=scratch_dir,
+    )
 
     try:
         registry, repo_name, _ = parse_image_ref(repo)
@@ -212,11 +230,18 @@ def blob_get(
                 output_path=output,
                 chunk_size=chunk_size,
                 progress_callback=progress.observe,
-                download_status_callback=download_warnings.observe,
+                download_options=policy,
+                download_status_callback=None if legacy_transport else download_warnings.observe,
             )
     except (AuthError, BlobError, requests.exceptions.RequestException, OSError) as exc:
         if download_warnings.display is not None and download_warnings.display.sink_failed:
             raise
+        if isinstance(exc, BlobError) and exc.status_code == 429:
+            emit_error(
+                f"{repo}@{digest}",
+                f"{exc}; registry throttled the download. Adjust --download-retries "
+                "or reduce --concurrency/--ranges-per-blob (or use --sequential).",
+            )
         emit_error(f"{repo}@{digest}", str(exc))
 
     return info

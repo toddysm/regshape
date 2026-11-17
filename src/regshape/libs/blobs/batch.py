@@ -2,7 +2,8 @@
 
 One invocation borrows one client, owns one pooled transport/coordinator, and
 validates every request/sink before acquisition. Artifact nesting reuses that
-coordinator; this layer does not implement graph or HTTP-range scheduling.
+coordinator; range jobs retain their bounded spools until caller-thread assembly.
+Graph planning belongs to the artifact layer.
 """
 
 import os
@@ -11,13 +12,16 @@ from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, replace
 from inspect import getattr_static
+from pathlib import Path
 from types import BuiltinMethodType, MethodType
 from typing import TypeVar, cast
 
 import requests
 
 from regshape.libs.artifacts.models import ArtifactProgress
+from regshape.libs.artifacts.storage import SafeDirectory
 from regshape.libs.blobs._download_worker import _FullBlob
+from regshape.libs.blobs._ranges import _RangedBlob, _RangePart
 from regshape.libs.blobs.download import (
     BlobBatchResult,
     BlobDownload,
@@ -205,7 +209,10 @@ def _full_blob(
         repo, request.digest, path, request.chunk_size, total_size=request.total_size,
         max_bytes=request.max_bytes, output_dir_fd=request.output_dir_fd,
         transfer_id=transfer_id,
-        reason="sequential" if policy.concurrency == 1 else "ranges_disabled",
+        reason=(
+            "sequential" if policy.concurrency == 1 else
+            "ranges_disabled" if policy.ranges_per_blob == 1 else "small_blob"
+        ),
     )
 
 
@@ -223,16 +230,45 @@ def _job(blob: _FullBlob) -> _Job[BlobInfo]:
     return replace(blob.job(), run=run)
 
 
+def _source(
+    blob: _FullBlob, policy: DownloadOptions, *,
+    staging: tuple[SafeDirectory, Path] | None = None,
+) -> Iterable[_Job[BlobInfo | _RangePart]]:
+    """Choose receipt strategy, borrowing artifact staging for default range scratch."""
+    if policy.ranges_per_blob > 1 and (
+        blob.total_size is None or blob.total_size >= 4 * policy.range_size
+    ):
+        return _RangedBlob(blob, policy, staging=staging).jobs()
+    return [_job(blob)]
+
+
+def _consume(
+    result: BlobInfo | _RangePart, coordinator: _Coordinator,
+) -> BlobInfo | None:
+    """Translate only spool/sink OSError, preserving exact caller-thread observer exceptions."""
+    try:
+        return result.consume(coordinator) if isinstance(result, _RangePart) else result
+    except requests.exceptions.RequestException:
+        raise
+    except OSError as error:
+        if id(coordinator.progress_callback) in coordinator.failed_observers:
+            raise
+        raise BlobError("Cannot write to blob output path") from error
+
+
 def _receive_blob(
     client: RegistryClient, policy: DownloadOptions, request: BlobDownload, repo: str, *,
     progress_callback: ProgressCallback | None = None,
     download_status_callback: Callable[[DownloadStatus], None] | None = None,
     transfer_id: str | None = None,
+    staging: tuple[SafeDirectory, Path] | None = None,
 ) -> BlobInfo:
     """Share singular receipt with artifact rows without changing either public schema.
 
     Validate before acquisition, inherit an enclosing coordinator/status observer,
     and return only after the verified sink and its caller-side cleanup finish.
+    Borrowed staging supplies handle-relative default scratch and its diagnostic
+    location; an explicit policy scratch_dir still takes precedence.
     """
     _validate_observers(progress_callback, download_status_callback)
     blob = _full_blob(repo, request, policy, transfer_id=transfer_id)
@@ -241,7 +277,13 @@ def _receive_blob(
         client, policy, progress_callback=progress_callback,
         download_status_callback=download_status_callback,
     ) as (_, coordinator):
-        coordinator.run([[_job(blob)]], on_result=results.append)
+        def receive(result: BlobInfo | _RangePart) -> None:
+            """Retain metadata only after a full worker or final ordered part verifies."""
+            info = _consume(result, coordinator)
+            if info is not None:
+                results.append(info)
+
+        coordinator.run([_source(blob, policy, staging=staging)], on_result=receive)
     return results[0]
 
 
@@ -311,7 +353,8 @@ def get_blobs(
     including exact observer exceptions; no partial result is returned. Earlier
     verified files may remain. Bounds/sink checks precede auth/pool/output effects.
     Other transport/filesystem failures retain their native taxonomy. Separate
-    calls do not share a process-global cap. Ranges await the range engine.
+    calls do not share a process-global cap. Eligible ranges share the same pool,
+    committed-prefix window and one-time per-blob fallback as singular receipt.
     """
     policy = resolve_download_options(client, download_options, requires_pooled=True)
     _validate_observers(progress_callback, download_status_callback)
@@ -340,9 +383,15 @@ def get_blobs(
         client, policy, progress_callback=progress_callback,
         download_status_callback=download_status_callback, summary=summary,
     ) as (_, coordinator):
+        def receive(result: BlobInfo | _RangePart) -> None:
+            """Index verified final results while allowing range parts to commit in source order."""
+            info = _consume(result, coordinator)
+            if info is not None:
+                results[info.digest] = info
+
         coordinator.run(
-            [[_job(blob)] for blob in blobs],
-            on_result=lambda info: results.__setitem__(info.digest, info),
+            [_source(blob, policy) for blob in blobs],
+            on_result=receive,
         )
     return BlobBatchResult(
         tuple(results[blob.digest] for blob in blobs), summary[0],

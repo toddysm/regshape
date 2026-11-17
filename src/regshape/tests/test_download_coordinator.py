@@ -30,6 +30,7 @@ from regshape.libs.transport._coordinator import (
     _DownloadCancelled,
     _Job,
     _Status,
+    _StrategyFallback,
     _Telemetry,
     _Text,
 )
@@ -91,6 +92,7 @@ def test_round_robin_and_global_cap(client):
     options = DownloadOptions(concurrency=2, ranges_per_blob=1)
     barrier = threading.Barrier(2)
     starts = []
+    submitted = []
     lock = threading.Lock()
 
     def task(worker):
@@ -104,16 +106,24 @@ def test_round_robin_and_global_cap(client):
 
     with DownloadTransport(client, options) as root:
         with _Coordinator(root._download_context) as coordinator:
-            coordinator.run(
-                [
-                    [_job("a", task), _job("a", task)],
-                    [_job("b", task), _job("b", task)],
-                    [_job("c", task)],
-                ],
-                on_result=lambda value: None,
-            )
+            original_submit = coordinator.executor.submit
+
+            def submit(function, *args):
+                """Measure dispatch fairness, not nondeterministic OS thread start order."""
+                submitted.append(args[-1].transfer_id)
+                return original_submit(function, *args)
+
+            with patch.object(coordinator.executor, "submit", side_effect=submit):
+                coordinator.run(
+                    [
+                        [_job("a", task), _job("a", task)],
+                        [_job("b", task), _job("b", task)],
+                        [_job("c", task)],
+                    ],
+                    on_result=lambda value: None,
+                )
             assert set(starts[:2]) == {"a", "b"}
-            assert starts[2] == "c"
+            assert submitted[:3] == ["a", "b", "c"]
             assert coordinator.jobs_peak == 2
 
 
@@ -510,6 +520,108 @@ def test_reset_preserves_received_and_changes_attempt(client):
     assert resets == [True]
     with pytest.raises(FrozenInstanceError):
         completed.stats.bytes_received = 0
+
+
+@pytest.mark.parametrize("first_reason", ["short_range", "etag_changed"])
+@pytest.mark.parametrize("failure_point", ["cleanup", "reset"])
+def test_fallback_reason_survives_cleanup_or_reset_failure(client, first_reason, failure_point):
+    """Competing fallback reasons retain ETag precedence before any destructive cleanup/reset."""
+    from regshape.libs.transport._coordinator import _Outcome, _Stats
+
+    statuses, futures, cleaned = [], [], []
+    primary = OSError("synthetic fallback finalization fault")
+    reasons = [first_reason, "etag_changed" if first_reason == "short_range" else "short_range"]
+
+    def submit(*args):
+        """Make both outcomes visible together without relying on operating-system thread order."""
+        future = Future()
+        futures.append(future)
+        if len(futures) == 2:
+            for stopped, reason in zip(futures, reasons, strict=True):
+                stopped.set_result(_Outcome(
+                    None, _StrategyFallback(reason), _Stats(),
+                    _Telemetry((0, 0, 0, 0, 0), 0.0, (), ()),
+                ))
+        return future
+
+    def cleanup(accepted):
+        """Fail once before resetting so the original reason must already be durable."""
+        if failure_point == "cleanup" and not cleaned:
+            cleaned.append(True)
+            raise primary
+
+    def fallback(reason):
+        """Reject the reset after verifying the selected reason and without dispatching full GET."""
+        assert reason == "etag_changed"
+        raise primary
+
+    with (
+        patch("regshape.libs.transport._coordinator.ThreadPoolExecutor.submit", side_effect=submit),
+        DownloadTransport(client, DownloadOptions(concurrency=2, ranges_per_blob=2)) as root,
+        _Coordinator(root._download_context, status_callback=statuses.append) as coordinator,
+        pytest.raises(OSError) as caught,
+    ):
+        coordinator.run([[
+            replace(
+                _job("a", lambda worker: None, cleanup=cleanup),
+                strategy="ranged", reason="range_enabled", fallback=fallback,
+            ) for _ in range(2)
+        ]], on_result=lambda value: None)
+    assert caught.value is primary and len(futures) == 2
+    failed = next(event for event in statuses if event.status.event == "failed")
+    assert failed.status.reason == "etag_changed" and failed.attempt == 1
+    assert not any(event.status.event == "fallback" for event in statuses)
+
+
+def test_fallback_drains_queued_logs_before_releasing_old_job(client, caplog):
+    """Stopped fallback jobs retain reservations until all diagnostics reach the caller once."""
+    logger = logging.getLogger("regshape.tests.fallback.drain")
+    cancelled = threading.Event()
+    caller = threading.get_ident()
+    progress, statuses, results = [], [], []
+
+    def submit(function, *args):
+        """Stop the worker before pumping, leaving a deterministic queued-record backlog."""
+        future = Future()
+        future.set_result(function(*args))
+        return future
+
+    def stopped(worker):
+        """Queue diagnostics behind progress, then request source-local strategy fallback."""
+        _progress(worker, 0)
+        for index in range(3):
+            emit_log(logger, logging.WARNING, "old range diagnostic %s", index)
+        _progress(worker, 1)
+        worker.emit(_Status("retry", "ranged", "http_status", 503))
+        raise _StrategyFallback("etag_changed")
+
+    def fallback(reason):
+        """Require complete caller-thread diagnostic delivery before resetting or dispatching."""
+        assert reason == "etag_changed"
+        assert [record.getMessage() for record in caplog.records] == [
+            f"old range diagnostic {index}" for index in range(3)
+        ]
+        assert all(record.thread == caller for record in caplog.records)
+        assert not coordinator.pending
+        return [_job("a", lambda worker: "verified", attempt=2, terminal=True)]
+
+    with (
+        patch("regshape.libs.transport._coordinator.ThreadPoolExecutor.submit", side_effect=submit),
+        DownloadTransport(client, DownloadOptions(concurrency=2)) as root,
+        _Coordinator(
+            root._download_context, progress_callback=progress.append, status_callback=statuses.append,
+        ) as coordinator,
+    ):
+        coordinator.run([[
+            replace(
+                _job("a", stopped), strategy="ranged", cancelled=cancelled, fallback=fallback,
+            ),
+        ]], on_result=results.append)
+    assert results == ["verified"] and cancelled.is_set()
+    assert len(caplog.records) == 3
+    assert not any(event.bytes_completed == 1 for event in progress)
+    assert not any(event.status.event == "retry" for event in statuses)
+    assert sum(event.status.event == "fallback" for event in statuses) == 1
 
 
 def test_reset_queues_zero_artifact_progress_on_same_row(client):

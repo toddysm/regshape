@@ -1,4 +1,4 @@
-"""Collect safe download status and emit one warning after command output/cleanup.
+"""Validate shared download controls and defer safe warnings until command cleanup.
 
 The collector never prints from a status callback. Commands place this scope
 outside telemetry, progress and result output; it owns neither workers nor sinks.
@@ -8,22 +8,74 @@ import io
 import logging
 import os
 import sys
+from collections.abc import Callable
 from types import TracebackType
-from typing import IO, Literal, final
+from typing import IO, Any, Literal, final
 
 import click
+from click.core import ParameterSource
 
 from regshape.cli.progress import (
     ProgressDisplay,
     _redirect_stderr_handlers,
     _restore_stderr_handlers,
 )
-from regshape.libs.blobs.download import DownloadStatus
+from regshape.libs.blobs.download import DownloadOptions, DownloadStatus
 from regshape.libs.decorators import get_telemetry_config
 
 if sys.platform == "win32":
     import ctypes
     import msvcrt
+
+
+def download_options(function: Callable[..., Any]) -> Callable[..., Any]:
+    """Attach shared pooled/range/legacy controls without resolving credentials or opening files."""
+    for option in reversed((
+        click.option("--concurrency", type=click.IntRange(1, 32), default=4, show_default=True,
+                     help="Maximum concurrent download requests."),
+        click.option("--ranges-per-blob", type=click.IntRange(1, 32), default=1, show_default=True,
+                     help="Concurrent ranges per blob; 1 uses a full GET."),
+        click.option("--range-size", type=click.IntRange(65_536, 67_108_864),
+                     default=8_388_608, show_default=True, metavar="BYTES",
+                     help="HTTP range bytes, separate from the streaming I/O buffer."),
+        click.option("--sequential", is_flag=True,
+                     help="Use one pooled request at a time (not legacy transport)."),
+        click.option("--legacy-transport", is_flag=True,
+                     help="Use the original serial transport without pooled status/retry controls."),
+        click.option("--download-retries", type=click.IntRange(0, 10), default=None,
+                     metavar="N", help="Pooled retry budget, including 429 (default: 3; 0 disables)."),
+        click.option("--scratch-dir", type=click.Path(exists=True, file_okay=False), default=None,
+                     metavar="PATH", help="Existing trusted root for bounded private range spools."),
+    )):
+        function = option(function)
+    return function
+
+
+def download_policy(
+    ctx: click.Context, *, concurrency: int, ranges_per_blob: int, range_size: int,
+    sequential: bool, legacy_transport: bool, download_retries: int | None,
+    scratch_dir: str | None,
+) -> DownloadOptions:
+    """Map explicit Click controls to SDK policy, rejecting conflicts before credential lookup."""
+    explicit = {
+        name for name in (
+            "concurrency", "ranges_per_blob", "sequential", "download_retries", "scratch_dir",
+        )
+        if ctx.get_parameter_source(name) not in (None, ParameterSource.DEFAULT)
+    }
+    if legacy_transport and explicit:
+        raise click.UsageError("--legacy-transport conflicts with explicit pooled download controls")
+    if sequential and explicit.intersection(("concurrency", "ranges_per_blob")):
+        raise click.UsageError("--sequential conflicts with explicit --concurrency/--ranges-per-blob")
+    try:
+        return DownloadOptions(
+            concurrency=1 if sequential or legacy_transport else concurrency,
+            ranges_per_blob=1 if sequential or legacy_transport else ranges_per_blob,
+            range_size=range_size, max_retries=download_retries, scratch_dir=scratch_dir,
+            transport="legacy" if legacy_transport else "pooled",
+        )
+    except ValueError as error:
+        raise click.BadParameter(str(error)) from error
 
 
 class _DownloadOutput(io.TextIOBase, IO[str]):
