@@ -231,15 +231,18 @@ def test_received_is_not_completion_and_kind_updates_one_row() -> None:
         assert (
             "Received" in terminal.rows[-1] and "Downloaded" not in terminal.getvalue()
         )
-        with pytest.raises(RuntimeError):
-            display.observe(event(ManifestPhase.PREPARING, identity="concurrent"))
+        display.observe(event(ManifestPhase.PREPARING, identity="concurrent"))
+        with pytest.raises(RuntimeError, match="required stage"):
+            display.processing_manifest()
+        display.observe(event(ManifestPhase.FAILED, identity="concurrent"))
         display.processing_manifest()
         assert "Processing" in terminal.rows[-1]
         display.writing_manifest()
         assert "Writing" in terminal.rows[-1]
         display.finish_manifest()
     rows = [row for row in terminal.rows if row]
-    assert len(rows) == 1 and rows[0].startswith("Index 1 Downloaded")
+    assert len(rows) == 2 and rows[0].startswith("Manifest 2 Failed")
+    assert rows[1].startswith("Index 1 Downloaded")
     assert display.completed == display.skipped == 0
 
 

@@ -1,4 +1,4 @@
-"""Screen-frame and command wiring tests for single-row progress rendering."""
+"""Screen-frame and command wiring regressions for shared transfer progress."""
 
 import errno
 import hashlib
@@ -18,8 +18,10 @@ import requests
 from click.testing import CliRunner
 
 from regshape.cli.blob import _trusted_file_size
+from regshape.cli.downloads import DownloadWarnings
 from regshape.cli.main import regshape
 from regshape.cli.progress import ProgressDisplay
+from regshape.libs.blobs import BlobDownload, DownloadOptions, get_blob, get_blobs
 from regshape.libs.decorators import (
     TelemetryConfig,
     configure_telemetry,
@@ -35,6 +37,9 @@ from regshape.libs.progress import (
     TransferProgress,
     _TransferProgress,
 )
+from regshape.libs.transport import RegistryClient, TransportConfig
+from regshape.tests.artifact_fixtures import StreamResponse
+from regshape.tests.test_artifact_options import runner as runner  # noqa: PLC0414 - minimum Click fixture
 
 DIGEST = "sha256:" + "a" * 64
 
@@ -62,12 +67,15 @@ class Terminal(io.StringIO):
         last = max([self.row] + [i for i, row in enumerate(self._rows) if row])
         return self._rows[:last + 1]
 
-    def resize(self, width: int) -> None:
-        """Reflow the active logical line as a terminal does when its columns shrink."""
-        text = self._rows[self.row]
-        chunks = [text[i:i + width] for i in range(0, len(text), width)] or [""]
-        self._rows[self.row:self.row + 1] = chunks
-        self.row += len(chunks) - 1
+    def resize(self, width: int, active_rows: int = 1) -> None:
+        """Reflow the selected active block on shrink, preserving preceding hard-newline output."""
+        start = self.row - active_rows + 1
+        chunks = [
+            chunk for text in self._rows[start:self.row + 1]
+            for chunk in ([text[i:i + width] for i in range(0, len(text), width)] or [""])
+        ]
+        self._rows[start:self.row + 1] = chunks
+        self.row = start + len(chunks) - 1
         self.column = len(chunks[-1])
         self.width = width
 
@@ -249,6 +257,46 @@ def test_uninitialized_terminal_size_uses_a_positive_fallback(
     assert len([r for r in terminal.rows if r.startswith("Blob")]) == 1
 
 
+@pytest.mark.parametrize("lines", [0, -1])
+def test_uninitialized_terminal_height_keeps_interleaved_rows_visible(
+    lines: int, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An uninitialized height uses the fallback viewport rather than hiding all but one row."""
+    terminal = Terminal()
+    other = "sha256:" + "b" * 64
+    monkeypatch.setenv("COLUMNS", "160")
+    monkeypatch.setenv("LINES", "4")
+    with (
+        patch.object(terminal, "fileno", return_value=2),
+        patch("os.get_terminal_size", return_value=os.terminal_size((160, lines))),
+        ProgressDisplay(stream=terminal) as display,
+    ):
+        display.observe(_event(TransferPhase.TRANSFERRING, 20))
+        display.observe(_event(TransferPhase.TRANSFERRING, 40, digest=other))
+        assert len([row for row in terminal.rows if row.startswith("Blob")]) == 2
+        display.observe(_event(TransferPhase.COMPLETED, 100, digest=other))
+        display.observe(_event(TransferPhase.COMPLETED, 100))
+
+
+def test_download_telemetry_does_not_flush_a_closed_borrowed_sink(tmp_path: Path) -> None:
+    """A retained telemetry proxy can close after its borrowed stderr without flushing it."""
+    with (tmp_path / "stderr.txt").open("w", encoding="utf-8") as terminal:
+        with (
+            patch.object(terminal, "isatty", return_value=True),
+            patch("sys.stderr", terminal),
+            DownloadWarnings() as warnings,
+        ):
+            assert warnings._output is not None
+            config = TelemetryConfig(output=warnings._output)
+            configure_telemetry(config)
+            with ProgressDisplay():
+                proxy = config.output
+        terminal.write("borrowed stderr remains open\n")
+    with patch.object(terminal, "flush", wraps=terminal.flush) as flush:
+        proxy.close()
+    flush.assert_not_called()
+
+
 @pytest.mark.parametrize("reason", ["disabled", "structured", "nonterminal", "json-telemetry"])
 def test_suppressed_progress_writes_no_controls_or_state_lines(reason: str) -> None:
     """Disabled/noninteractive/structured paths keep their original result channels clean."""
@@ -357,7 +405,7 @@ def test_final_newline_flush_failure_overwrites_original_row(
 @pytest.mark.parametrize("error_type", [OSError, KeyboardInterrupt, SystemExit])
 @pytest.mark.parametrize("failure_point", ["label", "label-flush", "newline-flush"])
 def test_nested_upload_telemetry_cannot_finalize_failed_success(
-    tmp_path: Path, chunked: bool, error_type: type[BaseException], failure_point: str,
+    runner: CliRunner, tmp_path: Path, chunked: bool, error_type: type[BaseException], failure_point: str,
 ) -> None:
     """Real command/library scenario finalizers must not redraw a failed completion as success."""
     data = b"abcdef"
@@ -422,7 +470,7 @@ def test_nested_upload_telemetry_cannot_finalize_failed_success(
         patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
         patch("regshape.libs.decorators.call_details.requests.request", side_effect=respond),
     ):
-        result = CliRunner().invoke(regshape, args)
+        result = runner.invoke(regshape, args)
     assert result.exit_code != 0 and result.stdout == "" and failed
     rows = [r for r in terminal.rows if r.startswith("Blob")]
     assert len(rows) == 1 and "Uploaded" not in rows[0]
@@ -635,6 +683,181 @@ def test_retry_resets_rate_and_empty_transfer_has_no_percentage() -> None:
     assert "0 B/0 B" in terminal.getvalue() and "%" not in terminal.getvalue()
 
 
+def test_interleaved_objects_keep_ordinals_and_finish_out_of_order() -> None:
+    """Completing one object must retain another object's live row and verification gate."""
+    terminal, now = Terminal(), [0.0]
+    other = "sha256:" + "b" * 64
+    with ProgressDisplay(stream=terminal, clock=lambda: now[0], columns=lambda: 160) as display:
+        display.observe(_event(TransferPhase.TRANSFERRING, 20))
+        display.observe(_event(TransferPhase.TRANSFERRING, 10, digest=other))
+        assert sum(row.startswith("Blob") for row in terminal.rows) == 2
+        now[0] = 1
+        display.observe(_event(TransferPhase.TRANSFERRING, 100, digest=other))
+        assert display.completed == 0 and "Uploaded" not in terminal.getvalue()
+        display.observe(_event(TransferPhase.COMPLETED, 100, digest=other))
+        assert display.completed == 1
+        assert any("Blob 1" in row and "Uploading" in row for row in terminal.rows)
+        display.observe(_event(TransferPhase.VERIFYING, 100))
+        display.observe(_event(TransferPhase.COMPLETED, 100))
+    rows = [row for row in terminal.rows if row.startswith("Blob")]
+    assert len(rows) == 2 and all("Uploaded" in row for row in rows)
+    assert {"Blob 1", "Blob 2"} == {row.split("/")[0] for row in rows}
+
+
+def test_interleaved_attempts_reset_only_the_parent_blob() -> None:
+    """Absolute range rollups replace counts; a drained fallback resets only its own attempt."""
+    terminal, now = Terminal(), [0.0]
+    other = "sha256:" + "b" * 64
+    with ProgressDisplay(stream=terminal, clock=lambda: now[0], columns=lambda: 160) as display:
+        display.observe(_event(TransferPhase.TRANSFERRING))
+        display.observe(_event(TransferPhase.TRANSFERRING, digest=other))
+        now[0] = 1
+        display.observe(_event(TransferPhase.TRANSFERRING, 60))
+        display.observe(_event(TransferPhase.TRANSFERRING, 40, digest=other))
+        display.observe(_event(TransferPhase.PREPARING, attempt=2))
+        assert any("Blob 1" in row and "Preparing 0 B" in row for row in terminal.rows)
+        assert any("Blob 2" in row and "40 B/s" in row for row in terminal.rows)
+        display.observe(_event(TransferPhase.TRANSFERRING, 10, attempt=2))
+        display.observe(_event(TransferPhase.COMPLETED, 100, attempt=1))
+        assert display.completed == 0
+        now[0] = 2
+        display.observe(_event(TransferPhase.TRANSFERRING, 20, attempt=2))
+        assert any("Blob 1" in row and "20 B/s" in row for row in terminal.rows)
+        assert sum(row.startswith("Blob") for row in terminal.rows) == 2
+        display.observe(_event(TransferPhase.COMPLETED, 100, attempt=2))
+        display.observe(_event(TransferPhase.COMPLETED, 100, digest=other))
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt])
+def test_interleaved_cleanup_finalizes_all_active_rows(error_type: type[BaseException]) -> None:
+    """A primary failure marks every unfinished object without altering an earlier success."""
+    terminal = Terminal()
+    primary = error_type("operation stopped")
+    with pytest.raises(error_type) as caught, ProgressDisplay(stream=terminal) as display:
+        display.observe(_event(TransferPhase.COMPLETED, 100))
+        for value in ("b", "c"):
+            display.observe(_event(TransferPhase.TRANSFERRING, 10, digest="sha256:" + value * 64))
+        raise primary
+    assert caught.value is primary and display.completed == 1
+    rows = [row for row in terminal.rows if row.startswith("Blob")]
+    assert len(rows) == 3 and "Uploaded" in rows[0]
+    assert all(("Cancelled" if error_type is KeyboardInterrupt else "Failed") in row for row in rows[1:])
+
+
+def test_live_rows_and_redraw_work_exclude_completed_history() -> None:
+    """A long-lived blob cannot accumulate full row/rate state for later finished objects."""
+    terminal = Terminal()
+    with ProgressDisplay(stream=terminal, show_counts=True, total_blobs=None) as display:
+        display.observe(_event(TransferPhase.TRANSFERRING, 10))
+        for index in range(50):
+            digest = f"sha256:{index:064x}"
+            display.observe(_event(TransferPhase.COMPLETED, 100, digest=digest))
+            assert len(display._active) == len(display._starts) == 1
+        with patch.object(display, "_text", wraps=display._text) as text:
+            display.observe(_event(TransferPhase.VERIFYING, 100))
+        assert text.call_count == 1 and display.completed == 50
+        display.observe(_event(TransferPhase.COMPLETED, 100))
+
+
+def test_interleaved_diagnostics_preserve_every_live_row() -> None:
+    """Partial telemetry and out-of-order finals leave one diagnostic and one row per object."""
+    terminal = Terminal()
+    config = TelemetryConfig(output=terminal)
+    configure_telemetry(config)
+    with ProgressDisplay(stream=terminal, columns=lambda: 160) as display:
+        display.observe(_event(TransferPhase.TRANSFERRING, 20))
+        display.observe(_event(TransferPhase.TRANSFERRING, 40, digest="sha256:" + "b" * 64))
+        config.output.write("partial")
+        display.observe(_event(TransferPhase.COMPLETED, 100))
+        display.observe(_event(TransferPhase.COMPLETED, 100, digest="sha256:" + "b" * 64))
+        config.output.write(" diagnostic\n")
+    assert terminal.rows[0] == "partial diagnostic"
+    rows = [row for row in terminal.rows if row.startswith("Blob")]
+    assert len(rows) == 2 and all("Uploaded" in row for row in rows)
+    assert display.completed == 2 and not display._active
+
+
+def test_interleaved_resize_erases_only_the_live_block() -> None:
+    """Reflowed rows clear without erasing a preceding diagnostic or duplicating object rows."""
+    terminal, width = Terminal(), [160]
+    terminal.write("prior diagnostic\n")
+    other = "sha256:" + "b" * 64
+    with ProgressDisplay(stream=terminal, columns=lambda: width[0]) as display:
+        display.observe(_event(TransferPhase.TRANSFERRING, 20))
+        display.observe(_event(TransferPhase.TRANSFERRING, 40, digest=other))
+        width[0] = 24
+        terminal.resize(24, active_rows=2)
+        display.observe(_event(TransferPhase.VERIFYING, 100))
+        assert terminal.rows[0] == "prior diagnostic"
+        assert len([row for row in terminal.rows[1:] if row]) == 2
+        display.observe(_event(TransferPhase.COMPLETED, 100, digest=other))
+        display.observe(_event(TransferPhase.COMPLETED, 100))
+    assert terminal.rows[0] == "prior diagnostic"
+    assert len([row for row in terminal.rows[1:] if row]) == 2
+
+
+def test_interleaved_viewport_does_not_scroll_its_active_block() -> None:
+    """Offscreen objects retain ordinals/state without making live redraw exceed terminal height."""
+    terminal = Terminal()
+    terminal.write("prior diagnostic\n")
+    with (
+        patch.object(terminal, "fileno", return_value=2),
+        patch("os.get_terminal_size", return_value=os.terminal_size((160, 3))),
+        ProgressDisplay(stream=terminal, total_blobs=None) as display,
+    ):
+        for index in range(4):
+            display.observe(_event(TransferPhase.TRANSFERRING, digest=f"sha256:{index:064x}"))
+            assert len(display._rendered_lines) <= 2
+        for index in (3, 1, 0, 2):
+            display.observe(_event(TransferPhase.COMPLETED, 100, digest=f"sha256:{index:064x}"))
+    assert terminal.rows[0] == "prior diagnostic"
+    rows = [row for row in terminal.rows if row.startswith("Blob")]
+    assert len(rows) == 4 and all("Uploaded" in row for row in rows)
+
+
+@pytest.mark.parametrize("backend", ["legacy", "pooled", "parallel", "combined"])
+def test_real_download_observations_share_the_renderer(backend: str) -> None:
+    """Legacy, pooled sequential and batch full streams preserve parent rows under either policy."""
+    payloads = [b"first blob", b"second blob"]
+    digests = ["sha256:" + hashlib.sha256(data).hexdigest() for data in payloads]
+    terminal = Terminal()
+    options = (
+        DownloadOptions.legacy() if backend == "legacy"
+        else DownloadOptions.sequential() if backend == "pooled"
+        else DownloadOptions(concurrency=2, ranges_per_blob=2 if backend == "combined" else 1)
+    )
+
+    def respond(method: str, url: str, **kwargs: object) -> requests.Response:
+        """Return bounded entities without requiring overlapping first-request auth negotiation."""
+        digest = url.rsplit("/", 1)[-1]
+        data = payloads[digests.index(digest)]
+        return StreamResponse(data, headers={
+            "Content-Length": str(len(data)), "Docker-Content-Digest": digest,
+        })
+
+    with (
+        patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
+        patch("requests.request", side_effect=respond),
+        patch("requests.Session.request", side_effect=respond),
+        ProgressDisplay(stream=terminal, total_blobs=None) as display,
+    ):
+        client = RegistryClient(TransportConfig("registry.example"))
+        if backend in ("legacy", "pooled"):
+            info = get_blob(client, "repo", digests[0], download_options=options,
+                            progress_callback=display.observe, chunk_size=2)
+            assert info.digest == digests[0]
+        else:
+            result = get_blobs(
+                client, "repo", [BlobDownload(digest, chunk_size=2) for digest in digests],
+                download_options=options, progress_callback=display.observe,
+            )
+            assert [info.digest for info in result.blobs] == digests
+    expected = 1 if backend in ("legacy", "pooled") else 2
+    assert display.completed == expected and not display._active
+    rows = [row for row in terminal.rows if row.startswith("Blob")]
+    assert len(rows) == expected and all("Downloaded" in row for row in rows)
+
+
 def test_preparation_label_cannot_inject_terminal_controls() -> None:
     """Caller-supplied preparation text is escaped before it reaches the terminal."""
     terminal = Terminal()
@@ -652,7 +875,7 @@ def test_preparation_label_cannot_inject_terminal_controls() -> None:
 ])
 @pytest.mark.parametrize("mode", ["tty", "disabled", "structured"])
 def test_blob_upload_real_library_consumption(
-    upload_source: Path, chunked: bool, source_kind: str, mode: str,
+    runner: CliRunner, upload_source: Path, chunked: bool, source_kind: str, mode: str,
 ) -> None:
     """Both real upload protocols produce intermediate observations through command wiring."""
     data = b"" if source_kind == "empty" else b"abcdef"
@@ -728,7 +951,7 @@ def test_blob_upload_real_library_consumption(
         patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
         patch("regshape.libs.decorators.call_details.requests.request", side_effect=respond),
     ):
-        result = CliRunner().invoke(regshape, args)
+        result = runner.invoke(regshape, args)
     assert result.exit_code == 0, result.output
     assert b"".join(payloads) == data
     assert json.loads(result.stdout)["digest"] == digest
@@ -752,7 +975,9 @@ def test_blob_upload_real_library_consumption(
 
 @pytest.mark.parametrize("chunked", [False, True])
 @pytest.mark.parametrize("disabled", [False, True])
-def test_blob_upload_stream_wiring_preserves_json(tmp_path: Path, chunked: bool, disabled: bool) -> None:
+def test_blob_upload_stream_wiring_preserves_json(
+    runner: CliRunner, tmp_path: Path, chunked: bool, disabled: bool,
+) -> None:
     """The CLI selects the matching file-backed protocol and passes a real observer."""
     path = tmp_path / "blob"
     path.write_bytes(b"abcdef")
@@ -776,7 +1001,7 @@ def test_blob_upload_stream_wiring_preserves_json(tmp_path: Path, chunked: bool,
         patch("regshape.cli.blob.RegistryClient"),
         patch("regshape.cli.blob." + name, side_effect=upload),
     ):
-        result = CliRunner().invoke(regshape, args)
+        result = runner.invoke(regshape, args)
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["size"] == 6 and len(seen) == 2
     assert result.stderr == ""
@@ -812,7 +1037,7 @@ def test_size_probe_unsupported_seek_and_io_errors(
 
 
 @pytest.mark.parametrize("disabled", [False, True])
-def test_blob_download_real_library_wiring(disabled: bool) -> None:
+def test_blob_download_real_library_wiring(runner: CliRunner, disabled: bool) -> None:
     """Exercise the pooled bounded receiver with a real urllib3 stream, without sockets."""
     from regshape.tests.artifact_fixtures import StreamResponse
 
@@ -834,7 +1059,7 @@ def test_blob_download_real_library_wiring(disabled: bool) -> None:
         patch("regshape.libs.decorators.call_details.requests.request", return_value=response) as http,
         patch("requests.Session.request", side_effect=http),
     ):
-        result = CliRunner().invoke(regshape, args)
+        result = runner.invoke(regshape, args)
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["digest"] == digest
     assert result.stderr == "" and http.call_count == 1

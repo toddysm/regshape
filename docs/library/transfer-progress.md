@@ -91,6 +91,42 @@ Callbacks receive all library observations even when a command-line renderer
 coalesces its screen updates. Keep callbacks lightweight and synchronous;
 do not pass an `async def` callback.
 
+### Shared CLI renderer contract
+
+The shared [renderer](../../src/regshape/cli/progress.py) accepts serialized,
+interleaved `TransferProgress`, `ManifestProgress` and `ArtifactProgress`
+observations. Blob digests and opaque document/object identities retain their
+ordinals across byte updates and attempts. Range producers must deliver the
+parent object's absolute accepted count, not per-part deltas or extra rows.
+An increased attempt resets that object's count/rate without resetting another
+object; observations from an older attempt are ignored.
+Unknown artifact kinds temporarily reserve their ordinal across kind groups,
+so discovery preserves both the number and rate clock. Interleaving during
+discovery can leave gaps in a kind's numbering rather than renumbering live rows.
+
+Only verified `COMPLETED`/`stored`, `SKIPPED`, `FAILED` or `CANCELLED` events
+finalize object rows. Standalone manifest `RECEIVED` still requires explicit
+command-owned output completion. A full byte bar alone is never success.
+Terminal rows move to scrollback before the live block, whose remaining rows
+retain relative order. Excess live rows wait offscreen when the terminal is
+short. Full snapshots and rate clocks are retained only for active objects;
+completed identities/ordinals remain compact deduplication metadata. Routine
+redraws and displayed success counts do not scan completed history.
+
+The [download status callback](downloads.md#status-and-statistics)
+is separate from byte progress. CLI consumers collect `etag_changed` without a
+live warning, then emit one safe warning after command cleanup/result output,
+flushing successful stdout first. Artifact invocations count unique affected
+blob addresses rather than parts or reused references. Suppressing progress
+does not suppress these diagnostics; failures never claim verified recovery
+and a failed terminal sink is not reused for warning delivery. Invocation-scoped
+stderr tracking remains active through post-display error reporting and telemetry
+cleanup, including disabled, structured and noninteractive progress. Distinct
+stdout/stderr streams referencing the same OS destination are treated as shared.
+Where descriptor identity is unavailable, only object identity establishes sharing.
+Cancellation and Click errors on a failed sink retain their exit codes without
+letting Click print secondary diagnostics to that destination.
+
 ## Collect state without printing per-event lines
 
 Given a stable local `blob.bin` and access to your registry:

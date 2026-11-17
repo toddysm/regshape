@@ -315,6 +315,23 @@ These snapshots are not printed as three successive progress lines. Only the
 last state remains when the command advances to another blob. Separate error
 and telemetry messages are diagnostics, not additional progress rows.
 
+The renderer also accepts interleaved objects: an object's number remains stable
+while other objects advance or finish first. Completed rows are retained above
+the remaining live block; retries reset only the affected object's byte count
+and rate. On short terminals, excess active rows wait offscreen rather than
+scrolling the live block out of reach. This renderer support does **not** enable
+parallel artifact graph acquisition or HTTP range requests by itself; those
+engines and command controls remain separate delivery work.
+
+Changed-ETag fallback observations are collected without interrupting an active
+download. Once the operation has closed progress and cleanup, its successful
+result is written/flushed before one fixed warning on stderr. Artifact pulls
+coalesce unique affected blob counts. Warnings remain visible with
+`--no-progress`, artifact `--json`, `NO_COLOR` and redirected stderr; failures say
+that fallback was attempted, not that recovery succeeded. A failed output sink
+is not reused to deliver a warning. The current full-stream-only download engine
+does not generate changed-ETag range fallbacks yet.
+
 ### What the numbers mean
 
 | Transfer | Counted bytes |

@@ -16,11 +16,14 @@ import errno
 import logging
 import os
 import stat
-from typing import BinaryIO
+from collections.abc import Callable
+from functools import wraps
+from typing import Any, BinaryIO
 
 import click
 import requests
 
+from regshape.cli.downloads import DownloadWarnings
 from regshape.cli.formatting import emit_error, emit_json
 from regshape.cli.progress import ProgressDisplay
 from regshape.libs.blobs import (
@@ -34,6 +37,7 @@ from regshape.libs.blobs import (
 from regshape.libs.decorators import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import AuthError, BlobError
+from regshape.libs.models.blob import BlobInfo
 from regshape.libs.refs import parse_image_ref
 from regshape.libs.transport import RegistryClient, TransportConfig
 
@@ -110,7 +114,23 @@ def blob_head(ctx, repo, digest):
 # ===========================================================================
 
 
+def _after_blob_telemetry(func: Callable[..., BlobInfo]) -> Callable[..., None]:
+    """Keep the original blob JSON outside cleanup, followed by any deferred warning."""
+    @wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> None:
+        """Await all transfer/telemetry cleanup before output and warning delivery."""
+        with DownloadWarnings() as warnings:
+            info = func(*args, **kwargs, download_warnings=warnings)
+            try:
+                emit_json(info.to_dict())
+            except BaseException:
+                warnings.result_failed()
+                raise
+    return wrapper
+
+
 @blob.command("get")
+@_after_blob_telemetry
 @telemetry_options
 @click.option("--no-progress", is_flag=True, default=False, help="Disable interactive transfer progress.")
 @click.option(
@@ -145,7 +165,10 @@ def blob_head(ctx, repo, digest):
 )
 @click.pass_context
 @track_scenario("blob get")
-def blob_get(ctx, repo, digest, output, chunk_size, no_progress):
+def blob_get(
+    ctx: click.Context, repo: str, digest: str, output: str | None,
+    chunk_size: int, no_progress: bool, download_warnings: DownloadWarnings,
+) -> BlobInfo:
     """Download a blob and verify its digest.
 
     The blob content is streamed from the registry and the SHA-256 digest is
@@ -154,6 +177,10 @@ def blob_get(ctx, repo, digest, output, chunk_size, no_progress):
 
     The --chunk-size option controls the size of streaming chunks used when
     downloading the blob. Credentials are resolved automatically.
+
+    \f
+    :param download_warnings: Invocation collector owned outside telemetry/output.
+    :returns: Verified blob metadata after progress cleanup, for the outer result writer.
     """
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
@@ -177,6 +204,7 @@ def blob_get(ctx, repo, digest, output, chunk_size, no_progress):
 
     try:
         with ProgressDisplay(disabled=no_progress) as progress:
+            download_warnings.display = progress
             info = get_blob(
                 client=client,
                 repo=repo_name,
@@ -184,11 +212,14 @@ def blob_get(ctx, repo, digest, output, chunk_size, no_progress):
                 output_path=output,
                 chunk_size=chunk_size,
                 progress_callback=progress.observe,
+                download_status_callback=download_warnings.observe,
             )
     except (AuthError, BlobError, requests.exceptions.RequestException, OSError) as exc:
+        if download_warnings.display is not None and download_warnings.display.sink_failed:
+            raise
         emit_error(f"{repo}@{digest}", str(exc))
 
-    emit_json(info.to_dict())
+    return info
 
 
 # ===========================================================================

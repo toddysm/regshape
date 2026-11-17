@@ -13,6 +13,7 @@ from typing import Any
 import click
 import requests
 
+from regshape.cli.downloads import DownloadWarnings
 from regshape.cli.formatting import emit_error, emit_json, emit_text
 from regshape.cli.options import artifact_option
 from regshape.cli.progress import ProgressDisplay
@@ -86,20 +87,25 @@ def _after_telemetry(func: Callable[..., ArtifactPullResult]) -> Callable[..., N
     """
     @wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> None:
-        """Print the completed result after required diagnostics and log close, never before."""
-        result = func(*args, **kwargs)
-        if kwargs["json_output"]:
-            emit_json(_result_data(result))
-        else:
-            emit_text(
-                "Downloaded complete artifact.\n"
-                f"Source: {result.source}\n"
-                f"Resolved: {result.resolved_reference}\n"
-                f"Output: {result.output_path}\n"
-                f"Format: {result.output_format.value}\n"
-                f"Objects: {result.indexes} indexes, {result.manifests} manifests, {result.blobs} blobs\n"
-                f"Shared references reused: {result.reused_references}"
-            )
+        """Emit the result, then one deferred warning after diagnostics and log close."""
+        with DownloadWarnings(artifact=True) as warnings:
+            result = func(*args, **kwargs, download_warnings=warnings)
+            try:
+                if kwargs["json_output"]:
+                    emit_json(_result_data(result))
+                else:
+                    emit_text(
+                        "Downloaded complete artifact.\n"
+                        f"Source: {result.source}\n"
+                        f"Resolved: {result.resolved_reference}\n"
+                        f"Output: {result.output_path}\n"
+                        f"Format: {result.output_format.value}\n"
+                        f"Objects: {result.indexes} indexes, {result.manifests} manifests, {result.blobs} blobs\n"
+                        f"Shared references reused: {result.reused_references}"
+                    )
+            except BaseException:
+                warnings.result_failed()
+                raise
     return wrapper
 
 
@@ -157,6 +163,7 @@ def pull(
     max_manifest_bytes: int, max_objects: int, max_depth: int, max_total_bytes: int,
     max_archive_bytes: int, max_archive_input_bytes: int,
     json_output: bool, no_progress: bool,
+    download_warnings: DownloadWarnings,
 ) -> ArtifactPullResult:
     """Pull all indexes, manifests, configs, layers and explicit subjects without extraction.
 
@@ -166,6 +173,7 @@ def pull(
     Reverse referrer discovery and platform selection are not performed.
 
     \f
+    :param download_warnings: Invocation collector owned outside telemetry/result output.
     :returns: Complete publication for the outer post-telemetry result writer.
     :raises click.BadParameter: For invalid source syntax or positive-integer policy.
     """
@@ -187,8 +195,10 @@ def pull(
 
     try:
         with ProgressDisplay(disabled=no_progress, structured=json_output, total_blobs=None) as progress:
+            download_warnings.display = progress
             result = _pull_with_progress(
                 ctx, registry, repo, reference, output, selected_format, limits, progress,
+                download_warnings,
             )
             flush_telemetry()
             progress.finish_preparation()
@@ -202,6 +212,7 @@ def pull(
 def _pull_with_progress(
     ctx: click.Context, registry: str, repo: str, reference: str, output: str,
     output_format: ArtifactFormat, limits: ArtifactLimits, progress: ProgressDisplay,
+    download_warnings: DownloadWarnings,
 ) -> ArtifactPullResult:
     """Format expected operation failures while retaining callback/diagnostic error identity.
 
@@ -209,6 +220,8 @@ def _pull_with_progress(
     filesystem/domain errors; scenario, final-display and result sinks remain
     outside it. Transport exception messages can contain signed redirect queries,
     so their command diagnostic includes only the exception type.
+
+    :param download_warnings: Safe status sink kept active even when redraws are suppressed.
     """
     observers = _ArtifactObservers(progress)
     try:
@@ -218,6 +231,7 @@ def _pull_with_progress(
         result = pull_artifact(
             client, repo, reference, output, output_format=output_format, limits=limits,
             progress_callback=observers.observe, phase_callback=observers.phase,
+            download_status_callback=download_warnings.observe,
         )
     except (ArtifactError, AuthError, BlobError, ManifestError, OSError) as error:
         if observers.error is error:

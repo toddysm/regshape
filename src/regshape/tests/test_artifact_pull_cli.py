@@ -39,6 +39,7 @@ from regshape.libs.artifacts import (
 from regshape.libs.artifacts.graph import OCI_INDEX, OCI_MANIFEST
 from regshape.libs.artifacts.native import NativeFilesystem
 from regshape.libs.artifacts.storage import SafeDirectory, SafeFile
+from regshape.libs.blobs import DownloadStats, DownloadStatus
 from regshape.libs.errors import ArtifactError
 from regshape.libs.transport import RegistryClient, TransportConfig
 from regshape.tests.artifact_fixtures import (
@@ -86,7 +87,7 @@ class ArtifactConsole(Console):
     def artifact_display(self, **kwargs: Any) -> ProgressDisplay:
         """Construct the real normalized renderer after telemetry config is installed."""
         display = ProgressDisplay(
-            **kwargs, stream=self.err, columns=lambda: self.terminal.width, clock=self.clock,
+            **kwargs, stream=sys.stderr, columns=lambda: self.terminal.width, clock=self.clock,
         )
         self.displays.append(display)
         return display
@@ -315,6 +316,43 @@ def test_normalized_rows_upgrade_identity_rate_and_throttle(known: bool) -> None
         assert len(display._indices) == 1
     assert [row for row in terminal.rows if row] == [f"Index 1 {digest[:11]}... Downloaded 100 B/100 B"]
     assert not any("Manifest 1" in row for row in terminal.rows)
+
+
+@pytest.mark.parametrize("kind", ["manifest", "index"])
+@pytest.mark.parametrize("known_first", [False, True])
+def test_interleaved_kind_discovery_preserves_unique_ordinals_and_rates(
+    kind: str, known_first: bool,
+) -> None:
+    """Reserve unknown-kind ordinals without renumbering either live object or resetting its clock."""
+    terminal, now = Frames(), [0.0]
+    root = _observation(phase="transferring", count=10, total=100)
+    other = _observation(
+        identity="other", kind=kind, phase="transferring",
+        digest=address(b"other"), count=20, total=100,
+    )
+    root_index, other_index = (2, 1) if known_first else (1, 2)
+    with ProgressDisplay(stream=terminal, columns=lambda: 200, clock=lambda: now[0]) as display:
+        for event in (other, root) if known_first else (root, other):
+            display.observe(event)
+        assert any(row.startswith(f"Manifest {root_index} ") for row in terminal.rows)
+        assert any(row.startswith(f"{kind.title()} {other_index} ") for row in terminal.rows)
+        now[0] = 1
+        root = replace(root, kind=kind, digest=address(b"root"), bytes_completed=50)
+        display.observe(root)
+        root_row = next(row for row in terminal.rows if row.startswith(f"{kind.title()} {root_index} "))
+        assert "50 B/s" in root_row
+        assert any(
+            row.startswith(f"{kind.title()} {other_index} ") and "20 B/s" in row
+            for row in terminal.rows
+        )
+        for event in (other, root):
+            display.observe(replace(event, phase="stored", bytes_completed=100))
+        display.observe(_observation(
+            identity="last", kind=kind, phase="stored", digest=address(b"last"), count=100, total=100,
+        ))
+    rows = [row for row in terminal.rows if row]
+    assert len(rows) == 3 and all("Downloaded" in row for row in rows)
+    assert {row.split()[1] for row in rows} == {"1", "2", "3"}
 
 
 @pytest.mark.parametrize("source", ["embedded", "local"])
@@ -875,6 +913,110 @@ def test_artifact_attempt_restart_has_no_stale_rate_or_double_completion() -> No
         assert len(display._finished) == 1
     assert len([row for row in terminal.rows if row]) == 1
     assert "Downloaded 100 B/100 B" in terminal.rows[-2]
+
+
+@_NATIVE
+@pytest.mark.parametrize(("mode", "outcome"), [
+    (mode, outcome) for mode in ("terminal", "no-progress", "json", "nonterminal")
+    for outcome in ("success", "failure")
+] + [("terminal", "failed-sink"), ("terminal", "shared-result-error")])
+def test_changed_etag_artifact_warning_is_coalesced_after_cleanup_and_output(
+    runner: CliRunner, tmp_path: Path, mode: str, outcome: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fixed status fixtures exercise deferred command warnings, not the pending ranged engine."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    root, objects = _graph("simple", "sha256")
+    console = ArtifactConsole(shared=False, interactive=mode != "nonterminal")
+    if outcome == "shared-result-error":
+        console = ArtifactConsole(shared=True)
+        console.err = console.out
+    registry = ObjectRegistry(root, objects)
+    digests = [digest for digest in objects if digest != address(root)]
+    output = tmp_path / "out"
+    primary = OSError("synthetic progress sink failure")
+    if outcome == "failed-sink" and mode == "terminal":
+        console.err.failure = primary
+        console.err.failure_when = lambda text: "Downloading" in text
+    elif outcome == "shared-result-error":
+        console.out.failure = primary
+        console.out.failure_when = lambda text: "Downloaded complete artifact." in text
+    stdout_flushes: list[str] = []
+    original_flush, original_write = console.out.flush, console.err.write
+
+    def receive(*args: Any, download_status_callback: Any, **kwargs: Any) -> Any:
+        """Inject repeated valid reasons around real verification/publication and resource cleanup."""
+        for digest in [*digests, digests[0]]:
+            download_status_callback(DownloadStatus(
+                digest, digest, "fallback", "full", "etag_changed", None, 2, DownloadStats(),
+            ))
+        assert "ETag changed" not in console.err.text
+        result = pull_artifact(
+            *args, **kwargs, download_status_callback=download_status_callback,
+        )
+        for digest in digests:
+            download_status_callback(DownloadStatus(
+                digest, digest, "completed", "full", "etag_changed", None, 2, DownloadStats(),
+            ))
+        assert "ETag changed" not in console.err.text
+        if outcome == "failure":
+            raise ArtifactError("synthetic post-publication failure")
+        return result
+
+    def flush() -> None:
+        """Record successful stdout flushes, not a result writer merely returning."""
+        original_flush()
+        if console.out.text:
+            stdout_flushes.append(console.out.text)
+
+    def write(text: str) -> int:
+        """Require complete command/telemetry cleanup and successful-output flush before warning."""
+        if "Warning: ETag changed" in text:
+            display = console.displays[0]
+            assert not display._active
+            assert display.config.log_file is not None and display.config.log_file.closed
+            if outcome == "success":
+                assert stdout_flushes and output.exists()
+            else:
+                assert "Error [" in console.err.text
+        return original_write(text)
+
+    with (
+        patch("regshape.cli.artifact.pull_artifact", side_effect=receive),
+        patch.object(console.out, "flush", side_effect=flush),
+        patch.object(console.err, "write", side_effect=write),
+    ):
+        result, _ = _invoke(
+            runner, console, registry, output,
+            ["--json"] if mode == "json" else ["--no-progress"] if mode == "no-progress" else [],
+            global_options=["--log-file", str(tmp_path / "telemetry.log")],
+        )
+    if outcome == "failed-sink":
+        assert result.exception is primary
+        assert "Warning: ETag" not in console.err.text and not console.out.text
+        return
+    if outcome == "shared-result-error":
+        assert result.exception is primary and output.exists()
+        assert "Warning:" not in console.err.text
+        assert "Error: Download did not complete" not in console.err.text
+        return
+    assert console.err.text.count("Warning: ETag changed") == 1
+    assert "ETag changed for 2 blobs;" in console.err.text
+    assert "\x1b" not in console.out.text and "ETag" not in console.out.text
+    if outcome == "success":
+        assert result.exit_code == 0, result.exception
+        assert console.err.text.endswith(
+            "Warning: ETag changed for 2 blobs; restarted them as full-stream downloads "
+            "and verified their digests.\n"
+        )
+        if mode == "json":
+            assert json.loads(console.out.text)["blobs"] == 2
+    else:
+        assert result.exit_code == 1 and not console.out.text
+        assert "verified their digests" not in console.err.text
+        assert console.err.text.endswith(
+            "Warning: ETag changed for 2 blobs; full-stream fallbacks were attempted, "
+            "but the operation did not complete.\n"
+        )
 
 
 @_NATIVE
