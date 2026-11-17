@@ -12,12 +12,14 @@ from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, replace
 from inspect import getattr_static
+from pathlib import Path
 from types import BuiltinMethodType, MethodType
 from typing import TypeVar, cast
 
 import requests
 
 from regshape.libs.artifacts.models import ArtifactProgress
+from regshape.libs.artifacts.storage import SafeDirectory
 from regshape.libs.blobs._download_worker import _FullBlob
 from regshape.libs.blobs._ranges import _RangedBlob, _RangePart
 from regshape.libs.blobs.download import (
@@ -229,25 +231,28 @@ def _job(blob: _FullBlob) -> _Job[BlobInfo]:
 
 
 def _source(
-    blob: _FullBlob, policy: DownloadOptions,
+    blob: _FullBlob, policy: DownloadOptions, *,
+    staging: tuple[SafeDirectory, Path] | None = None,
 ) -> Iterable[_Job[BlobInfo | _RangePart]]:
-    """Choose full receipt or real-range negotiation without allocating a whole-blob spool."""
+    """Choose receipt strategy, borrowing artifact staging for default range scratch."""
     if policy.ranges_per_blob > 1 and (
         blob.total_size is None or blob.total_size >= 4 * policy.range_size
     ):
-        return _RangedBlob(blob, policy).jobs()
+        return _RangedBlob(blob, policy, staging=staging).jobs()
     return [_job(blob)]
 
 
 def _consume(
     result: BlobInfo | _RangePart, coordinator: _Coordinator,
 ) -> BlobInfo | None:
-    """Assemble contiguous range data on the invoking thread, preserving output-error taxonomy."""
+    """Translate only spool/sink OSError, preserving exact caller-thread observer exceptions."""
     try:
         return result.consume(coordinator) if isinstance(result, _RangePart) else result
     except requests.exceptions.RequestException:
         raise
     except OSError as error:
+        if id(coordinator.progress_callback) in coordinator.failed_observers:
+            raise
         raise BlobError("Cannot write to blob output path") from error
 
 
@@ -256,11 +261,14 @@ def _receive_blob(
     progress_callback: ProgressCallback | None = None,
     download_status_callback: Callable[[DownloadStatus], None] | None = None,
     transfer_id: str | None = None,
+    staging: tuple[SafeDirectory, Path] | None = None,
 ) -> BlobInfo:
     """Share singular receipt with artifact rows without changing either public schema.
 
     Validate before acquisition, inherit an enclosing coordinator/status observer,
     and return only after the verified sink and its caller-side cleanup finish.
+    Borrowed staging supplies handle-relative default scratch and its diagnostic
+    location; an explicit policy scratch_dir still takes precedence.
     """
     _validate_observers(progress_callback, download_status_callback)
     blob = _full_blob(repo, request, policy, transfer_id=transfer_id)
@@ -275,7 +283,7 @@ def _receive_blob(
             if info is not None:
                 results.append(info)
 
-        coordinator.run([_source(blob, policy)], on_result=receive)
+        coordinator.run([_source(blob, policy, staging=staging)], on_result=receive)
     return results[0]
 
 

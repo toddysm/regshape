@@ -13,11 +13,13 @@ import time
 from collections.abc import Iterable, Iterator
 from dataclasses import replace
 from pathlib import Path
+from typing import BinaryIO, ContextManager
 from uuid import uuid4
 
 import requests
 
 from regshape.libs._http import ClosingResponse, close_response, report_secondary_failure
+from regshape.libs.artifacts.storage import SafeDirectory
 from regshape.libs.blobs._download_worker import (
     _FullBlob, _content_length, _decimal, _retry_delay,
 )
@@ -41,21 +43,61 @@ _STRONG_ETAG = re.compile(r'"[\x21\x23-\x7e\x80-\xff]*"')
 class _RangeScratch:
     """Own a private temporary directory; never recursively delete an unproven namespace."""
 
-    def __init__(self, root: str | os.PathLike[str] | None) -> None:
-        """Create beneath a trusted root only after all invocation inputs are preflighted."""
-        self.root = str(Path(root or tempfile.gettempdir()).absolute())
-        self.path = Path(tempfile.mkdtemp(prefix="regshape-ranges-", dir=self.root))
-        self.identity = self.path.lstat()
+    def __init__(
+        self, root: str | os.PathLike[str] | None,
+        staging: tuple[SafeDirectory, Path] | None = None,
+    ) -> None:
+        """Create under explicit scratch, borrowed artifact staging, or standalone temp.
+
+        Staging carries its retained handle and diagnostic path. All staging I/O
+        is handle-relative; the path only checks/reports the initial association.
+        """
+        self.directory: SafeDirectory | None = None
+        if root is None and staging is not None:
+            parent, location = staging
+            parent.verify()
+            location = location.absolute()
+            if not os.path.samestat(location.lstat(), parent.identity):
+                raise OSError("Range staging directory was replaced")
+            self.root = str(location)
+            self.directory = parent.mkdir("regshape-ranges-" + uuid4().hex)
+            self.path = location / self.directory.name
+        else:
+            self.root = str(Path(root or tempfile.gettempdir()).absolute())
+            self.path = Path(tempfile.mkdtemp(prefix="regshape-ranges-", dir=self.root))
+        self.identity = (
+            self.directory.identity if self.directory is not None else self.path.lstat()
+        )
 
     def verify(self) -> None:
         """Reject directory replacement before spool reads, creation or removal."""
-        if not os.path.samestat(self.path.lstat(), self.identity):
+        if self.directory is not None:
+            self.directory.verify()
+        elif not os.path.samestat(self.path.lstat(), self.identity):
             raise OSError("Range scratch directory was replaced")
+
+    def create_file(self) -> _DownloadFile:
+        """Prepare an exclusive UUID spool, relative to the retained staging handle when present."""
+        self.verify()
+        name = Path(uuid4().hex)
+        if self.directory is not None:
+            return _DownloadFile(name, self.directory.fd)
+        return _DownloadFile(self.path / name)
+
+    def read_file(self, path: Path) -> ContextManager[BinaryIO]:
+        """Open a stopped spool through the same trusted namespace used for creation."""
+        self.verify()
+        if self.directory is not None:
+            return self.directory.read_file(str(path))
+        return path.open("rb")
 
     def close(self) -> None:
         """Remove only the proven empty directory after every range owner has stopped."""
         self.verify()
-        self.path.rmdir()
+        if self.directory is not None:
+            self.directory.__exit__(None, None, None)
+        else:
+            self.path.rmdir()
 
 
 class _RangedBlob:
@@ -66,9 +108,13 @@ class _RangedBlob:
     that completed out of order.
     """
 
-    def __init__(self, full: _FullBlob, options: DownloadOptions) -> None:
-        """Borrow prevalidated receipt/output state without acquiring files or sockets."""
+    def __init__(
+        self, full: _FullBlob, options: DownloadOptions, *,
+        staging: tuple[SafeDirectory, Path] | None = None,
+    ) -> None:
+        """Borrow prevalidated receipt/output state and optional artifact scratch ownership."""
         self.full, self.options = full, options
+        self.staging = staging
         self.total = full.total_size
         self.etag: str | None = None
         self.content_type = "application/octet-stream"
@@ -81,7 +127,7 @@ class _RangedBlob:
 
     def jobs(self) -> Iterator[_Job["_RangePart"]]:
         """Negotiate range zero before lazily filling the bounded consecutive window."""
-        self.scratch = _RangeScratch(self.options.scratch_dir)
+        self.scratch = _RangeScratch(self.options.scratch_dir, self.staging)
         first = _RangePart(self, 0, self.options.range_size - 1, first=True)
         yield first.job()
         if self.finished_full:
@@ -278,7 +324,7 @@ class _RangePart:
             raise _StrategyFallback(reason)
         scratch = self._scratch()
         scratch.verify()
-        self.spool = _DownloadFile(scratch.path / uuid4().hex)
+        self.spool = scratch.create_file()
         self.spool.__enter__()
         size = 0
         limit = min(self.end + 1, self.blob.total or 0) - self.start
@@ -434,7 +480,7 @@ class _RangePart:
         if self.spool is None or self.start != blob.accepted or blob.total is None:
             raise RuntimeError("Range assembly requires the exact committed prefix")
         blob.full.output.open()
-        with self.spool.path.open("rb") as source:
+        with self._scratch().read_file(self.spool.path) as source:
             if self.spool.identity is None or not os.path.samestat(
                 os.fstat(source.fileno()), self.spool.identity,
             ):

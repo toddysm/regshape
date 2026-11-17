@@ -122,6 +122,9 @@ cannot advance the window past a blocked prefix. Private identity-checked
 temporary spools are removed only after owners stop and the caller consumes or
 discards them. Verify-only hashes/discards ordered bytes; it never saves a whole
 blob. Full streams still hash/write on their owning workers.
+Standalone scratch defaults to the system temporary directory. Nested artifact
+receipts instead create handle-relative scratch in their trusted private staging
+namespace; an explicit `scratch_dir` overrides either default.
 
 Unknown size, absent/weak initial ETag, first-response HTTP coding, correctly
 declared limited ranges and ignored ranges select explicit one-time capability
@@ -140,6 +143,10 @@ Unrelated batch blobs are not cancelled or replayed. A failed identity/reset
 check prevents the full GET. This strategy reset is available even with zero
 transport retries, and is never recursive. The full receiver still cannot retry
 after a file/hash byte commits.
+An observed ETag change remains in terminal status even when draining or sink
+reset fails; the failed attempt and accepted-byte count are not reset, and the
+original failure is preserved. Progress observer errors propagate unchanged,
+including `OSError` raised during caller-thread range assembly or verification.
 
 The CLI exposes the same policy with `--concurrency`, `--ranges-per-blob`,
 `--range-size`, `--download-retries`, `--scratch-dir`, `--sequential` and

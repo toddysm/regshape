@@ -15,13 +15,14 @@ import pytest
 import requests
 
 from regshape.cli.main import regshape
+from regshape.libs.artifacts import pull_artifact
 from regshape.libs.blobs import BlobDownload, DownloadOptions, get_blob, get_blobs
 from regshape.libs.errors import BlobError
 from regshape.libs.progress import TransferPhase
 from regshape.libs.transport import RegistryClient
 from regshape.libs.transport._coordinator import _Worker
 from regshape.libs.transport.middleware import RetryConfig
-from regshape.tests.artifact_fixtures import StreamResponse, address
+from regshape.tests.artifact_fixtures import Registry, StreamResponse, address, document, edge
 from regshape.tests.test_artifact_options import runner as runner  # noqa: PLC0414 - minimum Click fixture
 from regshape.tests.test_blob_batch import _client
 from regshape.tests.test_download_workers import _fault_response
@@ -134,6 +135,48 @@ def test_known_small_or_zero_uses_one_full_get_without_scratch(tmp_path, size):
     assert info.size == size and len(calls) == 1 and "Range" not in calls[0]
     assert all(event.scratch_root is None for event in statuses)
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.skipif(os.name == "nt", reason="artifact storage requires POSIX")
+@pytest.mark.parametrize("override", [False, True])
+def test_artifact_range_scratch_uses_private_staging_unless_overridden(tmp_path, override):
+    """Actual ranged artifact receipt uses staging by default and safely removes either scratch."""
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    registry = Registry(document(config=edge(PAYLOAD)))
+    ranged_get, calls, responses = _registry()
+    locations, statuses = set(), []
+
+    def get(client, path, **kwargs):
+        """Inspect the live namespace at range dispatch, not a mocked policy or constructor."""
+        if "/manifests/" in path:
+            return registry.get(path, **kwargs)
+        directories = list(tmp_path.rglob("regshape-ranges-*"))
+        assert len(directories) == 1
+        location = directories[0].parent
+        if override:
+            assert location == scratch
+        else:
+            assert location.name.startswith(".regshape-staging-")
+            assert location.parent.name.startswith(".regshape-private-")
+        locations.add(str(location))
+        return ranged_get(client, path, **kwargs)
+
+    output = tmp_path / "layout"
+    with patch.object(RegistryClient, "get", autospec=True, side_effect=get):
+        pull_artifact(
+            _client(), "repo", "moving", output,
+            download_options=DownloadOptions(
+                concurrency=3, ranges_per_blob=3, range_size=R,
+                scratch_dir=scratch if override else None,
+            ),
+            download_status_callback=statuses.append,
+        )
+    assert len(calls) == 6 and all(response.close_calls == 1 for response in responses)
+    assert (output / "blobs" / "sha256" / address(PAYLOAD).split(":")[1]).read_bytes() == PAYLOAD
+    assert {event.scratch_root for event in statuses if event.transfer_id} == locations
+    assert not list(scratch.iterdir()) and not list(tmp_path.rglob("regshape-ranges-*"))
+    assert set(tmp_path.iterdir()) == {scratch, output}
 
 
 def test_exact_four_range_threshold_and_case_insensitive_bytes_unit(tmp_path):
@@ -418,26 +461,29 @@ def test_fallback_waits_for_blocked_range_before_reset_or_spool_cleanup(tmp_path
     assert not list(tmp_path.iterdir())
 
 
-def test_range_progress_exception_cancels_and_cleans_bounded_output(tmp_path):
-    """A caller observer's exact error survives range worker drain and exclusive output cleanup."""
+@pytest.mark.parametrize("saved", [False, True])
+@pytest.mark.parametrize("phase", ["transferring", "verifying"])
+@pytest.mark.parametrize("error_type", [RuntimeError, OSError])
+def test_range_progress_exception_cancels_and_cleans_bounded_output(tmp_path, saved, phase, error_type):
+    """Observer errors during assembly/verification survive drain and file/verify-only cleanup."""
     path = tmp_path / "output"
-    primary = RuntimeError("synthetic progress failure")
+    primary = error_type("synthetic progress failure")
     events = []
 
     def observe(event):
         """Fail once the first ordered payload commits; never accept another callback."""
         assert not events or events[-1] is not primary
-        if event.bytes_completed:
+        if event.bytes_completed and event.phase.value == phase:
             events.append(primary)
             raise primary
         events.append(event)
 
     get, _, responses = _registry()
     with patch.object(RegistryClient, "get", autospec=True, side_effect=get), pytest.raises(
-        RuntimeError,
+        error_type,
     ) as caught:
         get_blob(
-            _client(), "repo", address(PAYLOAD), str(path), total_size=len(PAYLOAD),
+            _client(), "repo", address(PAYLOAD), str(path) if saved else None, total_size=len(PAYLOAD),
             max_bytes=len(PAYLOAD), download_options=_options(tmp_path),
             progress_callback=observe,
         )
@@ -627,7 +673,7 @@ def test_full_fallback_body_cannot_replay_after_commit(tmp_path, saved, bounded)
 def test_replaced_sink_prevents_late_fallback_and_preserves_replacement(tmp_path):
     """A retained output cannot be truncated for fallback after a caller replaces its identity."""
     path, original = tmp_path / "output", tmp_path / "retained-original"
-    full_calls = []
+    full_calls, statuses = [], []
 
     def replace_output(event):
         """Replace only after the ranged prefix committed, before the validator rotation."""
@@ -650,8 +696,13 @@ def test_replaced_sink_prevents_late_fallback_and_preserves_replacement(tmp_path
         get_blob(
             _client(), "repo", address(PAYLOAD), str(path), total_size=len(PAYLOAD),
             download_options=_options(tmp_path), progress_callback=replace_output,
+            download_status_callback=statuses.append,
         )
     assert not full_calls
+    failed = next(event for event in statuses if event.event == "failed")
+    assert failed.reason == "etag_changed" and failed.attempt == 1
+    assert failed.stats.bytes_accepted == R
+    assert not any(event.event == "fallback" for event in statuses)
     assert path.read_bytes() == b"do not truncate or remove"
     assert set(tmp_path.iterdir()) == {path, original}
 

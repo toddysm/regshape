@@ -581,7 +581,8 @@ class _Coordinator:
         """Reset a drained transfer through a caller-supplied identity-checked sink reset.
 
         Received bytes remain cumulative; accepted bytes reset to zero and the
-        same transfer ID advances one attempt. A failed reset never permits replay.
+        same transfer ID advances one attempt. A failed reset retains its reason
+        without advancing the attempt or permitting replay.
         All previous jobs for this transfer must have drained and joined;
         unrelated sources may continue inside the same invocation.
         """
@@ -593,7 +594,10 @@ class _Coordinator:
         if self.cancelled.is_set():
             raise _DownloadCancelled("Cannot reset a cancelled operation")
         _Status("fallback", "full", reason)
-        digest, attempt, _, _ = self.identities[transfer_id]
+        digest, attempt, strategy, previous_reason = self.identities[transfer_id]
+        if previous_reason == "etag_changed":
+            reason = previous_reason
+        self.identities[transfer_id] = (digest, attempt, strategy, reason)
         reset_sink()
         self.totals[transfer_id] = replace(
             self.totals.get(transfer_id, _Stats()),
@@ -1017,9 +1021,18 @@ class _Coordinator:
                                 isinstance(outcome.error, _StrategyFallback)
                                 and pending.job.fallback is not None
                             ):
-                                if source.fallback is None:
+                                if source.fallback is None or (
+                                    outcome.error.reason == "etag_changed"
+                                    and source.fallback.reason != "etag_changed"
+                                ):
                                     source.fallback = outcome.error
                                     source.fallback_job = pending.job
+                                    digest, attempt, strategy, _ = self.identities[
+                                        pending.job.transfer_id
+                                    ]
+                                    self.identities[pending.job.transfer_id] = (
+                                        digest, attempt, strategy, outcome.error.reason,
+                                    )
                                     for old in source.pending:
                                         if old.job.cancelled is not None:
                                             old.job.cancelled.set()

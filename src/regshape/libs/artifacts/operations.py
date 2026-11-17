@@ -343,6 +343,8 @@ def _pull_artifact_serial(
     :param blob_options: Policy for nested blob calls; None inherits the root
         worker's existing context. Output, observers, limits and errors
         retain pull_artifact's contract.
+        Ranged receipts borrow the private staging handle for default scratch;
+        an explicit scratch override remains authoritative.
     """
     observers = _Observers(progress_callback)
     if phase_callback is not None and not callable(phase_callback):
@@ -398,6 +400,7 @@ def _pull_artifact_serial(
                                     edge.digest, filename, edge.size,
                                     max(1, min(edge.size, remaining)), staging.fd,
                                 ), repo, progress_callback=row.blob, transfer_id=row.identity,
+                                staging=(staging, output.parent / namespace.name / staging.name),
                             )
                         else:
                             get_blob(

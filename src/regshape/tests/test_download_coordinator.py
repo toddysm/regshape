@@ -30,6 +30,7 @@ from regshape.libs.transport._coordinator import (
     _DownloadCancelled,
     _Job,
     _Status,
+    _StrategyFallback,
     _Telemetry,
     _Text,
 )
@@ -519,6 +520,57 @@ def test_reset_preserves_received_and_changes_attempt(client):
     assert resets == [True]
     with pytest.raises(FrozenInstanceError):
         completed.stats.bytes_received = 0
+
+
+@pytest.mark.parametrize("first_reason", ["short_range", "etag_changed"])
+@pytest.mark.parametrize("failure_point", ["cleanup", "reset"])
+def test_fallback_reason_survives_cleanup_or_reset_failure(client, first_reason, failure_point):
+    """Competing fallback reasons retain ETag precedence before any destructive cleanup/reset."""
+    from regshape.libs.transport._coordinator import _Outcome, _Stats
+
+    statuses, futures, cleaned = [], [], []
+    primary = OSError("synthetic fallback finalization fault")
+    reasons = [first_reason, "etag_changed" if first_reason == "short_range" else "short_range"]
+
+    def submit(*args):
+        """Make both outcomes visible together without relying on operating-system thread order."""
+        future = Future()
+        futures.append(future)
+        if len(futures) == 2:
+            for stopped, reason in zip(futures, reasons, strict=True):
+                stopped.set_result(_Outcome(
+                    None, _StrategyFallback(reason), _Stats(),
+                    _Telemetry((0, 0, 0, 0, 0), 0.0, (), ()),
+                ))
+        return future
+
+    def cleanup(accepted):
+        """Fail once before resetting so the original reason must already be durable."""
+        if failure_point == "cleanup" and not cleaned:
+            cleaned.append(True)
+            raise primary
+
+    def fallback(reason):
+        """Reject the reset after verifying the selected reason and without dispatching full GET."""
+        assert reason == "etag_changed"
+        raise primary
+
+    with (
+        patch("regshape.libs.transport._coordinator.ThreadPoolExecutor.submit", side_effect=submit),
+        DownloadTransport(client, DownloadOptions(concurrency=2, ranges_per_blob=2)) as root,
+        _Coordinator(root._download_context, status_callback=statuses.append) as coordinator,
+        pytest.raises(OSError) as caught,
+    ):
+        coordinator.run([[
+            replace(
+                _job("a", lambda worker: None, cleanup=cleanup),
+                strategy="ranged", reason="range_enabled", fallback=fallback,
+            ) for _ in range(2)
+        ]], on_result=lambda value: None)
+    assert caught.value is primary and len(futures) == 2
+    failed = next(event for event in statuses if event.status.event == "failed")
+    assert failed.status.reason == "etag_changed" and failed.attempt == 1
+    assert not any(event.status.event == "fallback" for event in statuses)
 
 
 def test_reset_queues_zero_artifact_progress_on_same_row(client):
