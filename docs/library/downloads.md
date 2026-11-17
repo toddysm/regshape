@@ -114,6 +114,8 @@ request identity HTTP encoding, and must agree on numeric complete length and
 exact body bounds. Size metadata is limited to 0..2^63-1. Missing `Accept-Ranges`
 does not prevent negotiation. A valid ignored first-range 200 is consumed as the
 full entity without another GET.
+Reusing that response also retains any retries already consumed while acquiring
+it, including their remaining budget and exponential-backoff position.
 
 The coordinator copies only contiguous completed parts, hashing in original
 byte order. It retains at most W consecutive uncommitted parts per blob and C

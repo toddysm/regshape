@@ -220,6 +220,50 @@ def test_initial_ignored_range_consumes_same_200_response(tmp_path):
     assert not list(tmp_path.iterdir())
 
 
+@pytest.mark.parametrize("retries", [1, 2])
+@pytest.mark.parametrize("saved", [False, True])
+def test_ignored_range_keeps_consumed_retry_budget_and_backoff(tmp_path, retries, saved):
+    """Reusing a 200 after a range retry cannot grant a second transport retry budget."""
+    primary = requests.exceptions.ConnectionError("synthetic pre-payload full fault")
+    responses = [
+        StreamResponse(b"", status=429),
+        _fault_response(b"", primary),
+        StreamResponse(PAYLOAD),
+    ]
+    path = tmp_path / "output"
+    statuses, progress, waits = [], [], []
+
+    def receive():
+        """Exercise actual range-to-full response ownership on a saved or verify-only transfer."""
+        return get_blob(
+            _client(), "repo", address(PAYLOAD), str(path) if saved else None,
+            total_size=len(PAYLOAD), download_options=_options(tmp_path, max_retries=retries),
+            download_status_callback=statuses.append, progress_callback=progress.append,
+        )
+
+    with (
+        patch.object(RegistryClient, "get", side_effect=responses) as get,
+        patch.object(_Worker, "wait", side_effect=waits.append),
+    ):
+        if retries == 1:
+            with pytest.raises(requests.exceptions.ConnectionError) as caught:
+                receive()
+            assert caught.value is primary
+        else:
+            assert receive().size == len(PAYLOAD)
+    assert get.call_count == retries + 1
+    assert all(call.kwargs["headers"].get("Range") for call in get.call_args_list[:2])
+    assert waits == [2**index for index in range(retries)]
+    assert statuses[-1].stats.retry_count == retries
+    assert sum(event.phase == TransferPhase.PREPARING for event in progress) == 1
+    assert all(response.close_calls == 1 for response in responses[:retries + 1])
+    if saved:
+        assert path.read_bytes() == (PAYLOAD if retries == 2 else b"")
+    else:
+        assert not path.exists()
+    assert set(tmp_path.iterdir()) == ({path} if saved else set())
+
+
 @pytest.mark.parametrize("change,reason", [
     ({"ETag": 'W/"weak"'}, "no_strong_validator"),
     ({"ETag": ""}, "no_strong_validator"),

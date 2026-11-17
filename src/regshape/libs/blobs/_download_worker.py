@@ -272,6 +272,7 @@ class _FullBlob:
         An initial ignored-Range 200 may be borrowed into this receiver; it takes
         ownership and consumes that response instead of issuing a redundant GET.
         Its range owner already emitted PREPARING, so do not repeat that phase.
+        Retries already consumed by that owner retain their budget/backoff position.
         """
         if self.started or worker.client is None:
             raise RuntimeError("Full blob jobs require one isolated worker execution")
@@ -290,7 +291,7 @@ class _FullBlob:
         try:
             if initial_response is None:
                 self._progress(worker, TransferPhase.PREPARING, self.total_size)
-            for retry in range(policy.max_retries + 1):
+            for retry in range(worker.stats.retry_count, policy.max_retries + 1):
                 worker.check_cancelled()
                 status_code: int | None = None
                 closing = False
