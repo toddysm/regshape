@@ -2,7 +2,8 @@
 
 One invocation borrows one client, owns one pooled transport/coordinator, and
 validates every request/sink before acquisition. Artifact nesting reuses that
-coordinator; this layer does not implement graph or HTTP-range scheduling.
+coordinator; range jobs retain their bounded spools until caller-thread assembly.
+Graph planning belongs to the artifact layer.
 """
 
 import os
@@ -18,6 +19,7 @@ import requests
 
 from regshape.libs.artifacts.models import ArtifactProgress
 from regshape.libs.blobs._download_worker import _FullBlob
+from regshape.libs.blobs._ranges import _RangedBlob, _RangePart
 from regshape.libs.blobs.download import (
     BlobBatchResult,
     BlobDownload,
@@ -205,7 +207,10 @@ def _full_blob(
         repo, request.digest, path, request.chunk_size, total_size=request.total_size,
         max_bytes=request.max_bytes, output_dir_fd=request.output_dir_fd,
         transfer_id=transfer_id,
-        reason="sequential" if policy.concurrency == 1 else "ranges_disabled",
+        reason=(
+            "sequential" if policy.concurrency == 1 else
+            "ranges_disabled" if policy.ranges_per_blob == 1 else "small_blob"
+        ),
     )
 
 
@@ -221,6 +226,29 @@ def _job(blob: _FullBlob) -> _Job[BlobInfo]:
             raise BlobError("Cannot write to blob output path") from error
 
     return replace(blob.job(), run=run)
+
+
+def _source(
+    blob: _FullBlob, policy: DownloadOptions,
+) -> Iterable[_Job[BlobInfo | _RangePart]]:
+    """Choose full receipt or real-range negotiation without allocating a whole-blob spool."""
+    if policy.ranges_per_blob > 1 and (
+        blob.total_size is None or blob.total_size >= 4 * policy.range_size
+    ):
+        return _RangedBlob(blob, policy).jobs()
+    return [_job(blob)]
+
+
+def _consume(
+    result: BlobInfo | _RangePart, coordinator: _Coordinator,
+) -> BlobInfo | None:
+    """Assemble contiguous range data on the invoking thread, preserving output-error taxonomy."""
+    try:
+        return result.consume(coordinator) if isinstance(result, _RangePart) else result
+    except requests.exceptions.RequestException:
+        raise
+    except OSError as error:
+        raise BlobError("Cannot write to blob output path") from error
 
 
 def _receive_blob(
@@ -241,7 +269,13 @@ def _receive_blob(
         client, policy, progress_callback=progress_callback,
         download_status_callback=download_status_callback,
     ) as (_, coordinator):
-        coordinator.run([[_job(blob)]], on_result=results.append)
+        def receive(result: BlobInfo | _RangePart) -> None:
+            """Retain metadata only after a full worker or final ordered part verifies."""
+            info = _consume(result, coordinator)
+            if info is not None:
+                results.append(info)
+
+        coordinator.run([_source(blob, policy)], on_result=receive)
     return results[0]
 
 
@@ -311,7 +345,8 @@ def get_blobs(
     including exact observer exceptions; no partial result is returned. Earlier
     verified files may remain. Bounds/sink checks precede auth/pool/output effects.
     Other transport/filesystem failures retain their native taxonomy. Separate
-    calls do not share a process-global cap. Ranges await the range engine.
+    calls do not share a process-global cap. Eligible ranges share the same pool,
+    committed-prefix window and one-time per-blob fallback as singular receipt.
     """
     policy = resolve_download_options(client, download_options, requires_pooled=True)
     _validate_observers(progress_callback, download_status_callback)
@@ -340,9 +375,15 @@ def get_blobs(
         client, policy, progress_callback=progress_callback,
         download_status_callback=download_status_callback, summary=summary,
     ) as (_, coordinator):
+        def receive(result: BlobInfo | _RangePart) -> None:
+            """Index verified final results while allowing range parts to commit in source order."""
+            info = _consume(result, coordinator)
+            if info is not None:
+                results[info.digest] = info
+
         coordinator.run(
-            [[_job(blob)] for blob in blobs],
-            on_result=lambda info: results.__setitem__(info.digest, info),
+            [_source(blob, policy) for blob in blobs],
+            on_result=receive,
         )
     return BlobBatchResult(
         tuple(results[blob.digest] for blob in blobs), summary[0],

@@ -147,7 +147,8 @@ def get_blob(
     :param download_options: Immutable pooled policy, or explicit legacy rollback.
         Omitted options select the pool for supported clients and retain original
         serial behavior with a logged notice for unsupported custom clients.
-        Range scheduling is implemented by the separate range-download layer.
+        With ranges_per_blob above one, eligible blobs use bounded ordered
+        ranges; smaller/unsupported blobs use an explicit full-stream strategy.
     :param download_status_callback: Optional caller-thread status/metrics observer;
         requires pooled support, even when options are omitted. Observer errors
         retain their exact identity after cancellation and cleanup.

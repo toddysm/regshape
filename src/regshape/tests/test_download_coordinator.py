@@ -91,6 +91,7 @@ def test_round_robin_and_global_cap(client):
     options = DownloadOptions(concurrency=2, ranges_per_blob=1)
     barrier = threading.Barrier(2)
     starts = []
+    submitted = []
     lock = threading.Lock()
 
     def task(worker):
@@ -104,16 +105,24 @@ def test_round_robin_and_global_cap(client):
 
     with DownloadTransport(client, options) as root:
         with _Coordinator(root._download_context) as coordinator:
-            coordinator.run(
-                [
-                    [_job("a", task), _job("a", task)],
-                    [_job("b", task), _job("b", task)],
-                    [_job("c", task)],
-                ],
-                on_result=lambda value: None,
-            )
+            original_submit = coordinator.executor.submit
+
+            def submit(function, *args):
+                """Measure dispatch fairness, not nondeterministic OS thread start order."""
+                submitted.append(args[-1].transfer_id)
+                return original_submit(function, *args)
+
+            with patch.object(coordinator.executor, "submit", side_effect=submit):
+                coordinator.run(
+                    [
+                        [_job("a", task), _job("a", task)],
+                        [_job("b", task), _job("b", task)],
+                        [_job("c", task)],
+                    ],
+                    on_result=lambda value: None,
+                )
             assert set(starts[:2]) == {"a", "b"}
-            assert starts[2] == "c"
+            assert submitted[:3] == ["a", "b", "c"]
             assert coordinator.jobs_peak == 2
 
 

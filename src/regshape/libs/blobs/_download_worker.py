@@ -9,15 +9,18 @@ mode. Ordinary unbounded outputs retain existing overwrite/partial-file semantic
 import hashlib
 import os
 import time
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Literal
 from uuid import uuid4
 
+import requests
 from requests.exceptions import ContentDecodingError
 
 from regshape.libs._http import (
     ClosingResponse,
+    close_response,
     download_total,
     report_secondary_failure,
 )
@@ -33,6 +36,42 @@ from regshape.libs.progress import TransferDirection, TransferPhase, TransferPro
 from regshape.libs.transport._coordinator import _Job, _Status, _Worker
 from regshape.libs.transport.middleware import RetryMiddleware
 from regshape.libs.transport.models import RegistryResponse
+
+
+def _decimal(value: str) -> int:
+    """Parse bounded HTTP decimal metadata in 0..2^63-1, rejecting overflow explicitly."""
+    if not value.isascii() or not value.isdecimal() or len(value) > 19:
+        raise BlobError("Invalid or overflowing blob size metadata")
+    number = int(value)
+    if number > 2**63 - 1:
+        raise BlobError("Blob size metadata exceeds the client limit")
+    return number
+
+
+def _content_length(headers: Mapping[str, str]) -> int | None:
+    """Validate a supplied Content-Length without confusing absence with zero."""
+    raw = headers.get("Content-Length")
+    return None if raw is None else _decimal(raw.strip())
+
+
+def _retry_delay(
+    worker: _Worker, retry: int, response: requests.Response | None,
+    strategy: Literal["full", "ranged"],
+) -> float:
+    """Emit one retry after response closure and return the cancellation-aware wait's lower bound."""
+    policy = worker.owner.transport.retry_config
+    status = response.status_code if response is not None else None
+    delay = 0.0
+    if response is not None and status in (429, 503):
+        delay = RetryMiddleware._retry_after(
+            RegistryResponse.from_requests_response(response, stream=True),
+        ) or 0.0
+    worker.stats = replace(worker.stats, retry_count=worker.stats.retry_count + 1)
+    worker.emit(_Status(
+        "retry", strategy,
+        "http_status" if status is not None else "transport_error", status,
+    ))
+    return max(policy.backoff_factor * 2**retry, delay)
 
 
 class _BlobOutput:
@@ -86,6 +125,17 @@ class _BlobOutput:
         if self.file is not None and not self.closed:
             self.closed = True
             self.file.close()
+
+    def reset(self) -> None:
+        """Validate and rewind/truncate only the retained writable sink after range workers join."""
+        if self.file is not None:
+            self.verify_identity()
+            if self.closed or self.identity is None or not os.path.samestat(
+                os.fstat(self.file.fileno()), self.identity,
+            ):
+                raise OSError("Blob output cannot be safely reset")
+            self.file.seek(0)
+            self.file.truncate(0)
 
     def cleanup(self, accepted: bool) -> None:
         """Called only after joining; remove failed bounded/invalid outputs by identity.
@@ -156,8 +206,10 @@ class _FullBlob:
         _validate_inputs(repo, digest, "application/octet-stream", None, None, 65_536)
         if type(chunk_size) is not int or chunk_size <= 0:
             raise ValueError("chunk_size must be a positive integer")
-        if total_size is not None and (type(total_size) is not int or total_size < 0):
-            raise ValueError("total_size must be a nonnegative integer or None")
+        if total_size is not None and (
+            type(total_size) is not int or not 0 <= total_size <= 2**63 - 1
+        ):
+            raise ValueError("total_size must be an integer in 0..2^63-1 or None")
         if max_bytes is not None and (type(max_bytes) is not int or max_bytes <= 0):
             raise ValueError("max_bytes must be a positive integer or None")
         if max_bytes is not None and total_size is not None and total_size > max_bytes:
@@ -207,7 +259,9 @@ class _FullBlob:
             )
         )
 
-    def run(self, worker: _Worker) -> BlobInfo:
+    def run(
+        self, worker: _Worker, *, initial_response: requests.Response | None = None,
+    ) -> BlobInfo:
         """Receive/hash/write locally, retrying only before any payload commitment.
 
         The worker closes the response and sink before returning a verified result.
@@ -215,6 +269,8 @@ class _FullBlob:
         authentication, sink, validation and cleanup failures are never retried.
         The caller later performs identity-safe failed-output cleanup. Cancellation
         is checked between reads, not by a fictitious whole-read deadline.
+        An initial ignored-Range 200 may be borrowed into this receiver; it takes
+        ownership and consumes that response instead of issuing a redundant GET.
         """
         if self.started or worker.client is None:
             raise RuntimeError("Full blob jobs require one isolated worker execution")
@@ -228,25 +284,27 @@ class _FullBlob:
         client = worker.client
         policy = worker.owner.transport.retry_config
         hasher = hashlib.new(self.algorithm)
-        self._progress(worker, TransferPhase.PREPARING, self.total_size)
         retryable = policy.exceptions
         primary: BaseException | None = None
         try:
+            self._progress(worker, TransferPhase.PREPARING, self.total_size)
             for retry in range(policy.max_retries + 1):
                 worker.check_cancelled()
                 status_code: int | None = None
-                retry_after = 0.0
                 closing = False
                 body_finished = False
                 receiving = False
                 try:
                     receiving = True
-                    response = client.get(
-                        f"/v2/{self.repo}/blobs/{self.digest}",
-                        stream=True,
-                        headers={"Accept-Encoding": "identity"},
-                        response_hook=_bounded_blob_redirect,
-                    )
+                    if initial_response is not None:
+                        response, initial_response = initial_response, None
+                    else:
+                        response = client.get(
+                            f"/v2/{self.repo}/blobs/{self.digest}",
+                            stream=True,
+                            headers={"Accept-Encoding": "identity"},
+                            response_hook=_bounded_blob_redirect,
+                        )
                     receiving = False
                     with ClosingResponse(response):
                         status_code = response.status_code
@@ -301,6 +359,13 @@ class _FullBlob:
                                     status_code=status_code,
                                 )
                             total = self.total_size
+                            declared = _content_length(response.headers)
+                            if (
+                                total is not None and declared is not None
+                                and response.headers.get("Content-Encoding", "identity").strip().lower() in ("", "identity")
+                                and declared != total
+                            ):
+                                raise BlobError("Blob length contradicts its trusted size")
                             if total is None:
                                 total = download_total(response.headers)
                             if (
@@ -388,18 +453,6 @@ class _FullBlob:
                         )
                         return info
                     # Parse server delay only after the discarded response releases its slot.
-                    retry_after = (
-                        (
-                            RetryMiddleware._retry_after(
-                                RegistryResponse.from_requests_response(
-                                    response, stream=True
-                                ),
-                            )
-                            or 0.0
-                        )
-                        if status_code in (429, 503)
-                        else 0.0
-                    )
                 except (AuthError, BlobError, ContentDecodingError):
                     raise
                 except retryable:
@@ -412,23 +465,15 @@ class _FullBlob:
                     ):
                         raise
                     status_code = None
-                worker.stats = replace(
-                    worker.stats, retry_count=worker.stats.retry_count + 1
-                )
-                worker.emit(
-                    _Status(
-                        "retry",
-                        "full",
-                        "http_status" if status_code is not None else "transport_error",
-                        status_code,
-                    )
-                )
+                delay = _retry_delay(worker, retry, response if status_code is not None else None, "full")
                 self._progress(worker, TransferPhase.RETRYING, self.total_size)
-                worker.wait(max(policy.backoff_factor * 2**retry, retry_after or 0.0))
+                worker.wait(delay)
         except BaseException as error:
             primary = error
             raise
         finally:
+            if initial_response is not None:
+                close_response(initial_response, primary_error=primary)
             try:
                 self.output.close()
             except BaseException as secondary:

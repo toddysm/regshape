@@ -126,9 +126,17 @@ worker cloning entirely. Unsupported existing custom clients retain the original
 serial path with one logged notice only when options are omitted. Explicit pooled
 requests without a safe fork raise `ValueError` before acquisition.
 See [download policy and transport](../../docs/library/downloads.md) for bounds,
-ownership and the separate scheduler/range/batch delivery boundary.
+ownership and shared range/batch scheduling.
 
-Supported pooled calls now use the shared coordinator/full-stream worker.
+Supported pooled calls use the shared coordinator and full-stream/ranged workers.
+`ranges_per_blob=1` keeps ordinary full GET. Higher values enable real-range
+negotiation for blobs at least four times `range_size`; trusted `total_size`
+skips HEAD, and unknown size is discovered by the first real range, never an
+extra one-byte probe. Ordered assembly uses at most C times `range_size` scratch
+across a batch and hashes/discards for verify-only. Valid capability limitations
+fall back once; malformed metadata/body and corruption fail. An established
+ETag change drains the old attempt before an identity-checked sink/hash/progress
+reset and one unconditional full GET. Original size and digest still must match.
 Status IDs match progress IDs; all observers run on the invoking thread and
 their exceptions propagate unchanged after draining. New status observations
 reject legacy/custom unsupported transports before acquisition. Existing
@@ -181,7 +189,7 @@ not a partial result. Earlier verified standalone files may remain.
 Legacy transport is unsupported; metrics are never fabricated for it.
 See the [batch/status reference](../../docs/library/downloads.md#public-batch-downloads)
 for exact request fields, ownership, conservative portable filename collision
-rules, final statistics and observer examples. Range scheduling remains separate.
+rules, final statistics, shared range scheduling and observer examples.
 
 ---
 
