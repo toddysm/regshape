@@ -8,11 +8,13 @@ import gzip
 import json
 import os
 import threading
+from http.client import IncompleteRead
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
 import pytest
 import requests
+from urllib3.exceptions import ProtocolError
 
 from regshape.cli.main import regshape
 from regshape.libs.artifacts import pull_artifact
@@ -200,19 +202,21 @@ def test_exact_four_range_threshold_and_case_insensitive_bytes_unit(tmp_path):
 
 
 def test_initial_ignored_range_consumes_same_200_response(tmp_path):
-    """An ignored first range reuses its full response, never issuing a redundant full GET."""
+    """An ignored first range reuses its response and PREPARING phase without another GET."""
     response = StreamResponse(PAYLOAD, headers={"Content-Length": str(len(PAYLOAD))})
-    statuses = []
+    statuses, progress = [], []
     with patch.object(RegistryClient, "get", return_value=response) as get:
         info = get_blob(
             _client(), "repo", address(PAYLOAD), download_options=_options(tmp_path),
             download_status_callback=statuses.append,
+            progress_callback=progress.append,
         )
     assert get.call_count == response.close_calls == 1
     assert info.size == len(PAYLOAD)
     completed = next(event for event in statuses if event.event == "completed")
     assert completed.strategy == "full" and completed.reason == "range_ignored"
     assert completed.stats.bytes_accepted == len(PAYLOAD)
+    assert sum(event.phase == TransferPhase.PREPARING for event in progress) == 1
     assert not list(tmp_path.iterdir())
 
 
@@ -630,6 +634,86 @@ def test_range_body_transport_retry_discards_prefix_spool_without_double_accepta
     assert statuses[-1].stats.bytes_received == len(PAYLOAD) + R // 2
     assert statuses[-1].stats.bytes_accepted == len(PAYLOAD)
     assert statuses[-1].stats.retry_count == 1
+
+
+@pytest.mark.parametrize("stage", ["first", "later"])
+@pytest.mark.parametrize("fault", [IncompleteRead(b"", 123), ConnectionResetError("synthetic reset")])
+def test_range_wire_interruption_retries_only_uncommitted_part(tmp_path, stage, fault):
+    """Real wire-error translation retries one private range without reaccepting earlier bytes."""
+    target = 0 if stage == "first" else R
+    failed, statuses, waits = [], [], []
+
+    def modify(start, end, headers, response):
+        """Fail raw urllib3 receipt after a prefix, then require its private spool removed."""
+        if start == target and "Range" in headers:
+            if not failed:
+                def stream(chunk_size, decode_content=False):
+                    """Raise the actual urllib3 wrapper that entity_chunks maps to Requests."""
+                    yield PAYLOAD[start:start + R // 2]
+                    raise ProtocolError("Connection broken", fault)
+
+                response.raw.stream = stream
+                failed.append(response)
+            else:
+                assert failed[0].close_calls == 1
+                if stage == "first":
+                    assert not list(tmp_path.glob("regshape-ranges-*/*"))
+        return response
+
+    get, calls, responses = _registry(modify=modify)
+    with (
+        patch.object(RegistryClient, "get", autospec=True, side_effect=get),
+        patch.object(_Worker, "wait", side_effect=waits.append),
+    ):
+        info = get_blob(
+            _client(), "repo", address(PAYLOAD), total_size=len(PAYLOAD),
+            download_options=_options(tmp_path), download_status_callback=statuses.append,
+        )
+    target_header = f"bytes={target}-{target + R - 1}"
+    assert info.size == len(PAYLOAD) and len(calls) == 7
+    assert sum(call["Range"] == target_header for call in calls) == 2
+    assert all(response.close_calls == 1 for response in responses)
+    assert waits == [1]
+    assert statuses[-1].stats.bytes_received == len(PAYLOAD) + R // 2
+    assert statuses[-1].stats.bytes_accepted == len(PAYLOAD)
+    assert statuses[-1].stats.retry_count == 1 and not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("retries,excluded", [(0, False), (2, False), (2, True)])
+def test_range_wire_interruption_respects_budget_and_exception_policy(tmp_path, retries, excluded):
+    """Repeated broken framing consumes exactly the allowed part budget, never strategy fallback."""
+    statuses, waits = [], []
+    error = ProtocolError("Connection broken", IncompleteRead(b"", 123))
+
+    def modify(start, end, headers, response):
+        """Fail before any range can be accepted or shared with a sibling."""
+        def stream(chunk_size, decode_content=False):
+            """Expose the real wire wrapper after bounded partial receipt."""
+            yield PAYLOAD[:R // 2]
+            raise error
+
+        response.raw.stream = stream
+        return response
+
+    client = _client(retry_config=RetryConfig(exceptions=(), backoff_factor=0)) if excluded else _client()
+    get, calls, responses = _registry(modify=modify)
+    with (
+        patch.object(RegistryClient, "get", autospec=True, side_effect=get),
+        patch.object(_Worker, "wait", side_effect=waits.append),
+        pytest.raises(BlobError) as caught,
+    ):
+        get_blob(
+            client, "repo", address(PAYLOAD), download_options=_options(tmp_path, max_retries=retries),
+            download_status_callback=statuses.append,
+        )
+    budget = 0 if excluded else retries
+    assert len(calls) == len(responses) == budget + 1 and len(waits) == budget
+    assert all(response.close_calls == 1 for response in responses)
+    assert isinstance(caught.value.__cause__, requests.exceptions.ChunkedEncodingError)
+    assert statuses[-1].stats.bytes_accepted == 0
+    assert statuses[-1].stats.retry_count == budget
+    assert not any(event.event == "fallback" for event in statuses)
+    assert not list(tmp_path.iterdir())
 
 
 @pytest.mark.parametrize("saved", [False, True])

@@ -143,6 +143,12 @@ Unrelated batch blobs are not cancelled or replayed. A failed identity/reset
 check prevents the full GET. This strategy reset is available even with zero
 transport retries, and is never recursive. The full receiver still cannot retry
 after a file/hash byte commits.
+An interrupted range connection (including incomplete HTTP framing) can retry
+only that private, uncommitted part under the configured connection-error retry
+policy. Its spool is removed before replay; accepted prefixes are never replayed.
+Exhausted budgets and non-retryable malformed length/body checks still fail.
+Before strategy reset releases old jobs, their queued diagnostics are drained
+on the invoking thread, while cancelled progress/status records are discarded.
 An observed ETag change remains in terminal status even when draining or sink
 reset fails; the failed attempt and accepted-byte count are not reset, and the
 original failure is preserved. Progress observer errors propagate unchanged,

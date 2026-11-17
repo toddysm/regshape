@@ -378,6 +378,8 @@ class _RangePart:
         :raises BlobError: For malformed protocol or failed size/digest verification.
         Transport/authentication/cancellation and spool errors propagate without
         treating sink or validation failures as retryable network failures.
+        Interrupted HTTP framing may retry the uncommitted part under the
+        configured connection-error policy; exhausted framing failures fail closed.
         """
         if worker.client is None:
             raise RuntimeError("Range job requires an isolated client")
@@ -458,7 +460,15 @@ class _RangePart:
             ):
                 raise
             except requests.exceptions.ChunkedEncodingError as error:
-                raise BlobError("Truncated or malformed blob range body") from error
+                # Requests wraps interrupted HTTP bodies outside its ConnectionError hierarchy.
+                if (
+                    not self.receiving or retry >= policy.max_retries
+                    or not (
+                        isinstance(error, policy.exceptions)
+                        or issubclass(requests.exceptions.ConnectionError, policy.exceptions)
+                    )
+                ):
+                    raise BlobError("Truncated or malformed blob range body") from error
             except policy.exceptions:
                 if not self.receiving or retry >= policy.max_retries:
                     raise

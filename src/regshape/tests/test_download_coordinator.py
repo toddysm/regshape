@@ -573,6 +573,57 @@ def test_fallback_reason_survives_cleanup_or_reset_failure(client, first_reason,
     assert not any(event.status.event == "fallback" for event in statuses)
 
 
+def test_fallback_drains_queued_logs_before_releasing_old_job(client, caplog):
+    """Stopped fallback jobs retain reservations until all diagnostics reach the caller once."""
+    logger = logging.getLogger("regshape.tests.fallback.drain")
+    cancelled = threading.Event()
+    caller = threading.get_ident()
+    progress, statuses, results = [], [], []
+
+    def submit(function, *args):
+        """Stop the worker before pumping, leaving a deterministic queued-record backlog."""
+        future = Future()
+        future.set_result(function(*args))
+        return future
+
+    def stopped(worker):
+        """Queue diagnostics behind progress, then request source-local strategy fallback."""
+        _progress(worker, 0)
+        for index in range(3):
+            emit_log(logger, logging.WARNING, "old range diagnostic %s", index)
+        _progress(worker, 1)
+        worker.emit(_Status("retry", "ranged", "http_status", 503))
+        raise _StrategyFallback("etag_changed")
+
+    def fallback(reason):
+        """Require complete caller-thread diagnostic delivery before resetting or dispatching."""
+        assert reason == "etag_changed"
+        assert [record.getMessage() for record in caplog.records] == [
+            f"old range diagnostic {index}" for index in range(3)
+        ]
+        assert all(record.thread == caller for record in caplog.records)
+        assert not coordinator.pending
+        return [_job("a", lambda worker: "verified", attempt=2, terminal=True)]
+
+    with (
+        patch("regshape.libs.transport._coordinator.ThreadPoolExecutor.submit", side_effect=submit),
+        DownloadTransport(client, DownloadOptions(concurrency=2)) as root,
+        _Coordinator(
+            root._download_context, progress_callback=progress.append, status_callback=statuses.append,
+        ) as coordinator,
+    ):
+        coordinator.run([[
+            replace(
+                _job("a", stopped), strategy="ranged", cancelled=cancelled, fallback=fallback,
+            ),
+        ]], on_result=results.append)
+    assert results == ["verified"] and cancelled.is_set()
+    assert len(caplog.records) == 3
+    assert not any(event.bytes_completed == 1 for event in progress)
+    assert not any(event.status.event == "retry" for event in statuses)
+    assert sum(event.status.event == "fallback" for event in statuses) == 1
+
+
 def test_reset_queues_zero_artifact_progress_on_same_row(client):
     """The bridge also retains artifact row identity and logical attempt during fallback."""
     progress = []

@@ -1048,7 +1048,11 @@ class _Coordinator:
                             raise outcome.error
                 for identity, source in tuple(active_sources.items()):
                     if source.fallback is not None:
-                        if all(item.future.done() for item in source.pending):
+                        if all(
+                            item.future.done()
+                            and item.delivered_records == item.future.result().produced_records
+                            for item in source.pending
+                        ):
                             self.failure_transfer = identity
                             self._restart_source(identity, source)
                             self.failure_transfer = None
@@ -1148,7 +1152,7 @@ class _Coordinator:
         return self.snapshot()
 
     def _restart_source(self, identity: str, source: _Source[T]) -> None:
-        """Join stopped range work, discard old events/spools, then reset only this blob."""
+        """Reset only this blob after stopped jobs' queued diagnostics drain and spools close."""
         fallback, job = source.fallback, source.fallback_job
         if fallback is None or job is None or job.fallback is None:
             raise RuntimeError("Missing range fallback handler")
