@@ -13,7 +13,7 @@ from typing import Any
 import click
 import requests
 
-from regshape.cli.downloads import DownloadWarnings
+from regshape.cli.downloads import DownloadWarnings, download_options, download_policy
 from regshape.cli.formatting import emit_error, emit_json, emit_text
 from regshape.cli.options import artifact_option
 from regshape.cli.progress import ProgressDisplay
@@ -26,6 +26,7 @@ from regshape.libs.artifacts import (
     preflight_artifact_pull,
     pull_artifact,
 )
+from regshape.libs.blobs import DownloadOptions
 from regshape.libs.decorators import telemetry_options
 from regshape.libs.decorators.output import flush_telemetry
 from regshape.libs.decorators.scenario import track_scenario
@@ -157,6 +158,7 @@ def artifact() -> None:
               show_default=True, help="Maximum compressed gzip bytes for archive output.")
 @click.option("--json", "json_output", is_flag=True, help="Print completed result JSON; disable progress.")
 @click.option("--no-progress", is_flag=True, help="Disable interactive transfer progress.")
+@download_options
 @click.pass_context
 def pull(
     ctx: click.Context, image_ref: str, output: str, output_format: str,
@@ -164,6 +166,8 @@ def pull(
     max_archive_bytes: int, max_archive_input_bytes: int,
     json_output: bool, no_progress: bool,
     download_warnings: DownloadWarnings,
+    concurrency: int, ranges_per_blob: int, range_size: int, sequential: bool,
+    legacy_transport: bool, download_retries: int | None, scratch_dir: str | None,
 ) -> ArtifactPullResult:
     """Pull all indexes, manifests, configs, layers and explicit subjects without extraction.
 
@@ -174,9 +178,21 @@ def pull(
 
     \f
     :param download_warnings: Invocation collector owned outside telemetry/result output.
+    :param concurrency: Shared object/range request ceiling, default four.
+    :param ranges_per_blob: Per-blob committed-prefix window, default one full stream.
+    :param range_size: Maximum bytes per range spool, not a streaming buffer size.
+    :param sequential: Pooled one-at-a-time acquisition; conflicts with explicit ceilings.
+    :param legacy_transport: Original serial transport, incompatible with pooled controls.
+    :param download_retries: Pooled retry override, including zero to disable.
+    :param scratch_dir: Existing trusted range-scratch root; default uses private staging.
     :returns: Complete publication for the outer post-telemetry result writer.
     :raises click.BadParameter: For invalid source syntax or positive-integer policy.
     """
+    policy = download_policy(
+        ctx, concurrency=concurrency, ranges_per_blob=ranges_per_blob,
+        range_size=range_size, sequential=sequential, legacy_transport=legacy_transport,
+        download_retries=download_retries, scratch_dir=scratch_dir,
+    )
     registry, repo, reference = _source(image_ref)
     limits = ArtifactLimits(
         max_manifest_bytes=max_manifest_bytes, max_objects=max_objects,
@@ -198,7 +214,7 @@ def pull(
             download_warnings.display = progress
             result = _pull_with_progress(
                 ctx, registry, repo, reference, output, selected_format, limits, progress,
-                download_warnings,
+                download_warnings, policy,
             )
             flush_telemetry()
             progress.finish_preparation()
@@ -213,6 +229,7 @@ def _pull_with_progress(
     ctx: click.Context, registry: str, repo: str, reference: str, output: str,
     output_format: ArtifactFormat, limits: ArtifactLimits, progress: ProgressDisplay,
     download_warnings: DownloadWarnings,
+    policy: DownloadOptions,
 ) -> ArtifactPullResult:
     """Format expected operation failures while retaining callback/diagnostic error identity.
 
@@ -222,6 +239,7 @@ def _pull_with_progress(
     so their command diagnostic includes only the exception type.
 
     :param download_warnings: Safe status sink kept active even when redraws are suppressed.
+    :param policy: Preflighted SDK transport/scheduling/retry/scratch controls.
     """
     observers = _ArtifactObservers(progress)
     try:
@@ -231,7 +249,8 @@ def _pull_with_progress(
         result = pull_artifact(
             client, repo, reference, output, output_format=output_format, limits=limits,
             progress_callback=observers.observe, phase_callback=observers.phase,
-            download_status_callback=download_warnings.observe,
+            download_options=policy,
+            download_status_callback=None if policy.transport == "legacy" else download_warnings.observe,
         )
     except (ArtifactError, AuthError, BlobError, ManifestError, OSError) as error:
         if observers.error is error:

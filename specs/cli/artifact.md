@@ -39,6 +39,13 @@ payload extraction, or resume is performed.
 | `--max-archive-input-bytes` | `2199023255552` | Compressed gzip bytes |
 | `--json` | Off | One completed result on stdout; no animated progress |
 | `--no-progress` | Off | Suppress object and local-phase rows, not transfers/validation |
+| `--concurrency` | `4` | Global pooled object/range request ceiling, 1–32 |
+| `--ranges-per-blob` | `1` | Per-blob committed-prefix window, 1–concurrency; one uses full GET |
+| `--range-size` | `8388608` | Bytes per range spool, 65536–67108864 |
+| `--sequential` | Off | Pooled C=W=1; conflicts with explicitly supplied concurrency/range ceilings |
+| `--legacy-transport` | Off | Original serial transport; rejects explicit sequential, concurrency, ranges-per-blob, retry and scratch controls |
+| `--download-retries` | Resolved pooled default `3` | Retry override 0–10; zero disables |
+| `--scratch-dir` | Private artifact staging | Existing caller-trusted root for private bounded range scratch |
 | `--help` | — | Installed command help |
 
 All six limit options require positive integers. Library-only budgets are
@@ -73,11 +80,21 @@ Standalone manifest/blob commands retain their existing semantics;
 [component selection #112](https://github.com/toddysm/regshape/issues/112)
 remains Planned.
 
-The [library batch/status APIs](../../docs/library/downloads.md#public-batch-downloads)
-do not add CLI options or change this command's stdout/progress schemas.
-Artifact blob receipt shares an operation-owned coordinator, but graph
-acquisition is still serial. Parallel graph scheduling, range flags and
-typed-status/deferred-warning rendering remain separate follow-up work.
+Default pooled acquisition pins/discovers documents serially, reserves all
+graph/byte limits, then overlaps independent blobs. Eligible ranges share the
+same global ceiling; scratch stays within concurrency × range-size. Only the
+caller registers/promotes completed files, and the complete local graph verifies
+before publication. `--sequential` keeps one-at-a-time graph acquisition but still
+uses pooled transport; only `--legacy-transport` bypasses the new context.
+Range size remains validated but unused with legacy transport.
+See [range/retry behavior](../../docs/library/downloads.md).
+
+Typed status collection remains active with `--json`, `--no-progress` and
+nonterminal stderr. If a validator changes, one warning follows the complete
+artifact result/error and worker/output cleanup; repeated references count once
+per affected blob. Success states that fallback digests verified; failure says
+the operation did not complete. Warnings use stderr and do not alter stdout,
+JSON fields, publication or failure exit status.
 
 ## Completed output
 

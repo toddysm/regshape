@@ -99,6 +99,36 @@ signatures not explicitly reachable are not automatically copied. Descriptor
 URLs are retained but never fetched directly: externally available-only required
 content fails. Valid embedded descriptor data is verified and stored locally.
 
+### Control parallel acquisition
+
+Supported clients default to four pooled request slots and one full stream per
+blob. Documents are discovered serially and all unique graph/byte limits are
+reserved before independent blobs overlap. For eligible blobs at least four
+times the range size, opt into parallel byte ranges:
+
+```bash
+regshape artifact pull -a "$ARTIFACT" -o ./parallel-layout \
+  --concurrency 4 --ranges-per-blob 2 --range-size 8388608 --download-retries 3
+```
+
+Object and range requests share the same four-slot cap; range scratch is bounded
+by concurrency times range size, in addition to stored artifact bytes. Scratch
+defaults to the private artifact staging namespace; `--scratch-dir` selects an
+existing caller-trusted root instead. Pooled retries default to three, including
+429 throttling; `--download-retries 0` disables them.
+
+Use `--sequential` for one-at-a-time acquisition on pooled transport; do not
+combine it with explicit concurrency/range ceilings. For genuine rollback,
+use `--legacy-transport` alone, without explicit pooled scheduling, retry or
+scratch controls. SDK custom clients without a safe fork keep their original
+serial path when options are omitted; explicit unsupported pooled requests fail
+before effects. See [download policy](../library/downloads.md).
+
+If an ETag changes, the affected blob may restart as a full stream. One bounded
+warning is emitted after the entire result/error and cleanup, counting unique
+affected blobs rather than repeated references. This remains active when
+progress is disabled and leaves stdout/JSON unchanged.
+
 ## 2. Choose directory or archive
 
 Directory (`--format oci`, the default) produces this organization. Angle-bracket

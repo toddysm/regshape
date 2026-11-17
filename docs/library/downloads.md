@@ -430,7 +430,10 @@ Observers run only on the invoking thread. Strategy precedes payload;
 completion follows verification and owned-file cleanup. Failure/cancellation
 and the single final summary carry available counters. An artifact operation
 shares one coordinator across nested blobs and emits its summary after artifact
-publication/cleanup; graph acquisition remains serial. The original raised
+publication/cleanup. Pooled C>1 pins/discovers all documents and reserves the
+complete graph before overlapping independent blobs/ranges under that same cap;
+C=1 retains one-at-a-time graph acquisition. Final local verification precedes
+publication without replacing discovery provenance/reuse counts. The original raised
 error remains authoritative. A failed observer is never invoked again, and
 its exact exception propagates after draining, including `OSError` or
 `KeyboardInterrupt`. Passing the same callable to multiple observer parameters
@@ -440,12 +443,13 @@ different receivers or different methods remain independent.
 
 ## Remaining delivery boundary
 
-Public batch downloads overlap independent full-stream blobs. Singular blob
-downloads retain **full-stream receipt**, and artifact acquisition retains
-**serial graph scheduling**. HTTP ranges, parallel artifact graph integration
-and CLI flags/rendering remain owned by
-[#145](https://github.com/toddysm/regshape/issues/145),
-[#136](https://github.com/toddysm/regshape/issues/136) and
-[#137](https://github.com/toddysm/regshape/issues/137).
+Public batch downloads and artifact pulls overlap independent blobs; singular,
+batch and artifact downloads share eligible ranged receipt. Blob get and
+artifact pull expose the same scheduling/range/retry/scratch controls, with
+functional interleaved progress and deferred changed-ETag warnings.
+Combined benchmarks/real-registry validation and final feature-wide
+documentation remain tracked by [#138](https://github.com/toddysm/regshape/issues/138)
+and [#139](https://github.com/toddysm/regshape/issues/139); no performance or
+release claim is implied here.
 Existing callbacks run synchronously on the invoking thread, and standalone
 verify-only downloads still hash/discard the received bytes.

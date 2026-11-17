@@ -23,6 +23,7 @@ from regshape.libs.artifacts.graph import (
     OCI_MANIFEST,
     REF_NAME,
     Edge,
+    plan_graph,
     strict_json,
     verify_graph,
 )
@@ -389,8 +390,9 @@ def test_total_reserved_before_next_download(tmp_path: Path) -> None:
     assert len(registry.calls) == 1
 
 
-def test_cycle_and_deep_iterative_graph(tmp_path: Path) -> None:
-    """Synthetic identity fixtures exercise cycles and >Python-recursion-depth graph traversal."""
+@pytest.mark.parametrize("planning", [False, True])
+def test_cycle_and_deep_iterative_graph(tmp_path: Path, planning: bool) -> None:
+    """Both shared traversals reject cycles without depending on Python recursion depth."""
     count = 1100
     digests = ["sha256:" + f"{index:064x}" for index in range(count)]
     raw = {
@@ -402,14 +404,16 @@ def test_cycle_and_deep_iterative_graph(tmp_path: Path) -> None:
     root = Edge(digests[0], 1, OCI_INDEX, True)
     with SafeDirectory.open(tmp_path) as directory:
         store = ContentStore(directory)
+        traverse = plan_graph if planning else verify_graph
+        options = {"acquire": lambda edge, remaining: ("network", "")} if planning else {}
         with patch.object(store, "verify", side_effect=lambda digest, *a, **k: raw[digest]):
-            graph = verify_graph((root,), store, ArtifactLimits(max_depth=count))
+            graph = traverse((root,), store, ArtifactLimits(max_depth=count), **options)
             assert len(graph.objects) == count
             raw[digests[-1]] = document(children=[{
                 "mediaType": OCI_INDEX, "digest": digests[0], "size": 1,
             }])
             with pytest.raises(ArtifactError, match="Cycle"):
-                verify_graph((root,), store, ArtifactLimits(max_depth=count))
+                traverse((root,), store, ArtifactLimits(max_depth=count), **options)
 
 
 def test_completed_subtree_reuse_cannot_bypass_depth(tmp_path: Path) -> None:

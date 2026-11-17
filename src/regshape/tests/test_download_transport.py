@@ -952,7 +952,7 @@ def test_artifact_root_and_blobs_share_context(server, tmp_path: Path) -> None:
 def test_custom_worker_nested_downloads_inherit_context_without_reforking(
     server, tmp_path: Path, caplog: pytest.LogCaptureFixture, explicit: bool,
 ) -> None:
-    """Nested blob/artifact calls accept custom worker state and keep one borrowed context."""
+    """Nested calls share auth/pool state; artifact jobs add an isolated worker session."""
     class Custom(RegistryClient):
         """Safe extension whose worker-only state intentionally fails base support detection."""
 
@@ -985,7 +985,7 @@ def test_custom_worker_nested_downloads_inherit_context_without_reforking(
                     get_blob(worker, "repo", address(state.payload), download_options=conflicting)
                 with pytest.raises(ValueError, match="Nested downloads"):
                     pull_artifact(worker, "repo", "latest", tmp_path / "rejected", download_options=conflicting)
-        assert len(context.sessions) == 1 and not context.closed
+        assert len(context.sessions) == 2 and not context.closed
         assert context.options == policy
         assert not (tmp_path / "rejected").exists()
     assert len(state.token_calls) == 1 and state.unauthorized == 1
