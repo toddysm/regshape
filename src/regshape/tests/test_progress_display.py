@@ -18,6 +18,7 @@ import requests
 from click.testing import CliRunner
 
 from regshape.cli.blob import _trusted_file_size
+from regshape.cli.downloads import DownloadWarnings
 from regshape.cli.main import regshape
 from regshape.cli.progress import ProgressDisplay
 from regshape.libs.blobs import BlobDownload, DownloadOptions, get_blob, get_blobs
@@ -254,6 +255,46 @@ def test_uninitialized_terminal_size_uses_a_positive_fallback(
         display.observe(_event(TransferPhase.COMPLETED, 100))
     assert "\x1b[1A" not in terminal.getvalue()
     assert len([r for r in terminal.rows if r.startswith("Blob")]) == 1
+
+
+@pytest.mark.parametrize("lines", [0, -1])
+def test_uninitialized_terminal_height_keeps_interleaved_rows_visible(
+    lines: int, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An uninitialized height uses the fallback viewport rather than hiding all but one row."""
+    terminal = Terminal()
+    other = "sha256:" + "b" * 64
+    monkeypatch.setenv("COLUMNS", "160")
+    monkeypatch.setenv("LINES", "4")
+    with (
+        patch.object(terminal, "fileno", return_value=2),
+        patch("os.get_terminal_size", return_value=os.terminal_size((160, lines))),
+        ProgressDisplay(stream=terminal) as display,
+    ):
+        display.observe(_event(TransferPhase.TRANSFERRING, 20))
+        display.observe(_event(TransferPhase.TRANSFERRING, 40, digest=other))
+        assert len([row for row in terminal.rows if row.startswith("Blob")]) == 2
+        display.observe(_event(TransferPhase.COMPLETED, 100, digest=other))
+        display.observe(_event(TransferPhase.COMPLETED, 100))
+
+
+def test_download_telemetry_does_not_flush_a_closed_borrowed_sink(tmp_path: Path) -> None:
+    """A retained telemetry proxy can close after its borrowed stderr without flushing it."""
+    with (tmp_path / "stderr.txt").open("w", encoding="utf-8") as terminal:
+        with (
+            patch.object(terminal, "isatty", return_value=True),
+            patch("sys.stderr", terminal),
+            DownloadWarnings() as warnings,
+        ):
+            assert warnings._output is not None
+            config = TelemetryConfig(output=warnings._output)
+            configure_telemetry(config)
+            with ProgressDisplay():
+                proxy = config.output
+        terminal.write("borrowed stderr remains open\n")
+    with patch.object(terminal, "flush", wraps=terminal.flush) as flush:
+        proxy.close()
+    flush.assert_not_called()
 
 
 @pytest.mark.parametrize("reason", ["disabled", "structured", "nonterminal", "json-telemetry"])

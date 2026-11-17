@@ -69,6 +69,11 @@ class _DownloadOutput(io.TextIOBase, IO[str]):
         """Measure the borrowed terminal rather than redirected stdout."""
         return self.stream.fileno()
 
+    @property
+    def closed(self) -> bool:
+        """Expose borrowed-sink closure so deferred telemetry never flushes a closed destination."""
+        return self.stream.closed
+
     def close(self) -> None:
         """Never close or flush the borrowed sink, including during adapter destruction."""
 

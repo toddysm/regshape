@@ -787,10 +787,12 @@ class ProgressDisplay:
         return columns if columns > 0 else shutil.get_terminal_size((80, 24)).columns
 
     def _terminal_rows(self) -> int:
-        """Reserve a boundary line so the live block does not scroll itself out of reach."""
+        """Use a positive fallback height and reserve a boundary line to avoid scrolling."""
         try:
             lines = os.get_terminal_size(self.stream.fileno()).lines
         except OSError:
+            lines = shutil.get_terminal_size((80, 24)).lines
+        if lines <= 0:
             lines = shutil.get_terminal_size((80, 24)).lines
         return max(1, lines - 1)
 
