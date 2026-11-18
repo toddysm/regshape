@@ -106,7 +106,7 @@ the first version of every operation in that row.
 | Python Package Index (PyPI) release publication | Implemented | [Closed #57](https://github.com/toddysm/regshape/issues/57), [v0.1.1 release](https://github.com/toddysm/regshape/releases/tag/v0.1.1) | - | [Developer guide: contributing](../CONTRIBUTING.md) | [Overview/install reference](../README.md) | - |
 | Homebrew distribution and release-driven formula updates | Partial | [Tracker #63](https://github.com/toddysm/regshape/issues/63), [remaining documentation fix #62](https://github.com/toddysm/regshape/issues/62) | - | - | [How-to: Homebrew installation](guides/homebrew-install.md) | - |
 | Package version and build-number reporting | Planned | [#129](https://github.com/toddysm/regshape/issues/129) | [Captured requirements](https://github.com/toddysm/regshape/issues/129) | - | - | - |
-| OCI image-specification guidance for the development skill | In progress | [#66](https://github.com/toddysm/regshape/issues/66), [open #67](https://github.com/toddysm/regshape/pull/67) | [Issue requirements: #66](https://github.com/toddysm/regshape/issues/66) | [Current development skill](../.github/skills/regshape-dev/SKILL.md) | - | - |
+| OCI image-specification guidance for the development skill | Implemented | [Closed #66](https://github.com/toddysm/regshape/issues/66), [merged #67](https://github.com/toddysm/regshape/pull/67) | [Issue requirements: #66](https://github.com/toddysm/regshape/issues/66) | [Development skill](../.github/skills/regshape-dev/SKILL.md), [image-specification reference](../.github/skills/regshape-dev/references/oci-image-spec.md) | - | 2026-11-16 |
 | Live progress for blob get/upload and layout/Docker push | Implemented | [Feature #72](https://github.com/toddysm/regshape/issues/72), merged [#80](https://github.com/toddysm/regshape/pull/80), [#81](https://github.com/toddysm/regshape/pull/81), [#82](https://github.com/toddysm/regshape/pull/82), [#83](https://github.com/toddysm/regshape/pull/83), [#84](https://github.com/toddysm/regshape/pull/84) | [Lightweight design: #72, revision 2](https://github.com/toddysm/regshape/issues/72) | [Developer reference: transfer callbacks](library/transfer-progress.md), [API reference: blobs](../specs/operations/blobs.md) | [How-to: live transfer progress](guides/live-transfer-progress.md) | 2026-11-03 |
 | Artifact-oriented CLI options with compatible legacy aliases | Implemented | [Feature #87](https://github.com/toddysm/regshape/issues/87), merged [#96](https://github.com/toddysm/regshape/pull/96), [#97](https://github.com/toddysm/regshape/pull/97), [#98](https://github.com/toddysm/regshape/pull/98), [#99](https://github.com/toddysm/regshape/pull/99) | [Functional requirements: artifact options](../specs/cli/artifact-options.md#part-i-functional-requirements) | [Engineering design: artifact options](../specs/cli/artifact-options.md#part-ii-engineering-design), [API source: reference parsers](../src/regshape/libs/refs.py) | [How-to: artifact options and migration](guides/artifact-options.md) | 2026-11-04 |
 | Canonical artifact, manifest and blob references | Planned | [#88](https://github.com/toddysm/regshape/issues/88) | [Design and migration requirements](https://github.com/toddysm/regshape/issues/88) | - | - | - |
@@ -157,6 +157,10 @@ release-unassigned follow-ups, not prerequisites for this 0.2 delivery.
 
 ### Tracking corrections
 
+- [#66](https://github.com/toddysm/regshape/issues/66) is closed through
+  [#67](https://github.com/toddysm/regshape/pull/67), merged on 2026-11-16 at
+  `10c3af8db4e192e80f816a6bd5a980b5f4bee436`, an ancestor of the captured
+  baseline. The development-skill guidance is implemented, not still in review.
 - [#143](https://github.com/toddysm/regshape/issues/143) follows the approved
   revision-4 design and merged [download policy](library/downloads.md#policy),
   not the superseded default-off proposal. Pooled downloads default to three
