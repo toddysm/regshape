@@ -437,6 +437,9 @@ def _pull_artifact(
                         progress_callback=blob_progress, observe=observers.observe,
                     )
                     verified = verify_graph((root,), store, policy)
+                    for item in plan.objects:
+                        if item.kind == "blob" and item.source == "network":
+                            observers.rows[item.digest].emit("stored")
                     sources = {item.digest: item.source for item in plan.objects}
                     graph = replace(verified, objects=tuple(
                         replace(item, source=sources[item.digest]) for item in verified.objects

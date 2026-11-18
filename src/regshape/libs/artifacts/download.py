@@ -40,7 +40,8 @@ def receive_graph_blobs(
     :param staging_path: Diagnostic/default range-scratch location for store.directory.
     :param identity: Reserve/retrieve the first artifact row's stable transfer ID.
     :param progress_callback: Caller-thread adapter routing by blob digest.
-    :param observe: Caller-thread verification/storage observer after sink validation.
+    :param observe: Caller-thread verifying observer after sink validation/promotion.
+        Stored success remains deferred to final graph verification by the caller.
     :raises RuntimeError: If no invocation coordinator is available.
 
     Worker, observer and storage failures propagate after draining active jobs;
@@ -76,7 +77,7 @@ def receive_graph_blobs(
     verified: set[str] = set()
 
     def progress(event: TransferProgress) -> None:
-        """Promote after worker/source cleanup, before any final artifact observer can fail."""
+        """Promote after source cleanup, leaving the row verifying until final graph validation."""
         if event.phase != TransferPhase.COMPLETED:
             progress_callback(event)
             return
@@ -87,7 +88,6 @@ def receive_graph_blobs(
         store.promote(filename, edge.digest)
         progress_callback(event)
         observe(edge, "network", "verifying")
-        observe(edge, "network", "stored")
 
     with _coordinated(client, policy, progress_callback=progress) as (_, coordinator):
 

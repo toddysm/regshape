@@ -384,12 +384,14 @@ def test_observer_failure_drains_without_partial_publication(tmp_path, surface, 
     assert not list(tmp_path.iterdir())
 
 
-def test_final_verifier_rejects_post_receive_corruption(tmp_path):
-    """Verified worker output is rechecked as a complete local graph before any publication."""
+@pytest.mark.parametrize("concurrency", [1, 4])
+def test_final_verifier_rejects_post_receive_corruption(tmp_path, concurrency):
+    """Corruption fails the blob row without stored success or publication in either mode."""
     payload = b"original"
     root = document(config=edge(payload))
     registry = Registry(root, {address(payload): payload})
     original = ContentStore.promote
+    events = []
 
     def promote(store, filename, digest):
         """Corrupt only a promoted blob in this controlled fault-injection namespace."""
@@ -405,7 +407,17 @@ def test_final_verifier_rejects_post_receive_corruption(tmp_path):
         patch.object(ContentStore, "promote", promote),
         pytest.raises(ArtifactError, match="digest or size mismatch"),
     ):
-        pull_artifact(_client(), "repo", "moving", tmp_path / "out")
+        pull_artifact(
+            _client(),
+            "repo",
+            "moving",
+            tmp_path / "out",
+            download_options=DownloadOptions(concurrency=concurrency),
+            progress_callback=events.append,
+        )
+    phases = [event.phase for event in events if event.digest == address(payload)]
+    assert phases[-1] == "failed"
+    assert "verifying" in phases and "stored" not in phases
     assert not list(tmp_path.iterdir())
 
 

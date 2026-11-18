@@ -184,7 +184,9 @@ Invalid event values raise `ValueError`. Counters are not deltas or aggregate
 artifact totals; embedded/local counts are not network bytes.
 
 `received` is not `stored`: parsing, integrity checks and safe storage still must
-succeed. No library code renders a terminal. Observer exceptions propagate
+succeed. Parallel network blob rows remain `verifying` after promotion until
+the complete local graph passes final verification; only then do they emit
+`stored`. No library code renders a terminal. Observer exceptions propagate
 unchanged, including immutable exceptions and cancellation. Further notifications
 are disabled after an observer raises.
 
