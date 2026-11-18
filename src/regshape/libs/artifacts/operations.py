@@ -20,7 +20,6 @@ from uuid import uuid4
 
 from regshape.libs._http import report_secondary_failure
 from regshape.libs.artifacts.archive import ArchiveSnapshot, write_archive
-from regshape.libs.artifacts.download import receive_graph_blobs
 from regshape.libs.artifacts.graph import (
     ACCEPT,
     INDEX_TYPES,
@@ -422,6 +421,8 @@ def _pull_artifact(
                     and context.coordinator is not None
                     and context.options.concurrency > 1
                 ):
+                    from regshape.libs.artifacts.download import receive_graph_blobs
+
                     plan = plan_graph(
                         (root,), store, policy, acquire=acquire, observe=observers.observe,
                     )
