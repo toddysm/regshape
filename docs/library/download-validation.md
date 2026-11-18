@@ -332,6 +332,8 @@ as a pre-trial deployment snapshot. No deployment, policy or container was chang
   `harbor-deployment-pinning.json`, alongside the existing trial report.
   It records all observed container digests/start times and only allowlisted
   configuration fields, not complete Helm values, environment dumps or Secrets.
+  Its SHA-256 is
+  `b95a09d21415387cfc88043bd6081919b398a7ff276018bb9089e17fd2f39607`.
 
 ### Recorded Docker Hub and storage-redirect trial
 
