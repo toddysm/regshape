@@ -217,17 +217,19 @@ the ranged performance acceptance criterion.
 
 ## Complete the actual-registry release gate
 
-**Partially exercised: eight Harbor download trials passed; the second
-implementation, full deployment pinning and storage-redirect evidence remain
-outstanding.** No exception is approved. Synthetic redirect coverage is not a
-substitute. Neither the passing CI suite nor a passing benchmark report makes
-this gate complete.
+**Actual-service and redirect trials passed:** Harbor and Docker Hub each passed
+eight download trials, and Docker Hub exercised real storage redirects with
+credential stripping. The owner explicitly accepted Docker Hub as the second
+service with an exception for unavailable managed-backend
+implementation/version/configuration pinning; this does not prove independently
+implemented backends. Exact Harbor deployment pinning is still outstanding.
+The controlled ranged performance gate remains unmet.
 
 | Required deployment | Pinned implementation/configuration | Trial status |
 | --- | --- | --- |
 | First actual deployment: Harbor | Reports v2.17.0-e7dbdea2, db_auth and filesystem storage; exact deployed image digests/full backend configuration still require operator confirmation | Eight CLI/SDK trials passed on 2026-11-18 |
-| Different actual implementation, for example Zot | Not supplied; obtain exact version/image digest and backend configuration | Not run |
-| Authorized storage-redirect deployment | Not supplied; obtain registry/backend versions and approved storage origin | Not run; release blocked |
+| Second actual service: Docker Hub | Immutable content digests; owner-approved managed-service exception for unavailable backend implementation/version/configuration | Eight CLI/SDK trials passed on 2026-11-18; linux/amd64 child scope approved |
+| Authorized storage redirects: Docker Hub | Registry origin registry-1.docker.io to documented storage origin production.cloudfront.docker.com; backend pinning covered by the same Docker Hub exception | 44 real 307 redirects; all storage requests credential-free and outputs verified |
 
 ### Recorded Harbor trial
 
@@ -272,6 +274,58 @@ These single unshaped-localhost trials are interoperability evidence only;
 ranged receipt was slower here and does not supersede the failed controlled
 performance run. This filesystem-backed deployment does not exercise storage
 redirects or prove cross-origin credential stripping.
+
+### Recorded Docker Hub and storage-redirect trial
+
+The [sanitized Docker Hub checkpoint on #138](https://github.com/toddysm/regshape/issues/138#issuecomment-6994121690)
+records source `29565e01afd10c768b76d042bcb3ea83264ff18a`, the owner's
+managed-service exception and the eight-operation matrix. No content was
+uploaded, deleted or executed. The configured source was
+`registry-1.docker.io/library/nginx:stable`.
+
+The full multi-platform graph would require 2,168,685,520 payload bytes for the
+matrix, before overhead, exceeding the separate 2 GiB cap. The owner explicitly
+selected its linux/amd64 child instead. The **entire index's blob content was not
+pulled**; every object in the selected child's complete closure was pulled and
+independently verified. Its root is
+`sha256:af61f605a001c7794200cae30093d8ee0da5183318df15fdfff3597ef37a7486`:
+nine unique objects / 63,636,332 stored bytes, including a 33,764,223-byte blob
+eligible for the default 8 MiB range policy.
+
+Both `artifact pull` and `blob get` passed in default, sequential, ranged
+C4/W2/R8MiB and explicit legacy modes, using distinct temporary outputs. All
+stored sizes/digests, layout markers, wrapper identity and the exact nine-object
+set passed independent checks.
+
+- Authentication used `https://auth.docker.io`; the registry returned 44 actual
+  HTTP 307 redirects to `https://production.cloudfront.docker.com`, an origin on
+  [Docker's official allowlist](https://docs.docker.com/desktop/enterprise/allow-list/).
+  Every storage request was checked before sending: no Authorization,
+  Proxy-Authorization or Cookie headers were present. Signed redirect
+  paths/queries and token bodies were not recorded.
+- Both ranged operations received five valid 206 parts with strong ETags and
+  exact Content-Range coverage, including the final 209,791-byte part. Each had
+  one successful range-zero receipt; subsequent parts carried `If-Range`.
+- Pooled request metrics matched observed physical HTTP counts, including
+  auth/redirect hops. Each pooled operation used one token exchange; no retries
+  or capability fallbacks occurred. Caller-thread callbacks, final summaries,
+  request caps and the 16 MiB ranged scratch peak were checked.
+- Ranged artifact acquisition reused four data connections for 12 data requests;
+  standalone ranged receipt used two for five parts. Sequential artifact
+  receipt used eight storage client ports; no cross-blob reuse is claimed there.
+- Cumulative consumed response bodies, including metadata preflight/login, were
+  389,859,019 bytes (371.799 MiB), below the separate 2 GiB cap. This excludes
+  wire overhead and does not measure server egress.
+- CLI login used an isolated temporary credential store. Temporary credentials
+  and downloaded image bytes were removed; the existing user store was not
+  changed. No token expiry/refresh, ETag rotation or protocol faults were induced.
+
+The sanitized raw report remains outside the source tree, with SHA-256
+`a91cc59feb1283bc4a27ca7582edcf103b80d484416045875e8617257ad999b5`.
+These single remote interoperability timings do not satisfy the controlled
+20-sample performance gate; standalone ranged receipt was slower than sequential
+in this observation. The Docker Hub managed-service exception does not waive
+the separate Harbor deployment-pinning gap or change numeric thresholds.
 
 ### Trial procedure
 
