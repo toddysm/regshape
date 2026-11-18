@@ -167,7 +167,7 @@ class DownloadFixture:
                         fixture.condition.notify_all()
 
             def gate_control(self, kind: str) -> None:
-                """Hold a selected control hop until three other data bodies are active."""
+                """Hold a selected control hop until ``overlap - 1`` other data bodies are active."""
                 if not fixture.gating or fixture.control_kind != kind:
                     return
                 with fixture.condition:
