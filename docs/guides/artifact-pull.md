@@ -306,7 +306,7 @@ Unknown totals display `received / ?` and a moving indeterminate cell, with no
 percentage or remaining-time estimate. Embedded/local rows end with
 `Stored (embedded)` or `Stored (local)` and have no network rate; duplicates do
 not create fake skipped rows. Each bar has exactly 20 cells. Only the object
-type and digest are colored; `NO_COLOR` disables styles without changing visible
+type, role and digest are colored; a non-empty `NO_COLOR` disables styles without changing visible
 column positions, and incompatible encodings use `=`/`-` instead of `■`/`□`.
 See [download columns and compact-terminal behavior](live-transfer-progress.md#read-aligned-download-rows).
 Final stdout field order and the full result schema are in the

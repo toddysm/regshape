@@ -117,7 +117,7 @@ Artifact pulls and blob downloads render two-space-separated object, digest,
 20-cell bar, bytes and status columns. Object/digest/byte widths are shared and
 grow monotonically within the invocation; earlier scrollback is not rewritten.
 Padding, truncation and cursor footprints use plain visible text before
-applying semantic color to type/role and digest only. `NO_COLOR` disables those
+applying semantic color to type/role and digest only. A non-empty `NO_COLOR` disables those
 styles; unsupported output encodings, wide-ambiguous terminal hints and
 conservatively East Asian locales select ASCII bar cells. Unknown totals
 remain indeterminate with `received / ?`. Compact layouts omit optional fields

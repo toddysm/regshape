@@ -915,11 +915,12 @@ def test_download_columns_colors_and_encoding(
         ArtifactProgress("other", "blob", "transferring", "sha256:" + "5" * 64, None, 0, None),
     ]
     frames = []
-    for colored in (True, False):
-        if colored:
+    for no_color in (None, "", "1"):
+        colored = not no_color
+        if no_color is None:
             monkeypatch.delenv("NO_COLOR", raising=False)
         else:
-            monkeypatch.setenv("NO_COLOR", "")
+            monkeypatch.setenv("NO_COLOR", no_color)
         terminal = Terminal(encoding=encoding)
         with ProgressDisplay(stream=terminal, columns=lambda: 160, clock=lambda: 0) as display:
             for event in events:
@@ -948,7 +949,68 @@ def test_download_columns_colors_and_encoding(
             else:
                 assert not styled
             assert click.unstyle(raw).count("[") >= 5
-    assert frames[0] == frames[1]
+    assert frames[0] == frames[1] == frames[2]
+
+
+@pytest.mark.parametrize("width", [80, 96])
+def test_standard_terminal_retains_aligned_download_bars(width: int) -> None:
+    """Ordinary terminals retain 20 cells and totals across mixed rows, retries and final states."""
+    terminal = Terminal(encoding="ascii")
+    terminal.resize(width)
+    blob = replace(
+        _event(TransferPhase.TRANSFERRING, 24 * 1024**2, 48 * 1024**2),
+        direction=TransferDirection.DOWNLOAD,
+    )
+    events = [
+        ArtifactProgress("index", "index", "verifying", DIGEST, None, 8500, 8500),
+        ArtifactProgress("config", "blob", "transferring", DIGEST, "config", 453, 453,
+                         source="embedded"),
+        ArtifactProgress("unknown", "manifest", "received", DIGEST, None, 1021, None),
+        blob,
+    ]
+    with ProgressDisplay(stream=terminal, total_blobs=3, columns=lambda: width, clock=lambda: 0) as display:
+        for event in events:
+            display.observe(event)
+        rows = terminal.rows
+        assert len(rows) == 4 and rows[-1].startswith("Blob 1/3")
+        for row, status in zip(rows, ("Verifying", "Storing", "Received", "Downloading")):
+            assert row[20:42] == "[" + row[21:41] + "]"
+            assert re.fullmatch(r"[=-]{20}", row[21:41])
+            assert row[44:63] == row[44:63].strip().rjust(19)
+            assert row[65:] == status and len(row) < width
+            assert "sha256:" not in row
+        assert rows[-1][44:63] == "24.0 MiB / 48.0 MiB"
+        assert "1021 B / ?" in rows[2]
+        display.observe(replace(blob, phase=TransferPhase.RETRYING, bytes_completed=0, attempt=2))
+        assert terminal.rows[-1][65:] == "Retrying"
+        display.observe(replace(blob, phase=TransferPhase.VERIFYING, bytes_completed=48 * 1024**2, attempt=2))
+        assert terminal.rows[-1][20:42] == "[" + "=" * 20 + "]"
+        assert terminal.rows[-1][65:] == "Verifying"
+        display.observe(replace(blob, phase=TransferPhase.COMPLETED, bytes_completed=48 * 1024**2, attempt=2))
+        assert terminal.rows[0][65:] == "Downloaded"
+        assert all(len(row) < width for row in terminal.rows) and len(terminal.rows) == 4
+
+
+@pytest.mark.parametrize("phase", [TransferPhase.FAILED, TransferPhase.CANCELLED, TransferPhase.COMPLETED])
+@pytest.mark.parametrize("artifact", [False, True])
+def test_empty_download_failure_does_not_show_a_full_bar(phase: TransferPhase, artifact: bool) -> None:
+    """A zero-byte failed/cancelled download has an empty bar; a verified empty body is full."""
+    terminal = Terminal(encoding="ascii")
+    event = (
+        ArtifactProgress("empty", "blob", "stored" if phase == TransferPhase.COMPLETED else phase.value,
+                         DIGEST, "layer", 0, 0)
+        if artifact else
+        replace(_event(phase, 0, 0), direction=TransferDirection.DOWNLOAD)
+    )
+    with ProgressDisplay(stream=terminal, columns=lambda: 160) as display:
+        display.observe(event)
+    row = terminal.rows[0]
+    assert row[44:66] == "[" + ("=" if phase == TransferPhase.COMPLETED else "-") * 20 + "]"
+    assert "0 B / 0 B" in row
+    assert row[93:] == {
+        TransferPhase.FAILED: "Failed", TransferPhase.CANCELLED: "Cancelled",
+        TransferPhase.COMPLETED: "Downloaded",
+    }[phase]
 
 
 @pytest.mark.parametrize("language,hint,squares", [

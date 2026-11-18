@@ -284,7 +284,7 @@ The tiny example can finish before intermediate frames are visible.
 
 ### Read aligned download rows
 
-`artifact pull` and `blob get` use padded columns separated by two spaces:
+On wide terminals, `artifact pull` and `blob get` use padded columns separated by two spaces:
 object (at least 18 characters), shortened digest (algorithm and 12 hexadecimal
 characters plus `...`), a bracketed 20-cell bar, right-aligned received/total
 bytes (at least 23 characters), then status. Widths grow together for all live
@@ -299,10 +299,11 @@ Blob 1/1            sha256:aaaaaaaaaaaa...  [■■■■■■■■■■■�
 Blob 1/1            sha256:aaaaaaaaaaaa...  [■■■■■■■■■■■■■■■■■■■■]      48.0 MiB / 48.0 MiB  Downloaded
 ```
 
-Only the object keyword/type and digest are colored: bright magenta for indexes,
+Only the object keyword/type, role and digest are colored: bright magenta for indexes,
 bright cyan for manifests, bright yellow for configuration blobs and bright blue
 for layers/other blobs. Numbers, padding, bars, bytes and statuses remain neutral.
-Setting `NO_COLOR` (even to an empty value) disables colors, not progress.
+Setting `NO_COLOR` to a non-empty value disables colors, not progress;
+an empty value leaves colors enabled.
 If stderr's encoding cannot represent `■`/`□`, bars use `=`/`-`.
 The same fallback applies when `VTE_CJK_WIDTH=2` advertises double-width
 ambiguous characters, or conservatively in Japanese/Chinese/Korean locales.
@@ -311,12 +312,21 @@ them. If a custom terminal uses wide squares without a matching locale, set
 `VTE_CJK_WIDTH=2`; an output-only stream cannot safely discover that setting.
 
 Unknown totals show a moving indeterminate cell and `received / ?`, never a
-percentage or remaining-time estimate. A known empty body retains a zero total.
+percentage or remaining-time estimate. A known empty body retains a zero total;
+failed or cancelled empty downloads show an empty bar.
 Rates and estimates are optional suffixes. A full bar is **not** verification,
 storage or whole-artifact publication success; read the lifecycle status.
 
-Narrow terminals omit the digest, then the bar, then totals and long object
-labels. Very narrow rows use `IN`/`MN`/`BN` (kind plus ordinal, such as `I1`,
+Narrow terminals first omit the digest and spare byte padding, shortening retry
+and local-storage statuses while keeping shared column widths. At 80 columns,
+ordinary byte counts retain the full 20-cell bar and received/total bytes:
+
+```text
+Blob 1/3            [■■■■■■■■■■□□□□□□□□□□]  24.0 MiB / 48.0 MiB  Downloading
+```
+
+Smaller terminals omit the bar, then totals and long object labels.
+Very narrow rows use `IN`/`MN`/`BN` (kind plus ordinal, such as `I1`,
 `M1`, `B10`) and shortened statuses; an elided byte field
 ends in `~`. Progress reserves the final terminal column to avoid wrapping.
 Resizing clears the previous live block without erasing earlier diagnostics.

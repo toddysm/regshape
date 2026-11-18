@@ -400,9 +400,10 @@ class ProgressDisplay:
         self._rendered_lines: list[int] = []
         self._rendered_columns = 0
         self._field_widths = (18, 22, 23)
+        self._compact_byte_width = 9
         self._received_width = 3
         self._ordinal_width = 2
-        self._color = "NO_COLOR" not in os.environ
+        self._color = not os.environ.get("NO_COLOR")
         self._cells = _progress_cells(self.stream)
         self._partial_diagnostic = False
         self._output_suspended = False
@@ -623,6 +624,7 @@ class ProgressDisplay:
             )
             force = force or widths != self._field_widths
             self._field_widths = widths
+            self._compact_byte_width = max(self._compact_byte_width, len(fields[2]))
             self._received_width = max(self._received_width, len(_bytes(event.bytes_completed)))
             self._ordinal_width = max(self._ordinal_width, len(str(self._indices[event.key])) + 1)
         self._active[event.key] = event
@@ -810,12 +812,14 @@ class ProgressDisplay:
     def _download_text(self, event: _Row, state: str) -> str:
         """Align download fields using invocation-wide widths and a shared compact layout.
 
-        Narrow terminals drop the digest, then the bar, then totals/object names.
+        Narrow terminals drop the digest and spare byte padding, then the bar,
+        then totals/object names. Compact statuses omit attempt/source details.
         Extremely narrow fields are explicitly elided, never allowed to shift
         another row's status. Rates/estimates remain optional suffixes.
         """
         label, digest, count = self._download_fields(event)
-        object_width, digest_width, byte_width = self._field_widths
+        object_width, digest_width, padded_bytes = self._field_widths
+        byte_width = self._compact_byte_width
         width = max(0, self.columns() - 1)
         filled, empty = self._cells
         if event.total_bytes is None:
@@ -825,19 +829,15 @@ class ProgressDisplay:
             completed = (
                 min(20, event.bytes_completed * 20 // event.total_bytes)
                 if event.total_bytes else
-                (0 if event.phase in (TransferPhase.PREPARING, TransferPhase.RETRYING) else 20)
+                (0 if event.phase in (
+                    TransferPhase.PREPARING, TransferPhase.RETRYING,
+                    TransferPhase.FAILED, TransferPhase.CANCELLED,
+                ) else 20)
             )
             cells = filled * completed + empty * (20 - completed)
         bar = f"[{cells}]"
-        # Reserve the longest normal status even when a shorter one is active.
-        if width >= object_width + digest_width + byte_width + 22 + 8 + 24:
-            text = f"{label:<{object_width}}  {digest:<{digest_width}}  {bar}  {count:>{byte_width}}  {state}"
-        elif width >= object_width + byte_width + 22 + 6 + 24:
-            text = f"{label:<{object_width}}  {bar}  {count:>{byte_width}}  {state}"
-        elif width >= object_width + byte_width + 4 + 24:
-            text = f"{label:<{object_width}}  {count:>{byte_width}}  {state}"
-        else:
-            label = f"{event.label[0]}{self._indices[event.key]}"
+        full_layout = width >= object_width + digest_width + padded_bytes + 22 + 8 + 19
+        if not full_layout:
             state = {
                 TransferPhase.RETRYING: "Retrying",
                 TransferPhase.SKIPPED: "Skipped",
@@ -845,6 +845,14 @@ class ProgressDisplay:
             }.get(event.phase, state)
             if event.source != "network" and event.phase == TransferPhase.TRANSFERRING:
                 state = "Storing"
+        if full_layout:
+            text = f"{label:<{object_width}}  {digest:<{digest_width}}  {bar}  {count:>{padded_bytes}}  {state}"
+        elif width >= object_width + byte_width + 22 + 6 + 11:
+            text = f"{label:<{object_width}}  {bar}  {count:>{byte_width}}  {state}"
+        elif width >= object_width + byte_width + 4 + 11:
+            text = f"{label:<{object_width}}  {count:>{byte_width}}  {state}"
+        else:
+            label = f"{event.label[0]}{self._indices[event.key]}"
             ordinal_width, status_width = self._ordinal_width, 11
             if width < 23:
                 status_width = 7
