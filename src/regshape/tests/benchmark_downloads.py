@@ -457,7 +457,7 @@ def main() -> None:
             "network": "HTTP/1.1 TCP_NODELAY loopback; no TLS/proxy/cloud; app-paced 64 KiB writes",
             "content": "deterministic distinct repeated-byte entities; identity coding, no compression",
             "cpu_scope": "process includes loopback servers; worker and caller thread CPU reported separately",
-            "isolation": "shared developer machine; no CPU affinity, load isolation or frequency lock",
+            "isolation": "host scheduling not controlled by harness; no CPU affinity, load isolation or frequency lock",
         },
         "registry_release_gate": "BLOCKED: two pinned actual registries and authorized storage redirect not run",
         "legacy_baseline": "Separate end-to-end singular loops; original transport, no fabricated pooled stats",

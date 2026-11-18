@@ -181,7 +181,7 @@ the exact OS, Python and Requests/urllib3/Click versions. Temporary storage used
 the local macOS data volume (about 448 GiB free before the run); writes were
 buffered with no fsync. Other users/processes may affect tail measurements.
 
-### Recorded result: performance gate not met
+### Original macOS result: performance gate not met
 
 The run completed on 2026-11-18 with 20 measured samples and one warm-up per mode:
 11 fixtures, 24 mode/fixture pairs and 480 measured operations. It exited **1**
@@ -232,12 +232,71 @@ C/W/R limits and caller-only observers. Short macOS profiling observations
 still do not reliably meet 1.5x; they are diagnostic trials, not a replacement
 20-sample release report. The optional hosted job measures all unchanged cases.
 
-**Next performance gate:** optimize the measured ranged path or obtain an
-explicit owner-approved gate/scope change, then rerun the unchanged fixtures,
-sample minimums and numeric thresholds. The current report does not satisfy
-the ranged performance acceptance criterion.
+### Follow-up Linux result: all numeric gates met
 
-## Complete the actual-registry release gate
+The [complete hosted run](https://github.com/toddysm/regshape/actions/runs/44420608691)
+measured clean source `1851371e5d8459a07bc1048cd2f4587a81287091` on 2026-11-18.
+It completed all 11 fixtures / 24 mode pairs / **480 measured operations**,
+with 20 samples and one warm-up per mode. It exited **0** with
+`complete: true` and `numeric_gates_passed: true`. Independent recomputation
+from the raw samples confirmed all five unchanged numeric decisions.
+
+The host was a GitHub-hosted Linux x86_64 runner with four logical CPUs,
+Python 3.12.16, Requests 2.34.2, urllib3 2.8.0 and Click 8.5.1. The raw report
+records kernel/glibc and fixture conditions. No CPU affinity, frequency lock or
+host-load isolation was imposed. Its old `environment.isolation` string says
+"shared developer machine" regardless of the actual host; workflow provenance
+identifies this Linux runner. A subsequent metadata-only wording correction
+removes that misleading host label; the downloaded report remains untouched.
+
+All comparisons below are **within this Linux run**. This is not a causal
+before/after comparison with the original Mac, a macOS performance pass, or a
+universal speedup claim. The earlier failed macOS report and short follow-up
+macOS observations remain disclosed; no workload, concurrency, sample minimum
+or numeric threshold was changed to obtain this report.
+
+| Shaped comparison | Baseline p50 / candidate p50 (s) | Decision |
+| --- | --- | --- |
+| Many-small object parallel | 1.843394 / 0.492500 | **Pass**, 3.7429x median speedup |
+| Single-large ranged | 4.028034 / 2.563254 | **Pass**, 1.5715x median speedup |
+| Four-blob combined | 4.108341 / 1.223127 | Observation only, 3.3589x median speedup |
+| Small/default | 0.028729 / 0.028721 | **Pass**, p95 ratio 1.0055 |
+| Missing-ETag fallback | 4.027971 / 4.054921 | **Pass**, p95 ratio 1.0068 |
+| Ignored-range reuse | 4.027979 / 4.028137 | **Pass**, p95 ratio 1.0000 |
+
+Every single-large ranged sample used exactly 16 requests, two data connections,
+two pending jobs and 16 MiB scratch. Median summed worker wall/CPU were
+4.424432 / 0.119480 s; caller CPU was 0.134507 s. Buffered spool writes took
+0.038645 s; ordered assembly took 0.118265 s including 0.007472 s of spool
+reads. These overlapping measurements are not additive wall-clock phases.
+Each operation independently verified output integrity and resource cleanup.
+
+Unshaped observations remain mixed: many-small p50 was 0.089428 s sequential
+versus 0.092002 s object-parallel (0.9720x); single-large was 0.221051 s versus
+0.197491 s ranged (1.1193x); combined was 0.217540 s versus 0.242876 s
+(0.8957x). The last comparison's p95 ratio was 1.1235. These observations have
+no numeric release gate; the regressions are retained, not omitted. Shaped
+legacy many-small p50 was 1.839824 s versus 1.846724 s pooled sequential;
+legacy single-large was 4.026624 s versus 4.028047 s. Those are separate
+end-to-end transport observations, not concurrency speedups.
+
+The [raw workflow artifact](https://github.com/toddysm/regshape/actions/runs/44420608691/artifacts/14483165793)
+was downloaded as `download-benchmark-linux-1851371.zip` (59,095 bytes), with one
+member `download-benchmark.json` (637,382 bytes). Its ZIP checksum matches
+GitHub's artifact digest. A separately retained local archive and byte-identical
+JSON remain outside git; the hosted artifact expires on **2027-02-16**.
+Keep an independent copy rather than relying on that retention window.
+
+```text
+12da8fad1657ad6ec27a65e022f926324d542f166a863d98f8e2f0bbad00b6f8  download-benchmark-linux-1851371.zip
+b26ec496a06da2bc70e7c7493f51c6ba583b075b989f2b9f58fe5aafd25a22a7  download-benchmark.json
+```
+
+The loopback report's `registry_release_gate` field does not run or certify
+actual registries. The separate authorized service/redirect evidence below
+satisfies that validation under the explicitly approved Docker Hub exception.
+
+## Actual-registry release evidence
 
 **Actual-service and redirect trials passed:** Harbor and Docker Hub each passed
 eight download trials, and Docker Hub exercised real storage redirects with
@@ -246,7 +305,8 @@ service with an exception for unavailable managed-backend
 implementation/version/configuration pinning; this does not prove independently
 implemented backends. Harbor's running image digests and relevant non-secret
 deployment settings are now recorded below.
-The controlled ranged performance gate remains unmet.
+Controlled numeric gates passed on the recorded Linux host; the macOS
+performance limitation remains disclosed above.
 
 | Required deployment | Pinned implementation/configuration | Trial status |
 | --- | --- | --- |
@@ -335,6 +395,15 @@ as a pre-trial deployment snapshot. No deployment, policy or container was chang
   Its SHA-256 is
   `b95a09d21415387cfc88043bd6081919b398a7ff276018bb9089e17fd2f39607`.
 
+The [durable pinning and current-source regression checkpoint](https://github.com/toddysm/regshape/issues/138#issuecomment-6994736644)
+embeds the complete sanitized provenance. On source `1851371`, both ranged
+Harbor artifact/blob regressions passed again with independent integrity,
+first-range/If-Range and resource checks. The original four-mode report was
+not overwritten. The new report's SHA-256 is
+`5089e8ca018cbe95bb3ba1f3a126b5a77f8151fea239f1b164f87265ba4e001c`.
+Cumulative consumed bodies are now 1,510,198,349 bytes, still within the original
+2 GiB authorization. No additional uploads or deployment changes were made.
+
 ### Recorded Docker Hub and storage-redirect trial
 
 The [sanitized Docker Hub checkpoint on #138](https://github.com/toddysm/regshape/issues/138#issuecomment-6994121690)
@@ -386,6 +455,16 @@ These single remote interoperability timings do not satisfy the controlled
 20-sample performance gate; standalone ranged receipt was slower than sequential
 in this observation. The Docker Hub managed-service exception does not waive
 numeric thresholds or extend to unrecorded Harbor deployments.
+
+The full eight-mode matrix was repeated successfully on source `1851371`;
+the [current-source checkpoint](https://github.com/toddysm/regshape/issues/138#issuecomment-6994736644)
+records another 44 credential-free storage redirects and independent integrity,
+physical-count, first-range/If-Range and resource checks. The original report
+was not overwritten. The new report's SHA-256 is
+`b83b59fb72bc63b791a8427b790aef32bdf75b76684103deef0b0f80262818e3`.
+Cumulative consumed bodies are now 779,573,157 bytes, still within its separate
+original 2 GiB authorization. The approved child-image scope and managed-service
+exception are unchanged.
 
 ### Trial procedure
 
