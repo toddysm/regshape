@@ -217,16 +217,63 @@ the ranged performance acceptance criterion.
 
 ## Complete the actual-registry release gate
 
-**Blocked: no authorized registry/storage-redirect targets were supplied, and
-no actual-registry trial or owner-approved exception is recorded.**
-Synthetic redirect coverage is not a substitute. Neither the passing CI suite
-nor a passing benchmark report makes this gate complete.
+**Partially exercised: eight Harbor download trials passed; the second
+implementation, full deployment pinning and storage-redirect evidence remain
+outstanding.** No exception is approved. Synthetic redirect coverage is not a
+substitute. Neither the passing CI suite nor a passing benchmark report makes
+this gate complete.
 
 | Required deployment | Pinned implementation/configuration | Trial status |
 | --- | --- | --- |
-| First actual implementation, for example Distribution | Not supplied; obtain exact version/image digest and backend configuration | Not run |
+| First actual deployment: Harbor | Reports v2.17.0-e7dbdea2, db_auth and filesystem storage; exact deployed image digests/full backend configuration still require operator confirmation | Eight CLI/SDK trials passed on 2026-11-18 |
 | Different actual implementation, for example Zot | Not supplied; obtain exact version/image digest and backend configuration | Not run |
 | Authorized storage-redirect deployment | Not supplied; obtain registry/backend versions and approved storage origin | Not run; release blocked |
+
+### Recorded Harbor trial
+
+The [sanitized trial checkpoint on #138](https://github.com/toddysm/regshape/issues/138#issuecomment-6993559246)
+records source `250319b252a3784927f37a3cc56e30522ba40662`, fixture identities,
+per-operation timings/counts, authorization and limitations. The operator
+authorized synthetic uploads and a new private `regshape-validation-6aaba73b`
+project permitting unsigned test fixtures. The existing `library` project's
+cosign requirement was preserved and checked again after testing.
+
+The fixture has 32 distinct 1 MiB blobs, one 128 MiB blob, an OCI empty config
+and an OCI artifact manifest: 35 unique objects / 167,777,232 stored bytes.
+It is opaque synthetic data, not an executable application image. The test
+repository/tag is `regshape-validation-6aaba73b/fixture:compat-20261118`.
+Downloads were pinned to root
+`sha256:808f476ab8c94b2d8a52e599c690f6bcaa007d0b6d4942b5426dce2d7372b06f`.
+
+Both `artifact pull` and `blob get` passed in default, sequential,
+`--concurrency 4 --ranges-per-blob 2 --range-size 8388608` and explicit legacy
+modes. Each used a distinct temporary output. All output digests/sizes and the
+exact OCI layout object set were independently verified.
+
+- Both ranged operations received sixteen valid 206 parts with strong ETags;
+  range zero was fetched once and subsequent parts used `If-Range`.
+- Pooled artifact pulls reused four data connections, or one when sequential;
+  standalone ranged receipt used two. SDK active-request peaks respected the
+  selected cap; ranged scratch peaked at 16 MiB. These peaks are client SDK
+  metrics, not independently instrumented server measurements.
+- No retries, capability fallbacks or redirects occurred. Token expiry/refresh,
+  ETag rotation and protocol faults were not induced on this real registry.
+- Cumulative consumed response bodies, including setup diagnostics and the
+  final policy audit, were 1,208,194,362 bytes (1.1252 GiB), below the authorized
+  2 GiB cap. This does not measure total wire traffic or server egress.
+- CLI login used an isolated temporary credential store. Credentials and local
+  download outputs were not published; temporary stores/outputs were removed.
+  The remote synthetic fixtures remain available for reproduction.
+
+The sanitized raw report remains outside the source tree, with SHA-256
+`7af70a77920aba082cc2c84bb6a29b9ae75dd0682fa9fb6705ca0ac0f829190a`.
+Its checksum and detailed observations are retained in the issue checkpoint.
+These single unshaped-localhost trials are interoperability evidence only;
+ranged receipt was slower here and does not supersede the failed controlled
+performance run. This filesystem-backed deployment does not exercise storage
+redirects or prove cross-origin credential stripping.
+
+### Trial procedure
 
 Before a trial:
 
