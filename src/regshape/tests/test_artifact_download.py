@@ -385,18 +385,27 @@ def test_observer_failure_drains_without_partial_publication(tmp_path, surface, 
 
 
 @pytest.mark.parametrize("concurrency", [1, 4])
-def test_final_verifier_rejects_post_receive_corruption(tmp_path, concurrency):
+@pytest.mark.parametrize("extra_blob", [False, True])
+def test_final_verifier_rejects_post_receive_corruption(
+    tmp_path, concurrency, extra_blob
+):
     """Corruption fails the blob row without stored success or publication in either mode."""
-    payload = b"original"
-    root = document(config=edge(payload))
-    registry = Registry(root, {address(payload): payload})
+    payloads = [b"original", b"other"] if extra_blob else [b"original"]
+    root = document(
+        config=edge(payloads[0]), layers=[edge(raw) for raw in payloads[1:]]
+    )
+    objects = {address(raw): raw for raw in payloads}
+    registry = Registry(root, objects)
     original = ContentStore.promote
-    events = []
+    events, promoted = [], []
 
     def promote(store, filename, digest):
         """Corrupt only a promoted blob in this controlled fault-injection namespace."""
         original(store, filename, digest)
-        if digest == address(payload):
+        if digest not in objects:
+            return
+        promoted.append(digest)
+        if len(promoted) == 1:
             algorithm, encoded = digest.split(":")
             fd = os.open(encoded, os.O_WRONLY, dir_fd=store.algorithms[algorithm].fd)
             with os.fdopen(fd, "wb") as stream:
@@ -415,9 +424,14 @@ def test_final_verifier_rejects_post_receive_corruption(tmp_path, concurrency):
             download_options=DownloadOptions(concurrency=concurrency),
             progress_callback=events.append,
         )
-    phases = [event.phase for event in events if event.digest == address(payload)]
+    assert len(promoted) == (len(payloads) if concurrency > 1 else 1)
+    phases = [event.phase for event in events if event.digest == promoted[0]]
     assert phases[-1] == "failed"
     assert "verifying" in phases and "stored" not in phases
+    assert not any(
+        event.phase in ("stored", "failed") and event.digest in promoted[1:]
+        for event in events
+    )
     assert not list(tmp_path.iterdir())
 
 

@@ -436,11 +436,16 @@ def _pull_artifact(
                         identity=lambda edge: observers.row(edge).identity,
                         progress_callback=blob_progress, observe=observers.observe,
                     )
-                    verified = verify_graph((root,), store, policy)
-                    for item in plan.objects:
-                        if item.kind == "blob" and item.source == "network":
-                            observers.rows[item.digest].emit("stored")
                     sources = {item.digest: item.source for item in plan.objects}
+
+                    def verify_progress(edge: Edge, source: str, phase: str) -> None:
+                        """Track the verified row with discovery provenance, deferring stored success."""
+                        if phase == "verifying":
+                            observers.observe(edge, sources[edge.digest], phase)
+
+                    verified = verify_graph((root,), store, policy, observe=verify_progress)
+                    for item in verified.objects:
+                        observers.rows[item.digest].emit("stored")
                     graph = replace(verified, objects=tuple(
                         replace(item, source=sources[item.digest]) for item in verified.objects
                     ))
