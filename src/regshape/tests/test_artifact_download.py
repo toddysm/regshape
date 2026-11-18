@@ -409,7 +409,7 @@ def test_final_verifier_rejects_post_receive_corruption(
             algorithm, encoded = digest.split(":")
             fd = os.open(encoded, os.O_WRONLY, dir_fd=store.algorithms[algorithm].fd)
             with os.fdopen(fd, "wb") as stream:
-                stream.write(b"modified")
+                stream.write(b"x" * len(objects[digest]))
 
     with (
         patch.object(RegistryClient, "get", side_effect=registry.get),
