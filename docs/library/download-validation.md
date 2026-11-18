@@ -79,6 +79,21 @@ as a separately named ZIP attachment on
 asset, rather than committing generated reports. Keep the summary, provenance,
 attachment link and checksum in this runbook.
 
+For an independently scheduled Linux hosted runner, manually dispatch the
+[Tests workflow](../../.github/workflows/tests.yml) on the revision to measure:
+
+```bash
+gh workflow run tests.yml --ref <branch> -f download_benchmarks=true
+```
+
+Its optional benchmark job runs the same complete harness, not a smaller CI
+proxy, and uploads the raw JSON even when a numeric gate fails. Output stays
+outside the checkout. Download and archive the artifact before its 90-day
+retention expires; a workflow artifact is not a permanent issue attachment.
+These timing gates run only on explicit dispatch, never ordinary PR unit CI.
+Compare modes within each report's recorded host; a Linux result does not
+erase a macOS regression or establish cross-machine speedup.
+
 The [benchmark harness](../../src/regshape/tests/benchmark_downloads.py) requires
 at least 20 measured samples and at least one unmeasured warm-up per mode.
 It alternates forward/reverse mode order each measured round. Payload creation,
@@ -210,6 +225,13 @@ The separate shaped legacy many-small loop had p50 2.051571 s versus pooled
 sequential 2.440152 s; single-large legacy was 4.032591 s versus 4.055862 s.
 Do not conflate those end-to-end serial baselines with concurrency speedups.
 
+A follow-up library scheduling change refills a freed range slot before
+assembling the next stopped part and wakes the existing bounded observation
+queue on task completion. It preserves the first-range barrier, ordered hash,
+C/W/R limits and caller-only observers. Short macOS profiling observations
+still do not reliably meet 1.5x; they are diagnostic trials, not a replacement
+20-sample release report. The optional hosted job measures all unchanged cases.
+
 **Next performance gate:** optimize the measured ranged path or obtain an
 explicit owner-approved gate/scope change, then rerun the unchanged fixtures,
 sample minimums and numeric thresholds. The current report does not satisfy
@@ -222,12 +244,13 @@ eight download trials, and Docker Hub exercised real storage redirects with
 credential stripping. The owner explicitly accepted Docker Hub as the second
 service with an exception for unavailable managed-backend
 implementation/version/configuration pinning; this does not prove independently
-implemented backends. Exact Harbor deployment pinning is still outstanding.
+implemented backends. Harbor's running image digests and relevant non-secret
+deployment settings are now recorded below.
 The controlled ranged performance gate remains unmet.
 
 | Required deployment | Pinned implementation/configuration | Trial status |
 | --- | --- | --- |
-| First actual deployment: Harbor | Reports v2.17.0-e7dbdea2, db_auth and filesystem storage; exact deployed image digests/full backend configuration still require operator confirmation | Eight CLI/SDK trials passed on 2026-11-18 |
+| First actual deployment: Harbor | v2.17.0-e7dbdea2; exact runtime image digests, Helm chart and relevant non-secret filesystem/auth/proxy configuration recorded below | Eight CLI/SDK trials passed on 2026-11-18 |
 | Second actual service: Docker Hub | Immutable content digests; owner-approved managed-service exception for unavailable backend implementation/version/configuration | Eight CLI/SDK trials passed on 2026-11-18; linux/amd64 child scope approved |
 | Authorized storage redirects: Docker Hub | Registry origin registry-1.docker.io to documented storage origin production.cloudfront.docker.com; backend pinning covered by the same Docker Hub exception | 44 real 307 redirects; all storage requests credential-free and outputs verified |
 
@@ -274,6 +297,41 @@ These single unshaped-localhost trials are interoperability evidence only;
 ranged receipt was slower here and does not supersede the failed controlled
 performance run. This filesystem-backed deployment does not exercise storage
 redirects or prove cross-origin credential stripping.
+
+#### Harbor deployment provenance
+
+Read-only inspection on 2026-11-18 located the endpoint at NodePort 30002 in
+namespace `harbor` of the local `kind-harbor` Kubernetes cluster. Helm release
+`harbor`, revision 1, reports chart `harbor-1.4.0-dev` and app version `dev`.
+The development tags alone are not pins; these are the actual running image
+references from Kubernetes container status:
+
+| Serving component | Immutable runtime image |
+| --- | --- |
+| Core | `docker.io/goharbor/harbor-core@sha256:6573fb2967fb43245ab5f9b54596a69770498e8d88c791d716837b8e35971e88` |
+| Registry backend | `docker.io/goharbor/registry-photon@sha256:10284a2d15529ee5a269f92360278f754aec1a49298308e984c498206a0a1a2b` |
+| Registry controller | `docker.io/goharbor/harbor-registryctl@sha256:bc4178206a07bd597e7798e3106d702b9d2c194e5e97593b90390750b215d061` |
+| Reverse proxy | `docker.io/goharbor/nginx-photon@sha256:2eb358c65c3fd40728647a1bfe9d017182bee3fe3332221f9bd610aecff9fca1` |
+
+These containers have been running since 20:23:56-57 UTC, before the recorded
+22:27:50-22:28:35 UTC trial. Image IDs were observed after the trial, not captured
+as a pre-trial deployment snapshot. No deployment, policy or container was changed.
+
+- Registry configuration schema 0.1 uses filesystem root `/storage`, mounted
+  from PVC `harbor-registry`; no storage middleware is configured.
+  `storage.redirect.disable` is false, but the filesystem driver produced no
+  storage redirects in the trial. Core reports storage provider `filesystem`.
+- The internal backend uses htpasswd authentication. The public Harbor API
+  reports `db_auth`; client trials exercised Harbor's token flow, not direct
+  backend credentials. No password, htpasswd content or Secret was collected.
+- The public endpoint is HTTP on localhost:30002. Nginx listens on 8080, proxies
+  using HTTP/1.1, disables request/response buffering, and has 900-second read/send
+  timeouts and `client_max_body_size 0`. The internal registry listens on 5000
+  with `http.relativeurls: false`; no external object-storage origin is configured.
+- The sanitized provenance report remains outside git as
+  `harbor-deployment-pinning.json`, alongside the existing trial report.
+  It records all observed container digests/start times and only allowlisted
+  configuration fields, not complete Helm values, environment dumps or Secrets.
 
 ### Recorded Docker Hub and storage-redirect trial
 
@@ -325,7 +383,7 @@ The sanitized raw report remains outside the source tree, with SHA-256
 These single remote interoperability timings do not satisfy the controlled
 20-sample performance gate; standalone ranged receipt was slower than sequential
 in this observation. The Docker Hub managed-service exception does not waive
-the separate Harbor deployment-pinning gap or change numeric thresholds.
+numeric thresholds or extend to unrecorded Harbor deployments.
 
 ### Trial procedure
 
