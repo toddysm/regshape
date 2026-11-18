@@ -280,16 +280,16 @@ def test_nested_shared_tiny_config_has_real_intermediate_and_one_final_row(
     result, _ = _invoke(runner, console, registry, tmp_path / "out", ["--format", output_format])
     assert result.exit_code == 0, result.exception
     frames = ["\n".join(frame) for frame in console.terminal.frames]
-    assert any("Manifest 1 Preparing 0 B (total unknown)" in frame for frame in frames)
+    assert any("Manifest 1" in frame and "Preparing" in frame and "0 B / ?" in frame for frame in frames)
     assert len(_rows(console)) == len(objects) == 7
     assert len([row for row in _rows(console) if row.startswith("Index ")]) == 3
     assert len([row for row in _rows(console) if row.startswith("Manifest ")]) == 2
     assert len([row for row in _rows(console) if "(config)" in row]) == 1
     for digest, raw in objects.items():
-        short = digest[:11] + "..."
+        short = digest[:19] + "..."
         matching = [row for row in _rows(console) if short in row]
         assert len(matching) == 1 and "Downloaded" in matching[0]
-        assert f"{len(raw)} B/{len(raw)} B" in matching[0] or len(raw) >= 1024
+        assert f"{len(raw)} B / {len(raw)} B" in matching[0] or len(raw) >= 1024
         assert any(short in row and ("Verifying" in row or "Downloading" in row)
                    for frame in console.terminal.frames for row in frame)
     assert any("(config)" in row and "Downloading" in row
@@ -315,7 +315,7 @@ def test_embedded_objects_are_stored_without_fictitious_network(
     registry, console = ObjectRegistry(root, objects), ArtifactConsole(width=200)
     result, _ = _invoke(runner, console, registry, tmp_path / "out")
     assert result.exit_code == 0, result.exception
-    short = address(raw)[:11] + "..."
+    short = address(raw)[:19] + "..."
     rows = [row for row in _rows(console) if short in row]
     assert len(rows) == 1 and "Stored (embedded)" in rows[0]
     relevant = [row for frame in console.terminal.frames for row in frame if short in row]
@@ -333,32 +333,37 @@ def test_embedded_objects_are_stored_without_fictitious_network(
 
 @pytest.mark.parametrize("known", [False, True])
 def test_normalized_rows_upgrade_identity_rate_and_throttle(known: bool) -> None:
-    """Unknown root upgrades on one row; actual-attempt bytes drive rates and only known totals permit percent."""
+    """Unknown roots upgrade in place; only known totals permit determinate bars and estimates."""
     terminal, now = Frames(), [0.0]
     terminal.width = 200
     digest = address(b"root")
     total = 100 if known else None
     with ProgressDisplay(stream=terminal, columns=lambda: terminal.width, clock=lambda: now[0]) as display:
         display.observe(_observation())
-        assert terminal.rows == ["Manifest 1 Preparing 0 B (total unknown)"]
+        assert len(terminal.rows) == 1 and terminal.rows[0].startswith("Manifest 1 ")
+        assert "0 B / ?" in terminal.rows[0] and terminal.rows[0].endswith("Preparing")
         display.observe(_observation(kind="index", phase="transferring", total=total))
+        initial_frame = terminal.rows
         for count in range(1, 21):
             now[0] += 0.001
             display.observe(_observation(kind="index", phase="transferring", count=count, total=total))
-        assert terminal.rows == [
-            "Index 1 Downloading 0 B/100 B [------------] 0%" if known
-            else "Index 1 Downloading 0 B (total unknown)"
-        ]
+        assert terminal.rows == initial_frame
+        assert ("0 B / 100 B" if known else "0 B / ?") in terminal.rows[0]
+        assert terminal.rows[0].startswith("Index 1 ") and terminal.rows[0].endswith("Downloading")
         now[0] = 2
         display.observe(_observation(kind="index", phase="transferring", count=50, total=total))
         assert "25 B/s" in terminal.rows[-1]
-        assert ("50%" in terminal.rows[-1]) is known
+        assert ("\u25a0" * 10 in terminal.rows[-1]) is known
+        assert "%" not in terminal.rows[-1]
         assert ("~2s remaining" in terminal.rows[-1]) is known
         display.observe(_observation(kind="index", phase="verifying", digest=digest, count=100, total=100))
         display.observe(_observation(kind="index", phase="stored", digest=digest, count=100, total=100))
         display.observe(_observation(kind="index", phase="stored", digest=digest, count=100, total=100))
         assert len(display._indices) == 1
-    assert [row for row in terminal.rows if row] == [f"Index 1 {digest[:11]}... Downloaded 100 B/100 B"]
+    rows = [row for row in terminal.rows if row]
+    assert len(rows) == 1 and rows[0].startswith("Index 1 ")
+    assert f"{digest[:19]}..." in rows[0] and "100 B / 100 B" in rows[0]
+    assert rows[0].endswith("Downloaded")
     assert not any("Manifest 1" in row for row in terminal.rows)
 
 
@@ -578,15 +583,15 @@ def test_multichunk_frames_for_every_kind_and_unknown_root(runner: CliRunner, tm
     result, _ = _invoke(runner, console, registry, tmp_path / "out")
     assert result.exit_code == 0, result.exception
     for raw in (config, layer, manifest, nested):
-        short = address(raw)[:11] + "..."
+        short = address(raw)[:19] + "..."
         for size in ("64.0 KiB", "128.0 KiB"):
-            assert any(short in row and f"Downloading {size}" in row
+            assert any(short in row and "Downloading" in row and size in row
                        for frame in console.terminal.frames for row in frame)
     root_receives = [
         row for frame in console.terminal.frames for row in frame
         if row.startswith("Manifest 1 ") and "Downloading" in row and "sha256:" not in row
     ]
-    assert any("128.0 KiB" in row and "total unknown" in row for row in root_receives)
+    assert any("128.0 KiB / ?" in row for row in root_receives)
     assert not any("%" in row or "remaining" in row for row in root_receives)
     assert len(_rows(console)) == len(objects)
 
@@ -948,7 +953,7 @@ def test_artifact_attempt_restart_has_no_stale_rate_or_double_completion() -> No
         now[0] = 3
         retry = replace(initial, attempt=2)
         display.observe(retry)
-        assert "0 B/100 B" in terminal.rows[-1] and "/s" not in terminal.rows[-1]
+        assert "0 B / 100 B" in terminal.rows[-1] and "/s" not in terminal.rows[-1]
         now[0] = 5
         display.observe(replace(retry, bytes_completed=10))
         assert "5 B/s" in terminal.rows[-1]
@@ -956,7 +961,7 @@ def test_artifact_attempt_restart_has_no_stale_rate_or_double_completion() -> No
         display.observe(replace(retry, phase="skipped"))
         assert len(display._finished) == 1
     assert len([row for row in terminal.rows if row]) == 1
-    assert "Downloaded 100 B/100 B" in terminal.rows[-2]
+    assert "100 B / 100 B" in terminal.rows[-2] and terminal.rows[-2].endswith("Downloaded")
 
 
 @_NATIVE

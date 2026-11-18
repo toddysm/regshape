@@ -282,6 +282,39 @@ Without `--output`, `blob get` still downloads and verifies the content, then
 discards it. Use `blob head` when you only need metadata or an existence check.
 The tiny example can finish before intermediate frames are visible.
 
+### Read aligned download rows
+
+`artifact pull` and `blob get` use padded columns separated by two spaces:
+object (at least 18 characters), shortened digest (algorithm and 12 hexadecimal
+characters plus `...`), a bracketed 20-cell bar, right-aligned received/total
+bytes (at least 23 characters), then status. Widths grow together for all live
+rows when a larger field arrives, not independently per object. Uploads and
+standalone `manifest get` keep the layouts illustrated elsewhere in this guide.
+
+For example, separate snapshots of a blob download include:
+
+```text
+Blob 1/1            sha256:aaaaaaaaaaaa...  [■■■■■■■■■■□□□□□□□□□□]      24.0 MiB / 48.0 MiB  Downloading
+Blob 1/1            sha256:aaaaaaaaaaaa...  [■■■■■■■■■■■■■■■■■■■■]      48.0 MiB / 48.0 MiB  Verifying
+Blob 1/1            sha256:aaaaaaaaaaaa...  [■■■■■■■■■■■■■■■■■■■■]      48.0 MiB / 48.0 MiB  Downloaded
+```
+
+Only the object keyword/type and digest are colored: bright magenta for indexes,
+bright cyan for manifests, bright yellow for configuration blobs and bright blue
+for layers/other blobs. Numbers, padding, bars, bytes and statuses remain neutral.
+Setting `NO_COLOR` (even to an empty value) disables colors, not progress.
+If stderr's encoding cannot represent `■`/`□`, bars use `=`/`-`.
+
+Unknown totals show a moving indeterminate cell and `received / ?`, never a
+percentage or remaining-time estimate. A known empty body retains a zero total.
+Rates and estimates are optional suffixes. A full bar is **not** verification,
+storage or whole-artifact publication success; read the lifecycle status.
+
+Narrow terminals omit the digest, then the bar, then totals and long object
+labels. Very narrow rows use `#N` and shortened statuses; an elided byte field
+ends in `~`. Progress reserves the final terminal column to avoid wrapping.
+Resizing clears the previous live block without erasing earlier diagnostics.
+
 ## Read a progress row
 
 Each blob has **one persistent row**, not a line for every state. Byte updates,
@@ -319,9 +352,10 @@ The renderer also accepts interleaved objects: an object's number remains stable
 while other objects advance or finish first. Completed rows are retained above
 the remaining live block; retries reset only the affected object's byte count
 and rate. On short terminals, excess active rows wait offscreen rather than
-scrolling the live block out of reach. This renderer support does **not** enable
-parallel artifact graph acquisition or HTTP range requests by itself; those
-engines and command controls remain separate delivery work.
+scrolling the live block out of reach. The library aggregates range progress
+into its parent blob before delivery to the renderer; workers never write to
+the terminal. See [download controls](../library/downloads.md) for scheduling
+and range policies.
 
 Changed-ETag fallback observations are collected without interrupting an active
 download. Once the operation has closed progress and cleanup, its successful
@@ -329,14 +363,13 @@ result is written/flushed before one fixed warning on stderr. Artifact pulls
 coalesce unique affected blob counts. Warnings remain visible with
 `--no-progress`, artifact `--json`, `NO_COLOR` and redirected stderr; failures say
 that fallback was attempted, not that recovery succeeded. A failed output sink
-is not reused to deliver a warning. The current full-stream-only download engine
-does not generate changed-ETag range fallbacks yet.
+is not reused to deliver a warning.
 
 ### What the numbers mean
 
 | Transfer | Counted bytes |
 | --- | --- |
-| Blob download | Payload chunks actually consumed, including verification-only downloads |
+| Blob download | Unique accepted payload bytes for the current attempt, including verification-only downloads; retries/duplicate ranges are not added again |
 | Monolithic upload | Bytes consumed by the HTTP client from the source; not proof of registry acceptance |
 | Chunked upload | Bytes in chunks whose requests succeeded; buffered request retries count once |
 | Already present | Zero transferred bytes; a unique skipped blob |

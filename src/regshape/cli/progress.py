@@ -125,6 +125,13 @@ class _Row:
         """Distinguish verified blob rows from command-owned manifest completion."""
         return self.key[0] == "blob"
 
+    @property
+    def column_layout(self) -> bool:
+        """Select artifact pulls and blob downloads without changing other command layouts."""
+        return self.key[0] == "artifact" or (
+            self.is_blob and self.direction == TransferDirection.DOWNLOAD
+        )
+
 
 def _row(event: TransferProgress | ManifestProgress | ArtifactProgress) -> _Row:
     """Normalize observations without fabricating a digest or weakening public event types."""
@@ -332,6 +339,8 @@ class ProgressDisplay:
     The visible block fits stderr's viewport; excess active objects keep their
     ordinals offscreen until space is available. ``sink_failed`` remains true
     after any renderer/diagnostic output failure so callers avoid reusing it.
+    Artifact pulls and blob downloads share padded, color-independent columns;
+    uploads and standalone manifest commands retain their existing layouts.
     """
 
     def __init__(
@@ -365,6 +374,15 @@ class ProgressDisplay:
         self._rendered_length = 0
         self._rendered_lines: list[int] = []
         self._rendered_columns = 0
+        self._field_widths = (18, 22, 23)
+        self._received_width = 3
+        self._ordinal_width = 3
+        self._color = "NO_COLOR" not in os.environ
+        self._cells = ("\u25a0", "\u25a1")
+        try:
+            "".join(self._cells).encode(getattr(self.stream, "encoding", None) or "utf-8")
+        except UnicodeEncodeError:
+            self._cells = ("=", "-")
         self._partial_diagnostic = False
         self._output_suspended = False
         self._output_needs_linebreak = False
@@ -573,7 +591,19 @@ class ProgressDisplay:
             previous is None or previous.phase != event.phase
             or previous.attempt != event.attempt or previous.label != event.label
             or previous.total_bytes != event.total_bytes or previous.digest != event.digest
+            or previous.role != event.role or previous.source != event.source
         )
+        if event.column_layout:
+            fields = self._download_fields(event)
+            widths = (
+                max(self._field_widths[0], len(fields[0])),
+                max(self._field_widths[1], len(fields[1])),
+                max(self._field_widths[2], len(fields[2])),
+            )
+            force = force or widths != self._field_widths
+            self._field_widths = widths
+            self._received_width = max(self._received_width, len(_bytes(event.bytes_completed)))
+            self._ordinal_width = max(self._ordinal_width, len(str(self._indices[event.key])) + 1)
         self._active[event.key] = event
         self._event = event
         try:
@@ -687,6 +717,8 @@ class ProgressDisplay:
             ),
         }
         state = labels[event.phase]
+        if event.column_layout:
+            return self._download_text(event, state)
         width = max(0, self.columns() - 1)
         count = "" if event.phase == TransferPhase.SKIPPED else _bytes(event.bytes_completed)
         if count and event.total_bytes is not None:
@@ -721,18 +753,128 @@ class ProgressDisplay:
             short_digest = f" {algorithm}:{digest[:4]}..."
             if len(text + short_digest) <= width:
                 text = prefix + short_digest + text[len(prefix):]
-        if event.phase == TransferPhase.TRANSFERRING and event.source == "network":
-            started = self._starts.get(event.key)
-            elapsed = self.clock() - started if started is not None else 0
-            if elapsed > 0 and event.bytes_completed:
-                rate = event.bytes_completed / elapsed
-                rate_text = f" {_bytes(rate)}/s"
-                if len(text + rate_text) <= width:
-                    text += rate_text
-                    if event.total_bytes and event.bytes_completed < event.total_bytes:
-                        eta = f" ~{(event.total_bytes - event.bytes_completed) / rate:.0f}s remaining"
-                        if len(text + eta) <= width:
-                            text += eta
+        return self._with_rate(text, event, width)
+
+    def _with_rate(self, text: str, event: _Row, width: int) -> str:
+        """Append current-attempt network rate/estimate only when each entire suffix fits."""
+        if event.phase != TransferPhase.TRANSFERRING or event.source != "network":
+            return text
+        started = self._starts.get(event.key)
+        elapsed = self.clock() - started if started is not None else 0
+        if elapsed > 0 and event.bytes_completed:
+            rate = event.bytes_completed / elapsed
+            suffix = f" {_bytes(rate)}/s"
+            if len(text + suffix) <= width:
+                text += suffix
+                if event.total_bytes and event.bytes_completed < event.total_bytes:
+                    suffix = f" ~{(event.total_bytes - event.bytes_completed) / rate:.0f}s remaining"
+                    if len(text + suffix) <= width:
+                        text += suffix
+        return text
+
+    def _download_fields(self, event: _Row) -> tuple[str, str, str]:
+        """Return safe object/digest/byte fields; totals are accepted bytes, never retry traffic."""
+        label = f"{event.label} {self._indices[event.key]}"
+        if event.is_blob and self.total_blobs is not None:
+            label += f"/{self.total_blobs}"
+        if event.role is not None:
+            label += f" ({event.role})"
+        digest = "-"
+        if event.digest is not None:
+            algorithm, value = event.digest.split(":", 1)
+            digest = f"{algorithm}:{value[:12]}..."
+        total = "?" if event.total_bytes is None else _bytes(event.total_bytes)
+        return _safe_label(label), _safe_label(digest), f"{_bytes(event.bytes_completed)} / {total}"
+
+    def _download_text(self, event: _Row, state: str) -> str:
+        """Align download fields using invocation-wide widths and a shared compact layout.
+
+        Narrow terminals drop the digest, then the bar, then totals/object names.
+        Extremely narrow fields are explicitly elided, never allowed to shift
+        another row's status. Rates/estimates remain optional suffixes.
+        """
+        label, digest, count = self._download_fields(event)
+        object_width, digest_width, byte_width = self._field_widths
+        width = max(0, self.columns() - 1)
+        filled, empty = self._cells
+        if event.total_bytes is None:
+            position = int(self.clock() * 10) % 20
+            cells = empty * position + filled + empty * (19 - position)
+        else:
+            completed = (
+                min(20, event.bytes_completed * 20 // event.total_bytes)
+                if event.total_bytes else
+                (0 if event.phase in (TransferPhase.PREPARING, TransferPhase.RETRYING) else 20)
+            )
+            cells = filled * completed + empty * (20 - completed)
+        bar = f"[{cells}]"
+        # Reserve the longest normal status even when a shorter one is active.
+        if width >= object_width + digest_width + byte_width + 22 + 8 + 24:
+            text = f"{label:<{object_width}}  {digest:<{digest_width}}  {bar}  {count:>{byte_width}}  {state}"
+        elif width >= object_width + byte_width + 22 + 6 + 24:
+            text = f"{label:<{object_width}}  {bar}  {count:>{byte_width}}  {state}"
+        elif width >= object_width + byte_width + 4 + 24:
+            text = f"{label:<{object_width}}  {count:>{byte_width}}  {state}"
+        else:
+            label = f"#{self._indices[event.key]}"
+            state = {
+                TransferPhase.RETRYING: "Retrying",
+                TransferPhase.SKIPPED: "Skipped",
+                _ArtifactStage.STORED: "Downloaded" if event.source == "network" else "Stored",
+            }.get(event.phase, state)
+            if event.source != "network" and event.phase == TransferPhase.TRANSFERRING:
+                state = "Storing"
+            ordinal_width, status_width = self._ordinal_width, 11
+            if width < 23:
+                ordinal_width = max(2, self._ordinal_width - 1)
+                status_width = 7
+                state = {
+                    "Downloading": "Pulling", "Downloaded": "Stored",
+                    "Preparing": "Prepare", "Verifying": "Verify",
+                    "Cancelled": "Cancel", "Retrying": "Retry",
+                    "Received": "Rcvd",
+                }.get(state, state)
+            available = max(0, width - ordinal_width - 4 - status_width)
+            byte_width = min(self._received_width, available)
+            if byte_width:
+                count = _bytes(event.bytes_completed)
+                if len(count) > byte_width:
+                    count = count[:max(0, byte_width - 1)] + "~"
+                text = f"{label:<{ordinal_width}}  {count:>{byte_width}}  {state}"
+            else:
+                text = f"{label:<{ordinal_width}}  {state}"
+        if self.show_counts and event.is_blob:
+            pending = event.key not in self._finished
+            completed = self.completed + (pending and event.phase == TransferPhase.COMPLETED)
+            skipped = self.skipped + (pending and event.phase == TransferPhase.SKIPPED)
+            suffix = f" [{completed} done/{skipped} skipped]"
+            if len(text + suffix) <= width:
+                text += suffix
+        return self._with_rate(text, event, width)
+
+    def _color_download(self, text: str, event: _Row) -> str:
+        """Style only visible object type/role and digest, after padding and clipping."""
+        if not self._color or not event.column_layout:
+            return text
+        color = (
+            "bright_magenta" if event.label == "Index" else
+            "bright_cyan" if event.label == "Manifest" else
+            "bright_yellow" if event.role == "config" else "bright_blue"
+        )
+        spans: list[tuple[int, int]] = []
+        if text.startswith(event.label):
+            spans.append((0, len(event.label)))
+            if event.role is not None:
+                role = f"({_safe_label(event.role)})"
+                start = text.find(role)
+                if start >= 0:
+                    spans.append((start, start + len(role)))
+        digest = self._download_fields(event)[1]
+        start = text.find(digest) if event.digest is not None else -1
+        if start >= 0:
+            spans.append((start, start + len(digest)))
+        for start, end in reversed(spans):
+            text = text[:start] + click.style(text[start:end], fg=color) + text[end:]
         return text
 
     def _draw(self, *, force: bool) -> None:
@@ -748,21 +890,20 @@ class ProgressDisplay:
         terminal = next((row for row in self._active.values() if row.phase in _TERMINAL), None)
         if terminal is not None:
             self._event = terminal
-            self._write_row(self._text(terminal))
+            self._write_row(self._text(terminal), event=terminal)
         elif self._active:
-            self._write_frame([
-                self._text(row) for row in islice(self._active.values(), self._terminal_rows())
-            ])
+            events = list(islice(self._active.values(), self._terminal_rows()))
+            self._write_frame([self._text(row) for row in events], events=events)
         else:
             self._write_row(f"{self._preparation} ...")
         self._last_draw = now
 
-    def _write_row(self, text: str) -> None:
+    def _write_row(self, text: str, *, event: _Row | None = None) -> None:
         """Replace the live block with one preparation or verified terminal row."""
-        self._write_frame([text])
+        self._write_frame([text], events=[event] if event is not None else None)
 
-    def _write_frame(self, rows: list[str]) -> None:
-        """Replace only the live block, recording cursor movement before fallible flushes."""
+    def _write_frame(self, rows: list[str], *, events: list[_Row] | None = None) -> None:
+        """Record visible widths before styling; ANSI escapes never enter cursor accounting."""
         columns = max(1, self.columns())
         self._clear_row(columns)
         self._visible = True
@@ -772,10 +913,14 @@ class ProgressDisplay:
             if index:
                 self.stream.write("\n")
                 self._row_advanced = True
-            text = _safe_label(row)[:columns - 1]
+            event = events[index] if events is not None else None
+            text = row if event is not None and event.column_layout else _safe_label(row)
+            text = text[:columns - 1]
             self._rendered_length = len(text)
             self._rendered_lines.append(len(text))
             self._row_advanced = False
+            if event is not None:
+                text = self._color_download(text, event)
             click.echo(text, file=self.stream, nl=False, color=True)
 
     def _terminal_columns(self) -> int:
