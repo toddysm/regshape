@@ -189,6 +189,31 @@ def _safe_label(value: str) -> str:
     return value.encode("unicode_escape").decode("ascii")
 
 
+def _progress_cells(stream: IO[str]) -> tuple[str, str]:
+    """Choose single-column bars conservatively for encoding and ambiguous-width locales.
+
+    ``VTE_CJK_WIDTH=2`` requests wide ambiguous characters; ``1`` explicitly
+    selects narrow ones. Without that hint, Japanese/Chinese/Korean locales use
+    ASCII because the terminal's own glyph-width setting cannot be queried
+    safely through a borrowed output-only stream.
+    """
+    ambiguous_width = os.environ.get("VTE_CJK_WIDTH")
+    language = next(
+        (os.environ[name] for name in ("LC_ALL", "LC_CTYPE", "LANG") if os.environ.get(name)),
+        "",
+    ).lower()
+    if ambiguous_width == "2" or (
+        ambiguous_width != "1" and language.startswith(("ja", "zh", "ko"))
+    ):
+        return "=", "-"
+    cells = ("\u25a0", "\u25a1")
+    try:
+        "".join(cells).encode(getattr(stream, "encoding", None) or "utf-8")
+    except UnicodeEncodeError:
+        return "=", "-"
+    return cells
+
+
 def _failure_phase(error: BaseException) -> TransferPhase:
     """Distinguish cancellation from ordinary errors without exposing exception contents."""
     return (
@@ -376,13 +401,9 @@ class ProgressDisplay:
         self._rendered_columns = 0
         self._field_widths = (18, 22, 23)
         self._received_width = 3
-        self._ordinal_width = 3
+        self._ordinal_width = 2
         self._color = "NO_COLOR" not in os.environ
-        self._cells = ("\u25a0", "\u25a1")
-        try:
-            "".join(self._cells).encode(getattr(self.stream, "encoding", None) or "utf-8")
-        except UnicodeEncodeError:
-            self._cells = ("=", "-")
+        self._cells = _progress_cells(self.stream)
         self._partial_diagnostic = False
         self._output_suspended = False
         self._output_needs_linebreak = False
@@ -816,7 +837,7 @@ class ProgressDisplay:
         elif width >= object_width + byte_width + 4 + 24:
             text = f"{label:<{object_width}}  {count:>{byte_width}}  {state}"
         else:
-            label = f"#{self._indices[event.key]}"
+            label = f"{event.label[0]}{self._indices[event.key]}"
             state = {
                 TransferPhase.RETRYING: "Retrying",
                 TransferPhase.SKIPPED: "Skipped",
@@ -826,7 +847,6 @@ class ProgressDisplay:
                 state = "Storing"
             ordinal_width, status_width = self._ordinal_width, 11
             if width < 23:
-                ordinal_width = max(2, self._ordinal_width - 1)
                 status_width = 7
                 state = {
                     "Downloading": "Pulling", "Downloaded": "Stored",
@@ -869,6 +889,8 @@ class ProgressDisplay:
                 start = text.find(role)
                 if start >= 0:
                     spans.append((start, start + len(role)))
+        elif text.startswith(f"{event.label[0]}{self._indices[event.key]}"):
+            spans.append((0, 1))
         digest = self._download_fields(event)[1]
         start = text.find(digest) if event.digest is not None else -1
         if start >= 0:

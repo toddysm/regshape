@@ -905,6 +905,7 @@ def test_download_columns_colors_and_encoding(
     encoding: str, cells: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Color/encoding variants have identical columns, neutral numbers/statuses and exact 20-cell bars."""
+    monkeypatch.setenv("VTE_CJK_WIDTH", "1")
     events = [
         ArtifactProgress("index", "index", "verifying", "sha256:" + "1" * 64, None, 8500, 8500),
         ArtifactProgress("manifest", "manifest", "received", "sha512:" + "2" * 128, None, 1021, 1021),
@@ -948,6 +949,87 @@ def test_download_columns_colors_and_encoding(
                 assert not styled
             assert click.unstyle(raw).count("[") >= 5
     assert frames[0] == frames[1]
+
+
+@pytest.mark.parametrize("language,hint,squares", [
+    ("ja_JP.UTF-8", None, False),
+    ("zh_CN.UTF-8", None, False),
+    ("ko_KR.UTF-8", None, False),
+    ("en_US.UTF-8", "2", False),
+    ("ja_JP.UTF-8", "1", True),
+])
+def test_ambiguous_width_terminal_uses_safe_bar_cells(
+    language: str, hint: str | None, squares: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """East Asian width hints/locales cannot silently double a fixed-width download bar."""
+    monkeypatch.delenv("LC_ALL", raising=False)
+    monkeypatch.delenv("LC_CTYPE", raising=False)
+    monkeypatch.setenv("LANG", language)
+    monkeypatch.delenv("VTE_CJK_WIDTH", raising=False)
+    if hint is not None:
+        monkeypatch.setenv("VTE_CJK_WIDTH", hint)
+    terminal = Terminal()
+    event = replace(_event(TransferPhase.VERIFYING, 100), direction=TransferDirection.DOWNLOAD)
+    with ProgressDisplay(stream=terminal, columns=lambda: 120) as display:
+        display.observe(event)
+        row = terminal.rows[0]
+        assert row[44:66] == "[" + ("\u25a0" if squares else "=") * 20 + "]"
+        assert row[93:] == "Verifying" and len(row) < 120
+
+
+@pytest.mark.parametrize("errors", ["strict", "backslashreplace"])
+@pytest.mark.parametrize("artifact", [False, True])
+def test_download_warning_adapter_preserves_real_ascii_encoding(
+    errors: str, artifact: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The actual command warning wrapper must not hide a strict or escaping ASCII sink's codec."""
+    monkeypatch.setenv("VTE_CJK_WIDTH", "1")
+    raw = io.BytesIO()
+    event = (
+        ArtifactProgress("config", "blob", "verifying", DIGEST, "config", 50, 100)
+        if artifact else
+        replace(_event(TransferPhase.VERIFYING, 50), direction=TransferDirection.DOWNLOAD)
+    )
+    with io.TextIOWrapper(raw, encoding="ascii", errors=errors, write_through=True) as sink:
+        with (
+            patch.object(sink, "isatty", return_value=True),
+            patch("sys.stderr", sink),
+            DownloadWarnings(artifact=artifact) as warnings,
+            ProgressDisplay(columns=lambda: 120) as display,
+        ):
+            warnings.display = display
+            display.observe(event)
+        text = raw.getvalue().decode("ascii")
+    terminal = Terminal()
+    terminal.write(text)
+    row = terminal.rows[0]
+    assert row[44:66] == "[" + "=" * 10 + "-" * 10 + "]"
+    assert row[93:] == "Verifying" and len(row) < 120
+    assert r"\u25" not in text
+
+
+@pytest.mark.parametrize("width", [18, 24, 40])
+def test_compact_mixed_kinds_and_multi_digit_ordinals_stay_distinct(width: int) -> None:
+    """Kind prefixes disambiguate per-kind ordinals, sharing columns across one/two-digit labels."""
+    terminal = Terminal()
+    terminal.resize(width)
+    events = [
+        ArtifactProgress("index", "index", "verifying", DIGEST, None, 2, 6),
+        ArtifactProgress("manifest", "manifest", "verifying", DIGEST, None, 2, 6),
+        *[
+            ArtifactProgress(f"blob-{index}", "blob", "verifying", DIGEST, "layer", 2, 6)
+            for index in range(10)
+        ],
+    ]
+    with ProgressDisplay(stream=terminal, columns=lambda: width) as display:
+        for event in events:
+            display.observe(event)
+        rows = terminal.rows
+        assert len(rows) == 12
+        assert [row.split()[0] for row in rows] == ["I1", "M1", *[f"B{i}" for i in range(1, 11)]]
+        status = "Verify" if width == 18 else "Verifying"
+        assert len({row.index(status) for row in rows}) == 1
+        assert all("2 B" in row and len(row) < width for row in rows)
 
 
 def test_wide_download_fields_realign_every_live_row() -> None:

@@ -122,6 +122,11 @@ class _DownloadOutput(io.TextIOBase, IO[str]):
         return self.stream.fileno()
 
     @property
+    def encoding(self) -> str | None:  # type: ignore[override]  # TextIOBase's runtime codec is read-only/nullable.
+        """Preserve the borrowed sink's codec for encoding-safe progress glyph selection."""
+        return getattr(self.stream, "encoding", None)
+
+    @property
     def closed(self) -> bool:
         """Expose borrowed-sink closure so deferred telemetry never flushes a closed destination."""
         return self.stream.closed

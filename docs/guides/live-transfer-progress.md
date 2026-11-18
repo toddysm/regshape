@@ -304,6 +304,11 @@ bright cyan for manifests, bright yellow for configuration blobs and bright blue
 for layers/other blobs. Numbers, padding, bars, bytes and statuses remain neutral.
 Setting `NO_COLOR` (even to an empty value) disables colors, not progress.
 If stderr's encoding cannot represent `■`/`□`, bars use `=`/`-`.
+The same fallback applies when `VTE_CJK_WIDTH=2` advertises double-width
+ambiguous characters, or conservatively in Japanese/Chinese/Korean locales.
+`VTE_CJK_WIDTH=1` explicitly selects narrow squares when the encoding supports
+them. If a custom terminal uses wide squares without a matching locale, set
+`VTE_CJK_WIDTH=2`; an output-only stream cannot safely discover that setting.
 
 Unknown totals show a moving indeterminate cell and `received / ?`, never a
 percentage or remaining-time estimate. A known empty body retains a zero total.
@@ -311,7 +316,8 @@ Rates and estimates are optional suffixes. A full bar is **not** verification,
 storage or whole-artifact publication success; read the lifecycle status.
 
 Narrow terminals omit the digest, then the bar, then totals and long object
-labels. Very narrow rows use `#N` and shortened statuses; an elided byte field
+labels. Very narrow rows use `IN`/`MN`/`BN` (kind plus ordinal, such as `I1`,
+`M1`, `B10`) and shortened statuses; an elided byte field
 ends in `~`. Progress reserves the final terminal column to avoid wrapping.
 Resizing clears the previous live block without erasing earlier diagnostics.
 

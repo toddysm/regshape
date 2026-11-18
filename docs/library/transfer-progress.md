@@ -118,7 +118,8 @@ Artifact pulls and blob downloads render two-space-separated object, digest,
 grow monotonically within the invocation; earlier scrollback is not rewritten.
 Padding, truncation and cursor footprints use plain visible text before
 applying semantic color to type/role and digest only. `NO_COLOR` disables those
-styles; unsupported output encodings select ASCII bar cells. Unknown totals
+styles; unsupported output encodings, wide-ambiguous terminal hints and
+conservatively East Asian locales select ASCII bar cells. Unknown totals
 remain indeterminate with `received / ?`. Compact layouts omit optional fields
 uniformly, preserving cleanup across resizes. See the
 [download row guide](../guides/live-transfer-progress.md#read-aligned-download-rows).
