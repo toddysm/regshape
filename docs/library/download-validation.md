@@ -34,7 +34,7 @@ their boundaries rather than duplicating every fault injection.
 | --- | --- |
 | Public SDK imports in either order, independent of CLI imports | Fresh-interpreter tests in [cross-mode validation](../../src/regshape/tests/test_download_validation.py) |
 | Sequential, object-parallel, single-blob range-parallel and combined modes | Three repetitions per mode/capability in [cross-mode validation](../../src/regshape/tests/test_download_validation.py), using real [loopback HTTP/1.1 origins](../../src/regshape/tests/download_fixture.py) |
-| One C cap including initial rejection, separate `/v2/` probe, token and cross-origin storage redirects | Cross-mode physical request counts agree with public stats; caller-thread completion, pending jobs, sessions, scratch and output bytes are checked |
+| One C cap including initial rejection, separate `/v2/` probe, token and cross-origin storage redirects | An independent server counter bounds all handler kinds, not just SDK stats; barriers hold each probe/token/redirect hop alongside three data bodies while a fifth logical request verifies limiter saturation. Cross-mode physical counts agree with public stats; caller-thread completion, pending jobs, sessions, scratch and output bytes are checked |
 | First-range reuse, exact one-byte tail, ignored-range response reuse and missing-validator fallback | Cross-mode request-interval assertions plus [range tests](../../src/regshape/tests/test_blob_ranges.py) |
 | Bounded pending jobs, W window, C*R scratch, 4C queue, 64 KiB records, slow consumers and cancellation | Cross-mode post-join checks and barrier/event-driven [coordinator tests](../../src/regshape/tests/test_download_coordinator.py); the range committed-window test independently blocks the earliest part |
 | Full-stream retries only before commitment, including verify-only; no retry after hash/write; overwritten digest-mismatch output deletion and replacement preservation | [Worker tests](../../src/regshape/tests/test_download_workers.py) |
@@ -106,8 +106,10 @@ Medians use the conventional sample median; p95 uses nearest rank (rank 19
 of 20). Wall-clock comparisons use like fixtures and the same pooling/retry
 policy. Gate failure makes the harness exit 1 **after retaining all results**;
 it requires optimization or explicit owner-approved gate/scope changes.
-Runtime/protocol errors propagate and leave `complete: false` in any prior
-checkpoint; a partially written report is not complete evidence.
+Before the first fixture the output is overwritten with `complete: false`, so
+even a failed rerun cannot retain a previous successful report. Runtime/protocol
+errors propagate and leave that incomplete checkpoint; a partially written
+report is not complete evidence.
 
 ### Read the evidence
 
@@ -137,6 +139,50 @@ without CPU affinity, load isolation or frequency locks. The raw report records
 the exact OS, Python and Requests/urllib3/Click versions. Temporary storage used
 the local macOS data volume (about 448 GiB free before the run); writes were
 buffered with no fsync. Other users/processes may affect tail measurements.
+
+### Recorded result: performance gate not met
+
+The run completed on 2026-11-18 with 20 measured samples and one warm-up per mode:
+11 fixtures, 24 mode/fixture pairs and 480 measured operations. It exited **1**
+with `complete: true` and `numeric_gates_passed: false`; this is completed
+measurement evidence, **not release approval**.
+
+The measured source is the clean commit
+`79bfd5c1129257379f64d5e6d591d0e8462722ef`, not the later documentation and
+review-fix commits. Later fixture fixes add independent request observations,
+safe redirect encoding and Windows disconnect handling; they are not included
+in these measurements. Any optimization needs a new, separately retained run.
+
+| Shaped comparison | Baseline p50 / candidate p50 (s) | Decision |
+| --- | --- | --- |
+| Many-small object parallel | 2.463763 / 0.580154 | **Pass**, 4.2467x median speedup (required >=1.5x) |
+| Single-large ranged | 4.055621 / 2.854269 | **Fail**, 1.4209x median speedup (required >=1.5x) |
+| Four-blob combined | 4.186905 / 1.355772 | Observation only, 3.0882x median speedup |
+| Small/default | 0.060273 / 0.060254 | **Pass**, p95 ratio 0.9552 (limit <=1.20) |
+| Missing-ETag fallback | 4.056825 / 4.097276 | **Pass**, p95 ratio 1.0115 (limit <=1.20) |
+| Ignored-range reuse | 4.056291 / 4.058956 | **Pass**, p95 ratio 1.0071 (limit <=1.20) |
+
+The single-large ranged samples used exactly 16 requests, two data connections
+and 16 MiB peak scratch reservation. Median summed worker wall time was
+4.498094 s and caller CPU 0.174258 s. Median buffered spool writes took
+0.180920 s; ordered assembly took 0.216467 s, including 0.022922 s of spool
+reads. These overlapping/summed measurements are not additive wall-clock
+phases and do not establish a unique bottleneck. Negotiation, W=2
+committed-window scheduling and ordered assembly remain costs to investigate;
+no protocol, integrity, ownership or resource-bound checks were relaxed.
+
+Unshaped loopback exposes the trade-off: single-large ranged p50 was
+0.467349 s versus 0.262568 s sequential (0.5618x speedup; p95 ratio 1.7473).
+Unshaped combined p50 was 0.491014 s versus 0.435071 s sequential. These have
+no numeric release gate, but are retained regressions, not omitted outliers.
+The separate shaped legacy many-small loop had p50 2.051571 s versus pooled
+sequential 2.440152 s; single-large legacy was 4.032591 s versus 4.055862 s.
+Do not conflate those end-to-end serial baselines with concurrency speedups.
+
+**Next performance gate:** optimize the measured ranged path or obtain an
+explicit owner-approved gate/scope change, then rerun the unchanged fixtures,
+sample minimums and numeric thresholds. The current report does not satisfy
+the ranged performance acceptance criterion.
 
 ## Complete the actual-registry release gate
 
