@@ -380,13 +380,15 @@ def test_benchmark_waits_for_server_counter_updates_after_client_receipt(tmp_pat
     """A descheduled final server write cannot publish incomplete sent-byte observations."""
     raw = b"late-server-observation" * 2048
     objects = {address(raw): raw}
-    written, observing, release = (threading.Event() for _ in range(3))
+    written, observing, release, entering = (threading.Event() for _ in range(4))
     write = _SocketWriter.write
 
     def delayed_write(writer, body):
         """Send the complete body, then pause before the fixture can update its counters."""
         result = write(writer, body)
         if len(body) == len(raw):
+            if not entering.wait(10):
+                raise RuntimeError("Client did not enter post-receipt observation")
             written.set()
             if not release.wait(10):
                 raise RuntimeError("Delayed fixture write was not released")
@@ -397,7 +399,9 @@ def test_benchmark_waits_for_server_counter_updates_after_client_receipt(tmp_pat
 
         def observed_idle():
             """Signal post-receipt observation while the server's sent counter is still zero."""
-            if written.is_set():
+            if server.intervals:
+                entering.set()
+                assert written.wait(10)
                 assert server.sent == 0
                 observing.set()
             wait_idle()
