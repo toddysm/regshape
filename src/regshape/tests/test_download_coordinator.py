@@ -165,6 +165,61 @@ def test_completion_visits_scale_with_jobs_not_waiting_sources(client):
             assert complete.call_count <= 4 * count
 
 
+def test_ready_range_window_refills_before_next_stopped_result(client):
+    """Refill a committed slot before assembling the next already-stopped range."""
+    submitted, consumed, pumps, stopped = [], [], [], []
+
+    def submit(function, *args):
+        """Stop the first later part only when its window peer has been dispatched."""
+        submitted.append(args[-1])
+        future = Future()
+        outcome = function(*args)
+        if len(submitted) == 2:
+            stopped.append((future, outcome))
+        else:
+            if len(submitted) == 3:
+                stopped[0][0].set_result(stopped[0][1])
+            future.set_result(outcome)
+        return future
+
+    def consume(value):
+        """Require range three to overlap assembly of the stopped second later range."""
+        if value == 2:
+            assert len(submitted) == 4
+        consumed.append(value)
+
+    options = DownloadOptions(concurrency=4, ranges_per_blob=2, range_size=65_536)
+    jobs = [
+        replace(
+            _job("a", lambda worker, value=value: value, scratch=65_536),
+            barrier=value == 0,
+            terminal=value == 3,
+        )
+        for value in range(4)
+    ]
+    with (
+        DownloadTransport(client, options) as root,
+        _Coordinator(root._download_context) as coordinator,
+    ):
+        pump = coordinator._pump
+
+        def observe_pump(*, discard=False, wait=True):
+            """Record idle waits separately from required observation pumping."""
+            pumps.append(wait)
+            return pump(discard=discard, wait=wait)
+
+        with (
+            patch.object(coordinator.executor, "submit", side_effect=submit),
+            patch.object(coordinator, "_pump", side_effect=observe_pump),
+        ):
+            coordinator.run([jobs], on_result=consume)
+        assert consumed == list(range(4))
+        assert coordinator.jobs_peak == 2
+        assert coordinator.scratch_peak == 2 * options.range_size
+        assert not coordinator.pending and coordinator.scratch_bytes == 0
+    assert not any(pumps[:len(jobs)])
+
+
 @pytest.mark.parametrize("fallback", [False, True])
 def test_failure_ready_between_scans_never_reaches_result_consumer(client, fallback):
     """A late-ready failure is raised/reset, not consumed as an empty successful result."""

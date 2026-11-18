@@ -14,6 +14,10 @@ accept keyword-only `download_options`; existing positional arguments, results,
 output ownership and progress schemas are unchanged. Both operations also accept
 `download_status_callback` on supported pooled transport.
 
+Maintainers can reproduce correctness, performance and registry release checks
+with the [download validation workflow](download-validation.md). Local fixture
+results are not actual-registry certification.
+
 ## Upgrade note: default transport changes
 
 Omitting `download_options` on `get_blob` or `pull_artifact` now selects a pooled
