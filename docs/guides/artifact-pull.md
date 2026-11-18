@@ -254,7 +254,7 @@ See [push results and failure boundaries](../../specs/cli/layout-push.md).
 
 ## Progress: captured screens, not an overall percentage
 
-These are actual captures using the repository's
+These are wide-terminal captures using the repository's
 [nested/shared fixture](../../src/regshape/tests/artifact_fixtures.py) and
 [command terminal harness](../../src/regshape/tests/test_artifact_pull_cli.py).
 Digests are shortened **display labels**, not runnable inputs. The fixture
@@ -263,16 +263,16 @@ contains opaque payloads, not an executable image.
 The initial root row is upgraded in place when its kind/digest becomes known:
 
 ```text
-Manifest 1 Preparing 0 B (total unknown)
+Manifest 1          -                       [□□□□■□□□□□□□□□□□□□□□]                  0 B / ?  Preparing
 ```
 
 Successive snapshots of the same tiny config row include:
 
 ```text
-Blob 1 (config) sha256:99c7... Downloading 0 B/25 B [------------] 0%
-Blob 1 (config) sha256:99c7... Received 25 B/25 B
-Blob 1 (config) sha256:99c7... Verifying 25 B/25 B
-Blob 1 (config) sha256:99c7... Downloaded 25 B/25 B
+Blob 1 (config)     sha256:99c78239400e...  [□□□□□□□□□□□□□□□□□□□□]               0 B / 25 B  Downloading
+Blob 1 (config)     sha256:99c78239400e...  [■■■■■■■■■■■■■■■■■■■■]              25 B / 25 B  Verifying
+Blob 1 (config)     sha256:99c78239400e...  [■■■■■■■■■■■■■■■■■■■■]              25 B / 25 B  Received
+Blob 1 (config)     sha256:99c78239400e...  [■■■■■■■■■■■■■■■■■■■■]              25 B / 25 B  Downloaded
 ```
 
 These are overwritten states, not four retained rows. Blob transport can also
@@ -281,16 +281,16 @@ Receipt or 100% transferred is not stored success. No artificial delay is added
 for the 25-byte config. Routine redraws are throttled, so very short states need
 not be visibly distinct on every terminal.
 
-Final archive screen, with one row per unique object:
+Final archive screen, with one row per unique object (completion order can vary):
 
 ```text
-Index 1 sha256:43ba... Downloaded 974 B/974 B
-Index 2 sha256:b572... Downloaded 183 B/183 B
-Index 3 sha256:e169... Downloaded 586 B/586 B
-Manifest 1 sha256:6ffc... Downloaded 736 B/736 B
-Blob 1 (config) sha256:99c7... Downloaded 25 B/25 B
-Blob 2 (layer) sha256:59e5... Downloaded 32 B/32 B
-Manifest 2 sha256:4f82... Downloaded 724 B/724 B
+Index 1             sha256:43ba918cc708...  [■■■■■■■■■■■■■■■■■■■■]            974 B / 974 B  Downloaded
+Index 2             sha256:b572bf153499...  [■■■■■■■■■■■■■■■■■■■■]            183 B / 183 B  Downloaded
+Index 3             sha256:e169cf10b886...  [■■■■■■■■■■■■■■■■■■■■]            586 B / 586 B  Downloaded
+Manifest 1          sha256:6ffc2b1d3ab2...  [■■■■■■■■■■■■■■■■■■■■]            736 B / 736 B  Downloaded
+Manifest 2          sha256:4f8254f069e3...  [■■■■■■■■■■■■■■■■■■■■]            724 B / 724 B  Downloaded
+Blob 1 (config)     sha256:99c78239400e...  [■■■■■■■■■■■■■■■■■■■■]              25 B / 25 B  Downloaded
+Blob 2 (layer)      sha256:59e5ca540bed...  [■■■■■■■■■■■■■■■■■■■■]              32 B / 32 B  Downloaded
 Packaging OCI archive ... done
 Publishing artifact ... done
 ```
@@ -300,40 +300,29 @@ five edges, not five more transfers. The directory variant has only Publishing,
 not Packaging. These local phases are separate from network throughput; stored
 objects alone do not mean the artifact is published.
 
-The [renderer fixtures](../../src/regshape/tests/test_artifact_pull_cli.py#L289)
-exercise unknown totals, local sources, cancellation, and failure. Representative
-captured rows from those normalized observations:
-
-```text
-Index 1 Downloading 50 B (total unknown) 25 B/s
-Index 1 Received 50 B (total unknown)
-Index 1 Verifying 50 B (total unknown)
-Index 1 Failed 50 B
-Index 1 Cancelled 50 B
-Blob 1 (config) sha256:4413... Stored (embedded) 2 B/2 B
-Blob 1 (config) sha256:4413... Stored (local) 2 B/2 B
-```
-
-Unknown totals have no percentage or remaining-time estimate. Embedded/local
-rows have no network rate; duplicates do not create fake skipped rows.
+The [renderer fixtures](../../src/regshape/tests/test_artifact_pull_cli.py)
+exercise unknown totals, local sources, cancellation, and failure.
+Unknown totals display `received / ?` and a moving indeterminate cell, with no
+percentage or remaining-time estimate. Embedded/local rows end with
+`Stored (embedded)` or `Stored (local)` and have no network rate; duplicates do
+not create fake skipped rows. Each bar has exactly 20 cells. Only the object
+type, role and digest are colored; a non-empty `NO_COLOR` disables styles without changing visible
+column positions, and incompatible encodings use `=`/`-` instead of `■`/`□`.
+See [download columns and compact-terminal behavior](live-transfer-progress.md#read-aligned-download-rows).
 Final stdout field order and the full result schema are in the
 [command reference](../../specs/cli/artifact.md#completed-output).
 
-Actual missing-config capture from the simple-root failure fixture (Hypertext
-Transfer Protocol, HTTP, status 404):
+The simple-root missing-config fixture retains one completed manifest row and a
+`Failed` config row, then emits the Hypertext Transfer Protocol (HTTP) 404 error:
 
 ```text
-Manifest 1 sha256:8787... Downloaded 543 B/543 B
-Blob 1 (config) sha256:0232... Failed 0 B/19 B
 Error [registry.example/source:moving]: Blob not found: registry.example/source@sha256:023288e5045e93ce2bf1d4159183249b2fe416d09d1ae79e0d48f6d2809e1b64 : HTTP 404
 ```
 
-Cancellation at the same mocked boundary instead retained:
+Cancellation at the same mocked boundary instead retains a `Cancelled` config
+row and the completed manifest, followed by:
 
 ```text
-Manifest 1 sha256:8787... Downloaded 543 B/543 B
-Blob 1 (config) sha256:0232... Cancelled 0 B/19 B
-
 Aborted!
 ```
 

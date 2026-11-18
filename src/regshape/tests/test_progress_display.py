@@ -6,13 +6,16 @@ import io
 import json
 import logging
 import os
+import re
 import stat
+import threading
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import BinaryIO
 from unittest.mock import patch
 
+import click
 import pytest
 import requests
 from click.testing import CliRunner
@@ -21,6 +24,7 @@ from regshape.cli.blob import _trusted_file_size
 from regshape.cli.downloads import DownloadWarnings
 from regshape.cli.main import regshape
 from regshape.cli.progress import ProgressDisplay
+from regshape.libs.artifacts.models import ArtifactProgress
 from regshape.libs.blobs import BlobDownload, DownloadOptions, get_blob, get_blobs
 from regshape.libs.decorators import (
     TelemetryConfig,
@@ -47,15 +51,21 @@ DIGEST = "sha256:" + "a" * 64
 class Terminal(io.StringIO):
     """Interpret carriage returns and erase-line controls as a real terminal would."""
 
-    def __init__(self, interactive: bool = True) -> None:
-        """Track visible rows separately from raw terminal-control writes."""
+    def __init__(self, interactive: bool = True, encoding: str = "utf-8") -> None:
+        """Track visible rows and reject writes unsupported by the selected output encoding."""
         super().__init__()
         self.interactive = interactive
+        self._encoding = encoding
         self._rows = [""]
         self.row = 0
         self.column = 0
         self.width = 160
         self.fail_writes = False
+
+    @property
+    def encoding(self) -> str:
+        """Expose the actual codec used to validate terminal writes."""
+        return self._encoding
 
     def isatty(self) -> bool:
         """Expose a controlled terminal detection result."""
@@ -80,11 +90,16 @@ class Terminal(io.StringIO):
         self.width = width
 
     def write(self, text: str) -> int:
-        """Apply each write to the visible frame, preserving raw output for assertions."""
+        """Apply cursor controls and zero-width styling, retaining raw output for color assertions."""
         if self.fail_writes:
             raise OSError("secondary render failure")
+        text.encode(self.encoding)
         result = super().write(text)
         while text:
+            style = re.match(r"\x1b\[[0-9;]*m", text)
+            if style is not None:
+                text = text[style.end():]
+                continue
             if text.startswith("\x1b[2K"):
                 self._rows[self.row] = ""
                 text = text[4:]
@@ -777,21 +792,24 @@ def test_interleaved_diagnostics_preserve_every_live_row() -> None:
     assert display.completed == 2 and not display._active
 
 
-def test_interleaved_resize_erases_only_the_live_block() -> None:
-    """Reflowed rows clear without erasing a preceding diagnostic or duplicating object rows."""
+@pytest.mark.parametrize("direction", list(TransferDirection))
+def test_interleaved_resize_erases_only_the_live_block(direction: TransferDirection) -> None:
+    """Styled download and legacy upload rows clear only their reflowed live block."""
     terminal, width = Terminal(), [160]
     terminal.write("prior diagnostic\n")
     other = "sha256:" + "b" * 64
     with ProgressDisplay(stream=terminal, columns=lambda: width[0]) as display:
-        display.observe(_event(TransferPhase.TRANSFERRING, 20))
-        display.observe(_event(TransferPhase.TRANSFERRING, 40, digest=other))
+        first = replace(_event(TransferPhase.TRANSFERRING, 20), direction=direction)
+        second = replace(first, bytes_completed=40, digest=other)
+        display.observe(first)
+        display.observe(second)
         width[0] = 24
         terminal.resize(24, active_rows=2)
-        display.observe(_event(TransferPhase.VERIFYING, 100))
+        display.observe(replace(first, phase=TransferPhase.VERIFYING, bytes_completed=100))
         assert terminal.rows[0] == "prior diagnostic"
         assert len([row for row in terminal.rows[1:] if row]) == 2
-        display.observe(_event(TransferPhase.COMPLETED, 100, digest=other))
-        display.observe(_event(TransferPhase.COMPLETED, 100))
+        display.observe(replace(second, phase=TransferPhase.COMPLETED, bytes_completed=100))
+        display.observe(replace(first, phase=TransferPhase.COMPLETED, bytes_completed=100))
     assert terminal.rows[0] == "prior diagnostic"
     assert len([row for row in terminal.rows[1:] if row]) == 2
 
@@ -815,22 +833,39 @@ def test_interleaved_viewport_does_not_scroll_its_active_block() -> None:
     assert len(rows) == 4 and all("Uploaded" in row for row in rows)
 
 
-@pytest.mark.parametrize("backend", ["legacy", "pooled", "parallel", "combined"])
-def test_real_download_observations_share_the_renderer(backend: str) -> None:
-    """Legacy, pooled sequential and batch full streams preserve parent rows under either policy."""
-    payloads = [b"first blob", b"second blob"]
+@pytest.mark.parametrize("backend", ["legacy", "pooled", "parallel", "ranged", "combined"])
+def test_real_download_observations_share_the_renderer(backend: str, tmp_path: Path) -> None:
+    """Full streams and genuine ranged/batch downloads render only invoking-thread parent rows."""
+    from regshape.tests.test_blob_ranges import PAYLOAD, R, _range
+
+    ranged = backend in ("ranged", "combined")
+    payloads = [PAYLOAD, PAYLOAD[::-1]] if ranged else [b"first blob", b"second blob"]
     digests = ["sha256:" + hashlib.sha256(data).hexdigest() for data in payloads]
     terminal = Terminal()
     options = (
         DownloadOptions.legacy() if backend == "legacy"
         else DownloadOptions.sequential() if backend == "pooled"
-        else DownloadOptions(concurrency=2, ranges_per_blob=2 if backend == "combined" else 1)
+        else DownloadOptions(
+            concurrency=2, ranges_per_blob=2 if ranged else 1, range_size=R, scratch_dir=tmp_path,
+        )
     )
+    caller = threading.get_ident()
+    statuses, observations = [], []
+
+    def observe(event: TransferProgress) -> None:
+        """Check serialization at the rendering boundary and retain absolute accepted snapshots."""
+        assert threading.get_ident() == caller
+        observations.append(event)
+        display.observe(event)
 
     def respond(method: str, url: str, **kwargs: object) -> requests.Response:
         """Return bounded entities without requiring overlapping first-request auth negotiation."""
         digest = url.rsplit("/", 1)[-1]
         data = payloads[digests.index(digest)]
+        headers = kwargs.get("headers")
+        if isinstance(headers, dict) and "Range" in headers:
+            start, end = map(int, headers["Range"].removeprefix("bytes=").split("-"))
+            return _range(data, start, end)
         return StreamResponse(data, headers={
             "Content-Length": str(len(data)), "Docker-Content-Digest": digest,
         })
@@ -839,23 +874,329 @@ def test_real_download_observations_share_the_renderer(backend: str) -> None:
         patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
         patch("requests.request", side_effect=respond),
         patch("requests.Session.request", side_effect=respond),
-        ProgressDisplay(stream=terminal, total_blobs=None) as display,
+        ProgressDisplay(stream=terminal, total_blobs=None, columns=lambda: 160) as display,
     ):
         client = RegistryClient(TransportConfig("registry.example"))
-        if backend in ("legacy", "pooled"):
+        if backend in ("legacy", "pooled", "ranged"):
             info = get_blob(client, "repo", digests[0], download_options=options,
-                            progress_callback=display.observe, chunk_size=2)
+                            progress_callback=observe, chunk_size=4096,
+                            download_status_callback=None if backend == "legacy" else statuses.append)
             assert info.digest == digests[0]
         else:
             result = get_blobs(
-                client, "repo", [BlobDownload(digest, chunk_size=2) for digest in digests],
-                download_options=options, progress_callback=display.observe,
+                client, "repo", [BlobDownload(digest, chunk_size=4096) for digest in digests],
+                download_options=options, progress_callback=observe,
+                download_status_callback=statuses.append,
             )
             assert [info.digest for info in result.blobs] == digests
-    expected = 1 if backend in ("legacy", "pooled") else 2
+    expected = 1 if backend in ("legacy", "pooled", "ranged") else 2
     assert display.completed == expected and not display._active
     rows = [row for row in terminal.rows if row.startswith("Blob")]
     assert len(rows) == expected and all("Downloaded" in row for row in rows)
+    if ranged:
+        completed = [event for event in statuses if event.event == "completed"]
+        assert len(completed) == expected and all(event.strategy == "ranged" for event in completed)
+        assert all(event.stats.bytes_accepted == len(PAYLOAD) for event in completed)
+    assert len({event.digest for event in observations}) == expected
+
+
+@pytest.mark.parametrize("encoding,cells", [("utf-8", "\u25a0\u25a1"), ("ascii", "=-")])
+def test_download_columns_colors_and_encoding(
+    encoding: str, cells: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Color/encoding variants have identical columns, neutral numbers/statuses and exact 20-cell bars."""
+    monkeypatch.setenv("VTE_CJK_WIDTH", "1")
+    events = [
+        ArtifactProgress("index", "index", "verifying", "sha256:" + "1" * 64, None, 8500, 8500),
+        ArtifactProgress("manifest", "manifest", "received", "sha512:" + "2" * 128, None, 1021, 1021),
+        ArtifactProgress("config", "blob", "transferring", "sha256:" + "3" * 64, "config", 453, 453,
+                         source="embedded"),
+        ArtifactProgress("layer", "blob", "transferring", "sha256:" + "4" * 64, "layer", 24 * 1024**2, 48 * 1024**2),
+        ArtifactProgress("other", "blob", "transferring", "sha256:" + "5" * 64, None, 0, None),
+    ]
+    frames = []
+    for no_color in (None, "", "1"):
+        colored = not no_color
+        if no_color is None:
+            monkeypatch.delenv("NO_COLOR", raising=False)
+        else:
+            monkeypatch.setenv("NO_COLOR", no_color)
+        terminal = Terminal(encoding=encoding)
+        with ProgressDisplay(stream=terminal, columns=lambda: 160, clock=lambda: 0) as display:
+            for event in events:
+                display.observe(event)
+            frames.append(list(terminal.rows))
+            for row, event in zip(terminal.rows, events):
+                assert event.digest is not None
+                assert row[20:42] == event.digest[:19] + "..."
+                assert re.fullmatch(rf"\[[{cells}]{{20}}\]", row[44:66])
+                assert row[66:68] == row[91:93] == "  "
+                assert row[93:] in ("Verifying", "Received", "Storing (embedded)", "Downloading")
+                assert row[68:91] == row[68:91].strip().rjust(23)
+                assert "\t" not in row
+            assert len(terminal.rows) == 5 and not display._finished
+            raw = terminal.getvalue()
+            styled = re.findall(r"\x1b\[(9[3-6])m([^\x1b]*)\x1b\[0m", raw)
+            if colored:
+                assert {code for code, _ in styled} == {"93", "94", "95", "96"}
+                assert all(
+                    text in {"Index", "Manifest", "Blob", "(config)", "(layer)"}
+                    or re.fullmatch(r"sha(?:256|512):[1-5]{12}\.\.\.", text)
+                    for _, text in styled
+                )
+                assert "\x1b[95mIndex\x1b[0m 1" in raw
+                assert "\x1b[93m(config)\x1b[0m" in raw
+            else:
+                assert not styled
+            assert click.unstyle(raw).count("[") >= 5
+    assert frames[0] == frames[1] == frames[2]
+
+
+@pytest.mark.parametrize("width", [80, 96])
+def test_standard_terminal_retains_aligned_download_bars(width: int) -> None:
+    """Ordinary terminals retain 20 cells and totals across mixed rows, retries and final states."""
+    terminal = Terminal(encoding="ascii")
+    terminal.resize(width)
+    blob = replace(
+        _event(TransferPhase.TRANSFERRING, 24 * 1024**2, 48 * 1024**2),
+        direction=TransferDirection.DOWNLOAD,
+    )
+    events = [
+        ArtifactProgress("index", "index", "verifying", DIGEST, None, 8500, 8500),
+        ArtifactProgress("config", "blob", "transferring", DIGEST, "config", 453, 453,
+                         source="embedded"),
+        ArtifactProgress("unknown", "manifest", "received", DIGEST, None, 1021, None),
+        blob,
+    ]
+    with ProgressDisplay(stream=terminal, total_blobs=3, columns=lambda: width, clock=lambda: 0) as display:
+        for event in events:
+            display.observe(event)
+        rows = terminal.rows
+        assert len(rows) == 4 and rows[-1].startswith("Blob 1/3")
+        for row, status in zip(rows, ("Verifying", "Storing", "Received", "Downloading")):
+            assert row[20:42] == "[" + row[21:41] + "]"
+            assert re.fullmatch(r"[=-]{20}", row[21:41])
+            assert row[44:63] == row[44:63].strip().rjust(19)
+            assert row[65:] == status and len(row) < width
+            assert "sha256:" not in row
+        assert rows[-1][44:63] == "24.0 MiB / 48.0 MiB"
+        assert "1021 B / ?" in rows[2]
+        display.observe(replace(blob, phase=TransferPhase.RETRYING, bytes_completed=0, attempt=2))
+        assert terminal.rows[-1][65:] == "Retrying"
+        display.observe(replace(blob, phase=TransferPhase.VERIFYING, bytes_completed=48 * 1024**2, attempt=2))
+        assert terminal.rows[-1][20:42] == "[" + "=" * 20 + "]"
+        assert terminal.rows[-1][65:] == "Verifying"
+        display.observe(replace(blob, phase=TransferPhase.COMPLETED, bytes_completed=48 * 1024**2, attempt=2))
+        assert terminal.rows[0][65:] == "Downloaded"
+        assert all(len(row) < width for row in terminal.rows) and len(terminal.rows) == 4
+
+
+@pytest.mark.parametrize("phase", [TransferPhase.FAILED, TransferPhase.CANCELLED, TransferPhase.COMPLETED])
+@pytest.mark.parametrize("artifact", [False, True])
+def test_empty_download_failure_does_not_show_a_full_bar(phase: TransferPhase, artifact: bool) -> None:
+    """A zero-byte failed/cancelled download has an empty bar; a verified empty body is full."""
+    terminal = Terminal(encoding="ascii")
+    event = (
+        ArtifactProgress("empty", "blob", "stored" if phase == TransferPhase.COMPLETED else phase.value,
+                         DIGEST, "layer", 0, 0)
+        if artifact else
+        replace(_event(phase, 0, 0), direction=TransferDirection.DOWNLOAD)
+    )
+    with ProgressDisplay(stream=terminal, columns=lambda: 160) as display:
+        display.observe(event)
+    row = terminal.rows[0]
+    assert row[44:66] == "[" + ("=" if phase == TransferPhase.COMPLETED else "-") * 20 + "]"
+    assert "0 B / 0 B" in row
+    assert row[93:] == {
+        TransferPhase.FAILED: "Failed", TransferPhase.CANCELLED: "Cancelled",
+        TransferPhase.COMPLETED: "Downloaded",
+    }[phase]
+
+
+@pytest.mark.parametrize("language,hint,squares", [
+    ("ja_JP.UTF-8", None, False),
+    ("zh_CN.UTF-8", None, False),
+    ("ko_KR.UTF-8", None, False),
+    ("en_US.UTF-8", "2", False),
+    ("ja_JP.UTF-8", "1", True),
+])
+def test_ambiguous_width_terminal_uses_safe_bar_cells(
+    language: str, hint: str | None, squares: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """East Asian width hints/locales cannot silently double a fixed-width download bar."""
+    monkeypatch.delenv("LC_ALL", raising=False)
+    monkeypatch.delenv("LC_CTYPE", raising=False)
+    monkeypatch.setenv("LANG", language)
+    monkeypatch.delenv("VTE_CJK_WIDTH", raising=False)
+    if hint is not None:
+        monkeypatch.setenv("VTE_CJK_WIDTH", hint)
+    terminal = Terminal()
+    event = replace(_event(TransferPhase.VERIFYING, 100), direction=TransferDirection.DOWNLOAD)
+    with ProgressDisplay(stream=terminal, columns=lambda: 120) as display:
+        display.observe(event)
+        row = terminal.rows[0]
+        assert row[44:66] == "[" + ("\u25a0" if squares else "=") * 20 + "]"
+        assert row[93:] == "Verifying" and len(row) < 120
+
+
+@pytest.mark.parametrize("errors", ["strict", "backslashreplace"])
+@pytest.mark.parametrize("artifact", [False, True])
+def test_download_warning_adapter_preserves_real_ascii_encoding(
+    errors: str, artifact: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The actual command warning wrapper must not hide a strict or escaping ASCII sink's codec."""
+    monkeypatch.setenv("VTE_CJK_WIDTH", "1")
+    raw = io.BytesIO()
+    event = (
+        ArtifactProgress("config", "blob", "verifying", DIGEST, "config", 50, 100)
+        if artifact else
+        replace(_event(TransferPhase.VERIFYING, 50), direction=TransferDirection.DOWNLOAD)
+    )
+    with io.TextIOWrapper(raw, encoding="ascii", errors=errors, write_through=True) as sink:
+        with (
+            patch.object(sink, "isatty", return_value=True),
+            patch("sys.stderr", sink),
+            DownloadWarnings(artifact=artifact) as warnings,
+            ProgressDisplay(columns=lambda: 120) as display,
+        ):
+            warnings.display = display
+            display.observe(event)
+        text = raw.getvalue().decode("ascii")
+    terminal = Terminal()
+    terminal.write(text)
+    row = terminal.rows[0]
+    assert row[44:66] == "[" + "=" * 10 + "-" * 10 + "]"
+    assert row[93:] == "Verifying" and len(row) < 120
+    assert r"\u25" not in text
+
+
+@pytest.mark.parametrize("width", [18, 24, 40])
+def test_compact_mixed_kinds_and_multi_digit_ordinals_stay_distinct(width: int) -> None:
+    """Kind prefixes disambiguate per-kind ordinals, sharing columns across one/two-digit labels."""
+    terminal = Terminal()
+    terminal.resize(width)
+    events = [
+        ArtifactProgress("index", "index", "verifying", DIGEST, None, 2, 6),
+        ArtifactProgress("manifest", "manifest", "verifying", DIGEST, None, 2, 6),
+        *[
+            ArtifactProgress(f"blob-{index}", "blob", "verifying", DIGEST, "layer", 2, 6)
+            for index in range(10)
+        ],
+    ]
+    with ProgressDisplay(stream=terminal, columns=lambda: width) as display:
+        for event in events:
+            display.observe(event)
+        rows = terminal.rows
+        assert len(rows) == 12
+        assert [row.split()[0] for row in rows] == ["I1", "M1", *[f"B{i}" for i in range(1, 11)]]
+        status = "Verify" if width == 18 else "Verifying"
+        assert len({row.index(status) for row in rows}) == 1
+        assert all("2 B" in row and len(row) < width for row in rows)
+
+
+def test_wide_download_fields_realign_every_live_row() -> None:
+    """A wider accepted count grows shared columns even during a throttled byte-only update."""
+    terminal = Terminal()
+    terminal.width = 200
+    initial = replace(_event(TransferPhase.TRANSFERRING, 1, 10**50), direction=TransferDirection.DOWNLOAD)
+    other = replace(initial, digest="sha256:" + "b" * 64, total_bytes=None)
+    with ProgressDisplay(stream=terminal, columns=lambda: 200, clock=lambda: 0) as display:
+        display.observe(initial)
+        display.observe(other)
+        display.observe(replace(initial, bytes_completed=10**50))
+        rows = terminal.rows
+        assert len(rows) == 2
+        assert len(rows[0]) > 104
+        assert rows[0].index("Downloading") == rows[1].index("Downloading")
+        assert rows[0].rindex("  Downloading") == rows[1].rindex("  Downloading")
+        assert " / ?" in rows[1] and " / " in rows[0]
+        assert all(len(row) < 200 for row in rows)
+        assert not display.completed
+
+
+@pytest.mark.parametrize("failure", [TransferPhase.FAILED, TransferPhase.CANCELLED])
+def test_download_attempt_rollups_preserve_verification_and_other_rows(failure: TransferPhase) -> None:
+    """Duplicate ranges/stale attempts never inflate counts or turn a full bar into verified success."""
+    terminal, now = Terminal(), [0.0]
+    initial = replace(_event(TransferPhase.TRANSFERRING, 60), direction=TransferDirection.DOWNLOAD)
+    other = replace(initial, digest="sha256:" + "b" * 64, bytes_completed=40)
+    with ProgressDisplay(stream=terminal, columns=lambda: 160, clock=lambda: now[0]) as display:
+        display.observe(initial)
+        display.observe(other)
+        display.observe(initial)
+        retry = replace(initial, attempt=2, phase=TransferPhase.RETRYING, bytes_completed=0)
+        display.observe(retry)
+        assert "0 B / 100 B" in terminal.rows[0] and "40 B / 100 B" in terminal.rows[1]
+        display.observe(replace(initial, phase=TransferPhase.COMPLETED, bytes_completed=100))
+        assert display.completed == 0
+        now[0] = 1
+        retry = replace(retry, phase=TransferPhase.VERIFYING, bytes_completed=100)
+        display.observe(retry)
+        assert any(cell * 20 in terminal.rows[0] for cell in ("\u25a0", "="))
+        assert "Verifying" in terminal.rows[0]
+        assert display.completed == 0 and not display._finished
+        display.observe(replace(other, phase=TransferPhase.COMPLETED, bytes_completed=100))
+        display.observe(replace(retry, phase=failure))
+    rows = [row for row in terminal.rows if row]
+    assert len(rows) == 2 and "Blob 2" in rows[0] and "Downloaded" in rows[0]
+    assert "Blob 1" in rows[1] and failure.value.title() in rows[1]
+    assert display.completed == 1
+
+
+@pytest.mark.parametrize("fault", ["retry", "fallback", "corrupt", "cancel"])
+def test_ranged_download_faults_keep_one_truthful_row(tmp_path: Path, fault: str) -> None:
+    """Actual retries/fallback reset one parent; corrupt bytes and cancellation cannot render success."""
+    from regshape.tests.test_blob_batch import _client
+    from regshape.tests.test_blob_ranges import PAYLOAD, R, _options, _range, _registry
+
+    terminal = Terminal()
+    observations, statuses = [], []
+    injected = False
+
+    def modify(start: int, end: int, headers: dict[str, str], response: requests.Response) -> requests.Response:
+        """Inject one retry, changed validator or incorrect part after the initial real range."""
+        nonlocal injected
+        if headers.get("Range") and start == R and not injected:
+            injected = True
+            if fault == "retry":
+                return StreamResponse(b"", status=503, headers={"Retry-After": "0"})
+            if fault == "fallback":
+                return _range(PAYLOAD, start, end, etag='"changed"')
+            if fault == "corrupt":
+                return _range(b"x" * len(PAYLOAD), start, end)
+        return response
+
+    def observe(event: TransferProgress) -> None:
+        """Deliver real immutable rollups, optionally interrupting after accepted range bytes."""
+        observations.append(event)
+        display.observe(event)
+        if fault == "cancel" and event.phase == TransferPhase.TRANSFERRING and event.bytes_completed:
+            raise KeyboardInterrupt()
+
+    get, calls, _ = _registry(modify=modify)
+    with patch.object(RegistryClient, "get", autospec=True, side_effect=get):
+        if fault in ("corrupt", "cancel"):
+            error = BlobError if fault == "corrupt" else KeyboardInterrupt
+            with pytest.raises(error), ProgressDisplay(stream=terminal, columns=lambda: 160) as display:
+                get_blob(_client(), "repo", "sha256:" + hashlib.sha256(PAYLOAD).hexdigest(),
+                         download_options=_options(tmp_path), progress_callback=observe,
+                         download_status_callback=statuses.append)
+        else:
+            with ProgressDisplay(stream=terminal, columns=lambda: 160) as display:
+                get_blob(_client(), "repo", "sha256:" + hashlib.sha256(PAYLOAD).hexdigest(),
+                         download_options=_options(tmp_path), progress_callback=observe,
+                         download_status_callback=statuses.append)
+    rows = [row for row in terminal.rows if row]
+    assert len(rows) == 1 and rows[0].startswith("Blob 1/1 ")
+    assert ("Downloaded" in rows[0]) is (fault in ("retry", "fallback"))
+    assert all(event.bytes_completed <= len(PAYLOAD) for event in observations)
+    assert len({event.digest for event in observations}) == 1
+    if fault == "fallback":
+        assert any("Range" not in call for call in calls)
+        assert any(event.attempt == 2 and event.bytes_completed == 0 for event in observations)
+    if fault == "retry":
+        assert statuses[-1].stats.retry_count == 1
+    assert not list(tmp_path.iterdir())
 
 
 def test_preparation_label_cannot_inject_terminal_controls() -> None:
