@@ -165,6 +165,62 @@ def test_completion_visits_scale_with_jobs_not_waiting_sources(client):
             assert complete.call_count <= 4 * count
 
 
+@pytest.mark.parametrize("fallback", [False, True])
+def test_failure_ready_between_scans_never_reaches_result_consumer(client, fallback):
+    """A late-ready failure is raised/reset, not consumed as an empty successful result."""
+    primary = _StrategyFallback("etag_changed") if fallback else ValueError("late worker fault")
+    consumed, cleanup, statuses = [], [], []
+    submissions = 0
+
+    class LateFuture(Future):
+        """Expose a stopped worker only after the scheduler's first failure scan."""
+
+        def __init__(self):
+            """Start with one deliberately hidden readiness observation."""
+            super().__init__()
+            self.checks = 0
+
+        def done(self):
+            """Make the task ready between the failure scan and ordered consumption."""
+            self.checks += 1
+            return self.checks > 1
+
+    def submit(function, *args):
+        """Complete workers synchronously while hiding only the first failed task's readiness."""
+        nonlocal submissions
+        future = LateFuture() if submissions == 0 else Future()
+        submissions += 1
+        future.set_result(function(*args))
+        return future
+
+    def fail(worker):
+        """Produce the exact primary error without any queued diagnostic side effects."""
+        raise primary
+
+    def restart(reason):
+        """Return one verified replacement attempt only after the failed task is discarded."""
+        assert reason == "etag_changed" and cleanup == [False]
+        return [_job("a", lambda worker: "recovered", attempt=2, terminal=True)]
+
+    initial = _job("a", fail, cleanup=cleanup.append, terminal=True)
+    if fallback:
+        initial = replace(initial, strategy="ranged", fallback=restart)
+    with (
+        DownloadTransport(client, DownloadOptions()) as root,
+        _Coordinator(root._download_context, status_callback=statuses.append) as coordinator,
+        patch.object(coordinator.executor, "submit", side_effect=submit),
+    ):
+        if fallback:
+            coordinator.run([[initial]], on_result=consumed.append)
+            assert consumed == ["recovered"]
+            assert any(event.status.event == "fallback" for event in statuses)
+        else:
+            with pytest.raises(ValueError) as caught:
+                coordinator.run([[initial]], on_result=consumed.append)
+            assert caught.value is primary and not consumed
+    assert cleanup == [False]
+
+
 def test_window_retains_out_of_order_results_and_scratch(client):
     """A stalled earliest range prevents unbounded later reservations, not unrelated work."""
     options = DownloadOptions(concurrency=3, ranges_per_blob=2, range_size=65_536)

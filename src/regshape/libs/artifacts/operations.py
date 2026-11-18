@@ -11,6 +11,7 @@ import re
 import stat
 import tempfile
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from types import TracebackType
 from typing import Literal, final
@@ -19,6 +20,7 @@ from uuid import uuid4
 
 from regshape.libs._http import report_secondary_failure
 from regshape.libs.artifacts.archive import ArchiveSnapshot, write_archive
+from regshape.libs.artifacts.download import receive_graph_blobs
 from regshape.libs.artifacts.graph import (
     ACCEPT,
     INDEX_TYPES,
@@ -28,6 +30,7 @@ from regshape.libs.artifacts.graph import (
     VerifiedGraph,
     layout_roots,
     parse_document,
+    plan_graph,
     verify_graph,
 )
 from regshape.libs.artifacts.models import (
@@ -295,7 +298,8 @@ def pull_artifact(
     :param download_options: Immutable shared download policy. Supported clients
         use one pooled authentication context from the root through all objects.
         Explicit legacy retains the original client and constructs no pool.
-        Graph scheduling remains serial until the parallel graph layer is integrated.
+        Pooled C>1 discovers/reserves the full graph before concurrent blob/range
+        receipt. Pooled C=1 and legacy retain one-at-a-time graph acquisition.
     :param download_status_callback: Optional caller-thread blob status/metrics
         observer, plus one final operation summary. Requires pooled transport;
         the raised domain/observer exception remains the failure authority.
@@ -307,12 +311,8 @@ def pull_artifact(
         if callback is not None and not callable(callback):
             raise TypeError("Artifact observers must be callable")
     _pull_inputs(client.config.registry, repo, reference, output_path, output_format, limits)
-    context = getattr(client, "_download_context", None)
-    if policy.transport == "legacy" or (
-        isinstance(context, DownloadTransport) and context.coordinator is None
-        and download_status_callback is None
-    ):
-        return _pull_artifact_serial(
+    if policy.transport == "legacy":
+        return _pull_artifact(
             client, repo, reference, output_path, output_format=output_format,
             limits=limits, progress_callback=progress_callback, phase_callback=phase_callback,
             blob_options=policy,
@@ -323,7 +323,7 @@ def pull_artifact(
         client, policy, download_status_callback=download_status_callback,
     ) as (worker, coordinator):
         failures = coordinator.transport.observer_failures
-        return _pull_artifact_serial(
+        return _pull_artifact(
             worker, repo, reference, output_path, output_format=output_format,
             limits=limits,
             progress_callback=_guard_observer(progress_callback, failures),
@@ -332,19 +332,22 @@ def pull_artifact(
         )
 
 
-def _pull_artifact_serial(
+def _pull_artifact(
     client: RegistryClient, repo: str, reference: str, output_path: str | Path, *,
     output_format: ArtifactFormat, limits: ArtifactLimits | None,
     progress_callback: ArtifactProgressCallback | None,
     phase_callback: ArtifactPhaseCallback | None, blob_options: DownloadOptions | None,
 ) -> ArtifactPullResult:
-    """Run the retained graph/publication path without owning the borrowed transport.
+    """Acquire and publish a graph under the already selected borrowed transport.
 
     :param blob_options: Policy for nested blob calls; None inherits the root
         worker's existing context. Output, observers, limits and errors
         retain pull_artifact's contract.
         Ranged receipts borrow the private staging handle for default scratch;
         an explicit scratch override remains authoritative.
+
+    Pooled C>1 separates discovery/reservation from coordinated blob receipt;
+    serial policies keep the original incremental acquisition order.
     """
     observers = _Observers(progress_callback)
     if phase_callback is not None and not callable(phase_callback):
@@ -413,10 +416,44 @@ def _pull_artifact_serial(
                     store.promote(filename, edge.digest)
                     return "network", header
 
-                graph = verify_graph(
-                    (root,), store, policy, acquire=acquire,
-                    observe=observers.observe, embedded_missing=True,
-                )
+                context = getattr(client, "_download_context", None)
+                if (
+                    context is not None and isinstance(context, DownloadTransport)
+                    and context.coordinator is not None
+                    and context.options.concurrency > 1
+                ):
+                    plan = plan_graph(
+                        (root,), store, policy, acquire=acquire, observe=observers.observe,
+                    )
+
+                    def blob_progress(event: TransferProgress) -> None:
+                        """Route interleaved caller-thread events to each digest's first row."""
+                        observers.rows[event.digest].blob(event)
+
+                    receive_graph_blobs(
+                        client, repo, plan, store,
+                        staging_path=output.parent / namespace.name / staging.name,
+                        identity=lambda edge: observers.row(edge).identity,
+                        progress_callback=blob_progress, observe=observers.observe,
+                    )
+                    sources = {item.digest: item.source for item in plan.objects}
+
+                    def verify_progress(edge: Edge, source: str, phase: str) -> None:
+                        """Track the verified row with discovery provenance, deferring stored success."""
+                        if phase == "verifying":
+                            observers.observe(edge, sources[edge.digest], phase)
+
+                    verified = verify_graph((root,), store, policy, observe=verify_progress)
+                    for item in verified.objects:
+                        observers.rows[item.digest].emit("stored")
+                    graph = replace(verified, objects=tuple(
+                        replace(item, source=sources[item.digest]) for item in verified.objects
+                    ))
+                else:
+                    graph = verify_graph(
+                        (root,), store, policy, acquire=acquire,
+                        observe=observers.observe, embedded_missing=True,
+                    )
                 root_descriptor = Descriptor(
                     root.media_type, root.digest, root.size,
                     artifact_type=parsed_root.artifact_type,

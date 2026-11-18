@@ -42,6 +42,7 @@ from regshape.libs.artifacts.storage import SafeDirectory, SafeFile
 from regshape.libs.blobs import DownloadStats, DownloadStatus
 from regshape.libs.errors import ArtifactError
 from regshape.libs.transport import RegistryClient, TransportConfig
+from regshape.libs.transport.download import _DownloadAdapter
 from regshape.tests.artifact_fixtures import (
     StreamResponse,
     address,
@@ -79,6 +80,49 @@ _LIMITS = (
     "--max-total-bytes", "--max-archive-bytes", "--max-archive-input-bytes",
 )
 _SOURCE = "registry.example/source:moving"
+
+
+@pytest.mark.parametrize("options", [
+    ["--sequential", "--concurrency", "4"],
+    ["--sequential", "--ranges-per-blob", "1"],
+    ["--legacy-transport", "--sequential"],
+    ["--legacy-transport", "--download-retries", "0"],
+    ["--legacy-transport", "--scratch-dir", "."],
+    ["--concurrency", "1", "--ranges-per-blob", "2"],
+    ["--download-retries", "11"],
+    ["--range-size", "65535"],
+])
+def test_download_controls_reject_before_filesystem_or_credentials(runner, tmp_path, options):
+    """Conflicting/invalid download policy cannot probe storage or create a credential client."""
+    with (
+        patch("regshape.cli.artifact.preflight_artifact_pull") as preflight,
+        patch("regshape.cli.artifact.RegistryClient") as client,
+    ):
+        result = runner.invoke(regshape, [
+            "artifact", "pull", "-a", _SOURCE, "-o", str(tmp_path / "out"), *options,
+        ])
+    assert result.exit_code == 2, result.exception
+    preflight.assert_not_called()
+    client.assert_not_called()
+    assert not list(tmp_path.iterdir())
+
+
+@_NATIVE
+@pytest.mark.parametrize("option", ["--sequential", "--legacy-transport"])
+def test_serial_cli_backends_retain_output_and_bypass_parallel_planning(runner, tmp_path, option):
+    """Both serial policies remain usable, while only genuine legacy bypasses the owned pool."""
+    root, objects = _graph("simple", "sha256")
+    registry = ObjectRegistry(root, objects)
+    console = ArtifactConsole(shared=False)
+    with (
+        patch("regshape.libs.artifacts.operations.plan_graph") as planning,
+        patch("regshape.libs.transport.download._DownloadAdapter", wraps=_DownloadAdapter) as pool,
+    ):
+        result, _ = _invoke(runner, console, registry, tmp_path / "out", [option, "--json"])
+    assert result.exit_code == 0, result.exception
+    assert json.loads(console.out.text)["blobs"] == 2
+    planning.assert_not_called()
+    assert pool.call_count == int(option == "--sequential")
 
 
 class ArtifactConsole(Console):

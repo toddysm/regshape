@@ -61,9 +61,15 @@ closed or mutated by workers. Unsupported custom clients retain the original
 serial path with one logged notice when options are omitted. Explicit pooled
 requests require a safe fork override. `DownloadOptions.legacy()` selects the
 original serial path without the new provider/pool; `sequential()` still uses
-modern pooled transport. This transport foundation does not yet schedule graph
-objects in parallel. See [download policy and transport](../../docs/library/downloads.md)
-for policy fields, retry precedence and downstream feature boundaries.
+modern pooled transport. Default C=4/W=1 overlaps independent full-stream blobs.
+With C>1, serial document discovery pins the complete graph and reserves every
+unique size and graph limit before scheduling any network blob. Blob/range
+jobs share one coordinator; only its invoking thread registers/promotes files.
+The complete local store verifies again before packaging/publication, retaining
+discovery's source provenance, first roles and reused-reference counts.
+Pooled C=1 retains one-at-a-time graph acquisition.
+See [download policy and transport](../../docs/library/downloads.md)
+for range eligibility, bounded scratch and retry precedence.
 
 `download_status_callback` adds immutable caller-thread per-blob observations
 and one aggregate summary after publication/cleanup, without changing
@@ -178,7 +184,9 @@ Invalid event values raise `ValueError`. Counters are not deltas or aggregate
 artifact totals; embedded/local counts are not network bytes.
 
 `received` is not `stored`: parsing, integrity checks and safe storage still must
-succeed. No library code renders a terminal. Observer exceptions propagate
+succeed. Parallel network blob rows remain `verifying` after promotion until
+the complete local graph passes final verification; only then do they emit
+`stored`. No library code renders a terminal. Observer exceptions propagate
 unchanged, including immutable exceptions and cancellation. Further notifications
 are disabled after an observer raises.
 
@@ -209,6 +217,12 @@ to `oci`, regardless of suffix. `--max-manifest-bytes`, `--max-objects`,
 `--max-depth`, `--max-total-bytes`, `--max-archive-bytes` and
 `--max-archive-input-bytes` expose the corresponding positive integer budgets
 above. Existing telemetry flags and global `--log-file` remain supported.
+Shared `--concurrency`, `--ranges-per-blob`, `--range-size`, `--sequential`,
+`--legacy-transport`, `--download-retries` and `--scratch-dir` expose the same
+SDK policy. Pooled retries default to three; explicit zero disables them.
+Changed-ETag fallbacks are counted once per unique affected blob and produce
+one deferred stderr warning after the complete result/error and cleanup, even
+when progress is suppressed. Result/JSON fields do not change.
 Native publication supports Linux/macOS, not Windows, under the trust
 preconditions below.
 The [canonical command reference](../cli/artifact.md) includes exact source

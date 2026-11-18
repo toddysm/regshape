@@ -885,6 +885,8 @@ class _Coordinator:
         source. Healthy terminal observers run before secondary cleanup diagnostics.
         Strategy is delivered before dispatch; rejected/unsubmitted jobs still
         retain a stopped record for invoking-thread cleanup.
+        Failures becoming ready between scans wait for error/fallback handling,
+        never reaching a success result consumer.
 
         :param on_result: Invoking-thread consumer; publish only verified results.
             Range sources are delivered in source order, not completion order.
@@ -1059,9 +1061,11 @@ class _Coordinator:
                         continue
                     while source.pending and source.pending[0].future.done():
                         head = source.pending[0]
+                        ready_outcome = head.future.result()
                         if (
                             head.delivered_records
-                            < head.future.result().produced_records
+                            < ready_outcome.produced_records
+                            or ready_outcome.error is not None
                         ):
                             break
                         pending = source.pending.popleft()

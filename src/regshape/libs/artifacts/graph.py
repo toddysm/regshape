@@ -216,7 +216,7 @@ def parse_document(
 
 @dataclass(frozen=True)
 class GraphObject:
-    """One verified address and its ordered dependencies, without retaining payload bytes."""
+    """One reserved address and its ordered dependencies, without retaining payload bytes."""
 
     digest: str
     size: int
@@ -237,6 +237,21 @@ class VerifiedGraph:
     bytes_stored: int
 
 
+@dataclass(frozen=True)
+class GraphPlan:
+    """Unverified closure with all unique byte/graph reservations made on the caller.
+
+    Network blobs are not yet stored. Documents and first-occurrence embedded
+    content have verified bytes; sources, first roles and dependency order must
+    survive the final local verification before publication.
+    """
+
+    roots: tuple[Edge, ...]
+    objects: tuple[GraphObject, ...]
+    reused_references: int
+    bytes_reserved: int
+
+
 # Acquisition stores one new object's exact bytes, returning source and optional
 # response Content-Type. It never runs for reused references or embedded content.
 Acquire = Callable[[Edge, int], tuple[str, str]]
@@ -254,6 +269,42 @@ def verify_graph(
     subtrees carry heights so reuse on a deeper path cannot bypass max_depth.
     Acquire receives the remaining byte budget before any new object is stored.
     In local validation inline data does not excuse a missing digest file.
+    """
+    graph = _walk_graph(
+        roots, store, limits, acquire=acquire, observe=observe,
+        embedded_missing=embedded_missing, defer_blobs=False,
+    )
+    return VerifiedGraph(graph.roots, graph.objects, graph.reused_references, graph.bytes_reserved)
+
+
+def plan_graph(
+    roots: tuple[Edge, ...], store: ContentStore, limits: ArtifactLimits, *,
+    acquire: Acquire, observe: Observe | None = None,
+) -> GraphPlan:
+    """Discover documents and reserve the complete closure before network blob receipt.
+
+    :param acquire: Caller-thread document receiver, given remaining unique bytes.
+    :param observe: Observer for verified documents/embedded objects only.
+    :returns: An unverified plan; never suitable for publication without verify_graph.
+    :raises ArtifactError: For the same structural, per-edge and budget violations
+        as local verification. Acquisition and observer errors propagate unchanged.
+    """
+    return _walk_graph(
+        roots, store, limits, acquire=acquire, observe=observe,
+        embedded_missing=True, defer_blobs=True,
+    )
+
+
+def _walk_graph(
+    roots: tuple[Edge, ...], store: ContentStore, limits: ArtifactLimits, *,
+    acquire: Acquire | None, observe: Observe | None,
+    embedded_missing: bool, defer_blobs: bool,
+) -> GraphPlan:
+    """Share iterative parsing, reservations, cycles, reuse heights and inline checks.
+
+    :param defer_blobs: Reserve network-only blob edges without acquisition,
+        verification or success observations; all documents still verify.
+    :returns: Traversal records, not a claim that deferred content exists.
     """
     objects: dict[str, GraphObject] = {}
     heights: dict[str, int] = {}
@@ -297,14 +348,17 @@ def verify_graph(
             raise ArtifactError("Document exceeds max_manifest_bytes")
         inline = embedded_bytes(edge, limits)
         source, header = "local", ""
-        if inline is not None and embedded_missing:
+        deferred = defer_blobs and not edge.document and inline is None
+        if deferred:
+            source = "network"
+        elif inline is not None and embedded_missing:
             store.put(edge.digest, inline)
             source = "embedded"
         elif acquire is not None:
             source, header = acquire(edge, limits.max_total_bytes - total)
-        if observe is not None:
+        if observe is not None and not deferred:
             observe(edge, source, "verifying")
-        raw = store.verify(
+        raw = None if deferred else store.verify(
             edge.digest, edge.size, cap=limits.max_manifest_bytes if edge.document else None,
         )
         children: tuple[Edge, ...] = ()
@@ -323,12 +377,12 @@ def verify_graph(
             tuple(child.digest for child in children),
         )
         total += edge.size
-        if observe is not None:
+        if observe is not None and not deferred:
             observe(edge, source, "stored")
         visiting.add(edge.digest)
         stack.append((edge, depth, True))
         stack.extend((child, depth + 1, False) for child in reversed(children))
-    return VerifiedGraph(roots, tuple(ordered), reused, total)
+    return GraphPlan(roots, tuple(ordered), reused, total)
 
 
 def layout_roots(directory: SafeDirectory, limits: ArtifactLimits) -> tuple[bytes, tuple[Edge, ...]]:
