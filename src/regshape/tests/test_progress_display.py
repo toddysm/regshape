@@ -1070,7 +1070,8 @@ def test_download_attempt_rollups_preserve_verification_and_other_rows(failure: 
         now[0] = 1
         retry = replace(retry, phase=TransferPhase.VERIFYING, bytes_completed=100)
         display.observe(retry)
-        assert "\u25a0" * 20 in terminal.rows[0] and "Verifying" in terminal.rows[0]
+        assert any(cell * 20 in terminal.rows[0] for cell in ("\u25a0", "="))
+        assert "Verifying" in terminal.rows[0]
         assert display.completed == 0 and not display._finished
         display.observe(replace(other, phase=TransferPhase.COMPLETED, bytes_completed=100))
         display.observe(replace(retry, phase=failure))

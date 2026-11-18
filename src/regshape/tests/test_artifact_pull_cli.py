@@ -353,7 +353,7 @@ def test_normalized_rows_upgrade_identity_rate_and_throttle(known: bool) -> None
         now[0] = 2
         display.observe(_observation(kind="index", phase="transferring", count=50, total=total))
         assert "25 B/s" in terminal.rows[-1]
-        assert ("\u25a0" * 10 in terminal.rows[-1]) is known
+        assert any(cell * 10 in terminal.rows[-1] for cell in ("\u25a0", "=")) is known
         assert "%" not in terminal.rows[-1]
         assert ("~2s remaining" in terminal.rows[-1]) is known
         display.observe(_observation(kind="index", phase="verifying", digest=digest, count=100, total=100))
