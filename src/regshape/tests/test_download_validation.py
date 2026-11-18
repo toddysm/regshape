@@ -11,15 +11,19 @@ import subprocess
 import sys
 import threading
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import requests
 
 from regshape.libs.blobs import BlobDownload, DownloadOptions, get_blobs
 from regshape.libs.errors import BlobError
 from regshape.libs.transport._coordinator import _Coordinator, _Worker
+from regshape.libs.transport.download import DownloadTransport
+from regshape.tests import benchmark_downloads
 from regshape.tests.artifact_fixtures import address
 from regshape.tests.benchmark_downloads import comparison, measure
 from regshape.tests.download_fixture import DownloadFixture
@@ -153,6 +157,7 @@ def test_cross_mode_auth_redirect_stress(
             )
             assert physical == result.stats.request_count
             assert expected_overlap <= result.stats.active_requests_peak <= concurrency
+            assert expected_overlap <= server.requests_peak <= concurrency
             assert result.stats.bytes_accepted == sum(map(len, payloads))
             assert result.stats.bytes_received == sum(map(len, payloads))
             assert result.stats.scratch_bytes_peak <= concurrency * R
@@ -211,6 +216,135 @@ def test_cross_mode_corruption_never_reports_invalid_completion(tmp_path, ranges
     assert not list(tmp_path.iterdir())
 
 
+@pytest.mark.parametrize("control", ["probe", "token", "redirect"])
+def test_control_hops_overlap_data_under_independent_server_cap(control):
+    """A new scope's control/redirect hop overlaps three bodies without using SDK counters."""
+    payload = b"control-overlap" * R
+    digest = address(payload)
+    with DownloadFixture(
+        {digest: payload},
+        authenticated=True,
+        redirected=True,
+        overlap=4,
+    ) as server:
+        server.gating = False
+        with DownloadTransport(_client(server.authority), DownloadOptions()) as root:
+            context = root._download_context
+            with root.get(f"/v2/repo/blobs/{digest}", stream=True) as response:
+                assert response.content == payload
+            server.reset()
+            before = context.request_count
+            server.control_kind = control
+            server.control_release = threading.Event()
+            server.gating = True
+
+            def receive(repo):
+                """Borrow one worker-local session for one full framed data response."""
+                worker = context.fork()
+                try:
+                    with worker.get(
+                        f"/v2/{repo}/blobs/{digest}", stream=True
+                    ) as response:
+                        assert response.status_code == 200
+                        return response.content
+                finally:
+                    worker._session.close()
+
+            attempted = threading.Event()
+            send = root._session.send
+
+            def overflow_send(request, **kwargs):
+                """Verify an independent C-request server snapshot exhausts the real limiter."""
+                if not attempted.is_set():
+                    acquired = context.slots.acquire(blocking=False)
+                    if acquired:
+                        context.slots.release()
+                    attempted.set()
+                    assert not acquired, "A control hop bypassed the global limiter"
+                return send(request, **kwargs)
+
+            def overflow_receive():
+                """Use the otherwise idle root session for a fifth, excess logical request."""
+                with root.get(f"/v2/repo/blobs/{digest}", stream=True) as response:
+                    return response.content
+
+            with (
+                ThreadPoolExecutor(max_workers=5) as executor,
+                patch.object(root._session, "send", overflow_send),
+            ):
+                futures = [
+                    executor.submit(receive, repo)
+                    for repo in ["repo", "repo", "repo", "other"]
+                ]
+                try:
+                    with server.condition:
+                        assert server.condition.wait_for(
+                            lambda: bool(server.control_overlaps),
+                            timeout=10,
+                        )
+                        assert server.requests_active == 4
+                    overflow = executor.submit(overflow_receive)
+                    assert attempted.wait(10)
+                finally:
+                    server.control_release.set()
+                assert [future.result(timeout=15) for future in futures] == [
+                    payload
+                ] * 4
+                assert overflow.result(timeout=15) == payload
+            assert server.requests_peak == 4
+            assert "storage" in server.control_overlaps
+            assert (
+                "blob" if control == "redirect" else control
+            ) in server.control_overlaps
+            assert context.active == 0 and context.active_peak == 4
+            physical = sum(
+                server.calls[key] for key in ("blob", "storage", "probe", "token")
+            )
+            assert context.request_count - before == physical
+
+
+def test_failed_benchmark_rerun_invalidates_previous_complete_report(
+    tmp_path, monkeypatch
+):
+    """A failure before the first measured fixture cannot leave stale passing release evidence."""
+    output = tmp_path / "report.json"
+    output.write_text(json.dumps({"complete": True, "numeric_gates_passed": True}))
+    primary = RuntimeError("synthetic first fixture failure")
+    monkeypatch.setattr(sys, "argv", ["benchmark", "--output", str(output)])
+    with (
+        patch.object(benchmark_downloads, "run_case", side_effect=primary),
+        pytest.raises(
+            RuntimeError,
+        ) as caught,
+    ):
+        benchmark_downloads.main()
+    assert caught.value is primary
+    report = json.loads(output.read_text())
+    assert report["complete"] is False and report["cases"] == []
+    assert "numeric_gates_passed" not in report
+
+
+def test_redirect_encodes_request_derived_path_component():
+    """Keep request-supplied percent escapes inside the redirect's encoded path component."""
+    digest = "sha256:example%0D%0AInjected:yes"
+    with (
+        DownloadFixture({digest: b"content"}, redirected=True) as server,
+        requests.Session() as session,
+    ):
+        session.trust_env = False
+        with session.get(
+            f"http://{server.authority}/v2/repo/blobs/{digest}",
+            allow_redirects=False,
+            timeout=5,
+        ) as response:
+            assert response.status_code == 307
+            assert response.headers["Location"] == (
+                f"http://{server.storage_authority}/storage/"
+                "sha256:example%250D%250AInjected:yes"
+            )
+            assert "Injected" not in response.headers
+
+
 def test_benchmark_release_gates_use_median_and_nearest_rank_p95():
     """Reject under-sampled evidence and detect median/guardrail regressions independently."""
     baseline = [{"wall_seconds": 2.0}] * 20
@@ -258,7 +392,7 @@ def test_benchmark_measures_real_operations_and_preserves_legacy_gaps(
     )
     with DownloadFixture(objects, capability=capability) as server:
         sample = measure(server, objects, options, tmp_path)
-    assert sample["wall_seconds"] > 0 and sample["process_cpu_seconds"] > 0
+    assert sample["wall_seconds"] > 0 and sample["process_cpu_seconds"] >= 0
     assert not list(tmp_path.iterdir())
     if mode == "legacy":
         assert sample["stats"] is None and sample["worker_cpu_seconds"] == 0

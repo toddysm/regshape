@@ -15,7 +15,7 @@ from contextlib import ExitStack
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import TracebackType
 from typing import Literal
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 
 class DownloadFixture:
@@ -23,7 +23,7 @@ class DownloadFixture:
 
     :param objects: Immutable digest-to-stored-bytes fixture contents.
     :param capability: Strong-validator ranges, ignored ranges, or missing ETags.
-    :param authenticated: Exercise discovery, a separate /v2/ probe and one token.
+    :param authenticated: Exercise discovery, a /v2/ probe and one token per scope.
     :param redirected: Redirect every authenticated blob read to the storage origin.
     :param latency: Seconds before each data response; zero disables RTT shaping.
     :param bandwidth: Bytes/second per data connection; zero disables pacing.
@@ -32,6 +32,9 @@ class DownloadFixture:
 
     Observations contain no authorization values or authenticated URLs. Instances
     are single-use context managers; reset between completed benchmark samples.
+    ``requests_peak`` independently includes control and data handlers until
+    their final write starts. Tests may disable ``gating`` while priming authentication,
+    then select ``control_kind`` to rendezvous one control hop with data bodies.
     """
 
     def __init__(
@@ -61,6 +64,12 @@ class DownloadFixture:
         self.data_ports: set[int] = set()
         self.foreign_authorization = False
         self.active = self.peak = self.started = self.sent = 0
+        self.requests_active = self.requests_peak = 0
+        self.active_kinds: Counter[str] = Counter()
+        self.control_kind: str | None = None
+        self.control_overlaps: set[str] = set()
+        self.control_release: threading.Event | None = None
+        self.gating = True
         self.errors: list[BaseException] = []
         self.authority = self.storage_authority = ""
 
@@ -85,7 +94,7 @@ class DownloadFixture:
                 """Tolerate client-discarded negotiation bodies, but retain other handler errors."""
                 try:
                     super().handle()
-                except (ConnectionResetError, BrokenPipeError):
+                except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
                     pass
 
             def reply(self, status: int, body: bytes, headers: dict[str, str]) -> None:
@@ -94,12 +103,22 @@ class DownloadFixture:
                 self.send_header("Content-Length", str(len(body)))
                 for key, value in headers.items():
                     self.send_header(key, value)
+                if not body:
+                    self.release_observed()
                 self.end_headers()
-                self.wfile.write(body)
+                if body:
+                    self.wfile.write(body[:-1])
+                    self.release_observed()
+                    self.wfile.write(body[-1:])
                 self.wfile.flush()
 
             def do_GET(self) -> None:
-                """Dispatch synthetic auth/probes/redirects, then serve exact data intervals."""
+                """Independently count every request until its final framing/body write.
+
+                Release immediately before sending the last bytes so a client
+                cannot start its successor before the old handler decrements.
+                This measures server work, not the SDK's own lease counter.
+                """
                 path = urlsplit(self.path).path
                 storage = path.startswith("/storage/")
                 kind = (
@@ -113,12 +132,60 @@ class DownloadFixture:
                         else "blob"
                     )
                 )
+                self.observed_kind = kind
+                self.observed_open = True
                 with fixture.condition:
+                    fixture.requests_active += 1
+                    fixture.active_kinds[kind] += 1
+                    fixture.requests_peak = max(
+                        fixture.requests_peak, fixture.requests_active
+                    )
                     fixture.calls[kind] += 1
                     fixture.ports.add((kind, self.client_address[1]))
                     if storage and self.headers.get("Authorization") is not None:
                         fixture.foreign_authorization = True
+                try:
+                    self.dispatch(path, storage)
+                finally:
+                    self.release_observed()
+
+            def release_observed(self) -> None:
+                """Release a server-side observation once, including failed writes."""
+                if self.observed_open:
+                    self.observed_open = False
+                    with fixture.condition:
+                        fixture.requests_active -= 1
+                        fixture.active_kinds[self.observed_kind] -= 1
+                        fixture.condition.notify_all()
+
+            def gate_control(self, kind: str) -> None:
+                """Hold a selected control hop until three other data bodies are active."""
+                if not fixture.gating or fixture.control_kind != kind:
+                    return
+                with fixture.condition:
+                    ready = fixture.condition.wait_for(
+                        lambda: fixture.started >= fixture.barrier.parties - 1,
+                        timeout=10,
+                    )
+                    if not ready:
+                        raise RuntimeError(
+                            "Data requests did not overlap the control hop"
+                        )
+                    fixture.control_overlaps.update(
+                        key for key, value in fixture.active_kinds.items() if value
+                    )
+                    fixture.condition.notify_all()
+                if (
+                    fixture.control_release is not None
+                    and not fixture.control_release.wait(10)
+                ):
+                    raise RuntimeError("Control hop was not released")
+                fixture.barrier.wait(timeout=10)
+
+            def dispatch(self, path: str, storage: bool) -> None:
+                """Serve a synthetic auth/redirect hop or delegate the actual data response."""
                 if path == "/token":
+                    self.gate_control("token")
                     self.reply(
                         200,
                         json.dumps(
@@ -139,6 +206,8 @@ class DownloadFixture:
                         != "Bearer synthetic-validation-token"
                     )
                 ):
+                    if path == "/v2/":
+                        self.gate_control("probe")
                     with fixture.condition:
                         fixture.calls["unauthorized"] += 1
                     # The first blob rejection intentionally requires a /v2/ probe.
@@ -146,7 +215,7 @@ class DownloadFixture:
                         {
                             "WWW-Authenticate": (
                                 f'Bearer realm="http://{fixture.authority}/token",'
-                                'service="validation",scope="repository:repo:pull"'
+                                'service="validation"'
                             ),
                         }
                         if path == "/v2/"
@@ -159,11 +228,13 @@ class DownloadFixture:
                     self.reply(404, b"", {})
                     return
                 if not storage and fixture.redirected:
+                    if path.startswith("/v2/other/blobs/"):
+                        self.gate_control("redirect")
                     self.reply(
                         307,
                         b"",
                         {
-                            "Location": f"http://{fixture.storage_authority}/storage/{digest}",
+                            "Location": f"http://{fixture.storage_authority}/storage/{quote(digest, safe=':')}",
                         },
                     )
                     return
@@ -187,7 +258,11 @@ class DownloadFixture:
                     fixture.peak = max(fixture.peak, fixture.active)
                     if qualifies:
                         fixture.started += 1
-                    gate = qualifies and fixture.started <= fixture.barrier.parties
+                        fixture.condition.notify_all()
+                    parties = fixture.barrier.parties - int(
+                        fixture.control_kind is not None
+                    )
+                    gate = fixture.gating and qualifies and fixture.started <= parties
                 try:
                     if fixture.latency:
                         time.sleep(fixture.latency)
@@ -199,6 +274,8 @@ class DownloadFixture:
                         )
                     if fixture.capability != "missing-etag":
                         self.send_header("ETag", '"stable"')
+                    if not body:
+                        self.release_observed()
                     self.end_headers()
                     if gate:
                         fixture.barrier.wait(timeout=10)
@@ -211,6 +288,8 @@ class DownloadFixture:
                             ) / fixture.bandwidth - (time.perf_counter() - began)
                             if delay > 0:
                                 time.sleep(delay)
+                        if offset + len(chunk) == len(body):
+                            self.release_observed()
                         self.wfile.write(chunk)
                         with fixture.condition:
                             fixture.sent += len(chunk)
@@ -251,8 +330,11 @@ class DownloadFixture:
     def reset(self) -> None:
         """Clear observations only after handlers stop; never reset an active barrier."""
         with self.condition:
-            if not self.condition.wait_for(lambda: self.active == 0, timeout=10):
-                raise RuntimeError("Download fixture still has active data handlers")
+            if not self.condition.wait_for(
+                lambda: self.active == 0 and self.requests_active == 0,
+                timeout=10,
+            ):
+                raise RuntimeError("Download fixture still has active request handlers")
             if self.errors:
                 raise RuntimeError("Download fixture handler failed") from self.errors[
                     0
@@ -262,6 +344,8 @@ class DownloadFixture:
             self.ports.clear()
             self.data_ports.clear()
             self.foreign_authorization = False
+            self.requests_peak = 0
+            self.control_overlaps.clear()
             self.peak = self.started = self.sent = 0
             self.barrier.reset()
 

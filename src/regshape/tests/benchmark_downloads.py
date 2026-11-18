@@ -395,7 +395,8 @@ def run_case(case: Case, samples: int, warmups: int, root: Path) -> dict:
 def main() -> None:
     """Write complete raw benchmark evidence; failing numeric gates produce exit status one.
 
-    Output is checkpointed after each fixture. Runtime/protocol failures propagate
+    Output starts incomplete before the first fixture and is checkpointed after
+    each fixture, replacing any previous run. Runtime/protocol failures propagate
     rather than fabricating completed samples. No live-registry certification is
     possible from this harness, regardless of numeric fixture results.
     """
@@ -446,6 +447,7 @@ def main() -> None:
         "complete": False,
         "cases": case_reports,
     }
+    args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     with tempfile.TemporaryDirectory(prefix="regshape-benchmark-") as directory:
         for case in CASES:
             case_reports.append(
