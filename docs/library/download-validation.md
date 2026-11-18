@@ -53,6 +53,14 @@ cycle. [Artifact orchestration](../../src/regshape/libs/artifacts/operations.py)
 now imports that acquisition wiring only when entering its pooled parallel path.
 Public exports and operation behavior are unchanged.
 
+The independent server peak bounds requests through their final write, not
+through the SDK's response-close event. Missing-ETag range negotiation discards
+a response body; its server handler may still be unwinding while the client
+starts fallback. That matrix case therefore checks the SDK cap and physical
+counts, but does not equate lingering server handlers with live client leases.
+The dedicated oversubscribed barrier tests independently verify limiter
+saturation for every probe/token/redirect path without discarded data bodies.
+
 ## Reproduce the performance measurements
 
 Run on an otherwise quiet host with enough temporary storage for a 128 MiB
@@ -152,6 +160,11 @@ The measured source is the clean commit
 review-fix commits. Later fixture fixes add independent request observations,
 safe redirect encoding and Windows disconnect handling; they are not included
 in these measurements. Any optimization needs a new, separately retained run.
+The original harness also gated the observational many-small combined mode
+(which passed); the corrected harness gates only the approved object mode.
+It now waits for final server counter updates outside the timed interval;
+the original report's sent-byte fields were sampled without that synchronization.
+Neither correction changes the recorded ranged timing failure.
 
 | Shaped comparison | Baseline p50 / candidate p50 (s) | Decision |
 | --- | --- | --- |

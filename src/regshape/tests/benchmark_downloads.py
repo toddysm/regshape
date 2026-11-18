@@ -54,19 +54,35 @@ class Case:
     shaped: bool = True
     capability: Literal["ranges", "ignored", "missing-etag"] = "ranges"
     gate: str | None = None
+    gate_mode: str | None = None
 
 
 CASES = (
-    Case("many-small", 32, MiB, ("sequential", "objects", "combined"), gate="speedup"),
+    Case(
+        "many-small",
+        32,
+        MiB,
+        ("sequential", "objects", "combined"),
+        gate="speedup",
+        gate_mode="objects",
+    ),
     Case(
         "single-large",
         1,
         128 * MiB,
         ("sequential", "objects", "ranges"),
         gate="speedup",
+        gate_mode="ranges",
     ),
     Case("combined", 4, 32 * MiB, ("sequential", "combined")),
-    Case("small-default", 1, 65_536, ("sequential", "objects"), gate="guardrail"),
+    Case(
+        "small-default",
+        1,
+        65_536,
+        ("sequential", "objects"),
+        gate="guardrail",
+        gate_mode="objects",
+    ),
     Case(
         "missing-etag",
         1,
@@ -74,6 +90,7 @@ CASES = (
         ("sequential", "ranges"),
         capability="missing-etag",
         gate="guardrail",
+        gate_mode="ranges",
     ),
     Case(
         "ignored-range",
@@ -82,6 +99,7 @@ CASES = (
         ("sequential", "ranges"),
         capability="ignored",
         gate="guardrail",
+        gate_mode="ranges",
     ),
     Case("fast-many", 32, MiB, ("sequential", "objects"), shaped=False),
     Case("fast-large", 1, 128 * MiB, ("sequential", "ranges"), shaped=False),
@@ -267,6 +285,7 @@ def measure(
         wall = time.perf_counter() - began
         process_cpu = time.process_time() - cpu
         caller_cpu = time.thread_time() - caller
+    server.wait_idle()
     if [blob.digest for blob in blobs] != list(objects):
         raise RuntimeError("Benchmark returned wrong or unordered verified digests")
     if options.transport != "legacy" and statuses[-1].event != "summary":
@@ -379,11 +398,7 @@ def run_case(case: Case, samples: int, warmups: int, root: Path) -> dict:
                 "comparison": comparison(
                     baseline,
                     values,
-                    case.gate
-                    if mode == case.modes[-1]
-                    or case.name == "many-small"
-                    and mode == "objects"
-                    else None,
+                    case.gate if mode == case.gate_mode else None,
                 ),
                 "samples": values,
             }

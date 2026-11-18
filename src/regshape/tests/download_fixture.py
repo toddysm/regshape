@@ -18,6 +18,14 @@ from typing import Literal
 from urllib.parse import quote, urlsplit
 
 
+def _header_value(value: str) -> str:
+    """Reject line breaks instead of silently repairing an invalid fixture header."""
+    single_line = value.replace("\r", "").replace("\n", "")
+    if single_line != value:
+        raise ValueError("Invalid fixture response header")
+    return single_line
+
+
 class DownloadFixture:
     """Own framed HTTP/1.1 registry/storage listeners and synchronized observations.
 
@@ -102,7 +110,7 @@ class DownloadFixture:
                 self.send_response(status)
                 self.send_header("Content-Length", str(len(body)))
                 for key, value in headers.items():
-                    self.send_header(key, value)
+                    self.send_header(key, _header_value(value))
                 if not body:
                     self.release_observed()
                 self.end_headers()
@@ -327,8 +335,8 @@ class DownloadFixture:
             raise
         return self
 
-    def reset(self) -> None:
-        """Clear observations only after handlers stop; never reset an active barrier."""
+    def wait_idle(self) -> None:
+        """Wait for data writes/counters and observed requests; surface delayed handler errors."""
         with self.condition:
             if not self.condition.wait_for(
                 lambda: self.active == 0 and self.requests_active == 0,
@@ -339,6 +347,11 @@ class DownloadFixture:
                 raise RuntimeError("Download fixture handler failed") from self.errors[
                     0
                 ]
+
+    def reset(self) -> None:
+        """Clear observations only after handlers stop; never reset an active barrier."""
+        with self.condition:
+            self.wait_idle()
             self.calls.clear()
             self.intervals.clear()
             self.ports.clear()

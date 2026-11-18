@@ -14,6 +14,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
+from socketserver import _SocketWriter
 from unittest.mock import patch
 
 import pytest
@@ -26,7 +27,7 @@ from regshape.libs.transport.download import DownloadTransport
 from regshape.tests import benchmark_downloads
 from regshape.tests.artifact_fixtures import address
 from regshape.tests.benchmark_downloads import comparison, measure
-from regshape.tests.download_fixture import DownloadFixture
+from regshape.tests.download_fixture import DownloadFixture, _header_value
 from regshape.tests.test_blob_batch import _client
 
 R = 65_536
@@ -157,7 +158,9 @@ def test_cross_mode_auth_redirect_stress(
             )
             assert physical == result.stats.request_count
             assert expected_overlap <= result.stats.active_requests_peak <= concurrency
-            assert expected_overlap <= server.requests_peak <= concurrency
+            # An abandoned no-ETag body can still be writing after the client closes it.
+            if capability != "missing-etag" or ranges == 1:
+                assert expected_overlap <= server.requests_peak <= concurrency
             assert result.stats.bytes_accepted == sum(map(len, payloads))
             assert result.stats.bytes_received == sum(map(len, payloads))
             assert result.stats.scratch_bytes_peak <= concurrency * R
@@ -343,6 +346,77 @@ def test_redirect_encodes_request_derived_path_component():
                 "sha256:example%250D%250AInjected:yes"
             )
             assert "Injected" not in response.headers
+
+
+@pytest.mark.parametrize("line_break", ["\r", "\n", "\r\n"])
+def test_fixture_rejects_response_header_line_breaks(line_break):
+    """Invalid header values must fail explicitly, not emit or silently strip injected fields."""
+    with pytest.raises(ValueError, match="Invalid fixture response header"):
+        _header_value(f"safe{line_break}Injected: yes")
+
+
+def test_many_small_gate_does_not_apply_to_observational_combined_mode(tmp_path):
+    """A slow combined sample cannot fail the approved object-only S1 speedup gate."""
+    case = next(case for case in benchmark_downloads.CASES if case.name == "many-small")
+
+    def sample(server, objects, options, root):
+        """Make object parallelism pass while the observational combined mode is slower."""
+        return {
+            "wall_seconds": 2.0
+            if options.concurrency == 1
+            else (1.0 if options.ranges_per_blob == 1 else 4.0),
+        }
+
+    with patch.object(benchmark_downloads, "measure", side_effect=sample):
+        report = benchmark_downloads.run_case(case, 20, 1, tmp_path)
+    modes = report["modes"]
+    assert modes["objects"]["comparison"]["passed"] is True
+    assert modes["combined"]["comparison"]["median_speedup"] == 0.5
+    assert modes["combined"]["comparison"]["gate"] is None
+    assert modes["combined"]["comparison"]["passed"] is None
+
+
+def test_benchmark_waits_for_server_counter_updates_after_client_receipt(tmp_path):
+    """A descheduled final server write cannot publish incomplete sent-byte observations."""
+    raw = b"late-server-observation" * 2048
+    objects = {address(raw): raw}
+    written, observing, release = (threading.Event() for _ in range(3))
+    write = _SocketWriter.write
+
+    def delayed_write(writer, body):
+        """Send the complete body, then pause before the fixture can update its counters."""
+        result = write(writer, body)
+        if len(body) == len(raw):
+            written.set()
+            if not release.wait(10):
+                raise RuntimeError("Delayed fixture write was not released")
+        return result
+
+    with DownloadFixture(objects) as server:
+        wait_idle = server.wait_idle
+
+        def observed_idle():
+            """Signal post-receipt observation while the server's sent counter is still zero."""
+            if written.is_set():
+                assert server.sent == 0
+                observing.set()
+            wait_idle()
+
+        with (
+            patch.object(_SocketWriter, "write", delayed_write),
+            patch.object(server, "wait_idle", observed_idle),
+            ThreadPoolExecutor(max_workers=1) as executor,
+        ):
+            future = executor.submit(
+                measure, server, objects, DownloadOptions(), tmp_path
+            )
+            try:
+                assert observing.wait(10)
+                assert not future.done()
+            finally:
+                release.set()
+            sample = future.result(timeout=15)
+    assert sample["server_body_bytes_sent"] == len(raw)
 
 
 def test_benchmark_release_gates_use_median_and_nearest_rank_p95():
