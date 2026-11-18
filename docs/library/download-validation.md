@@ -69,8 +69,15 @@ only loopback sockets and caller-owned temporary files:
 
 ```bash
 python -m regshape.tests.benchmark_downloads \
-  --samples 20 --warmups 1 --output download-benchmark.json
+  --samples 20 --warmups 1 --output /path/to/evidence/download-benchmark.json
 ```
+
+Replace the example output path with a unique filename in an existing,
+caller-owned evidence directory outside the checkout. Retain each raw report
+as a separately named ZIP attachment on
+[#138](https://github.com/toddysm/regshape/issues/138), or as an approved release
+asset, rather than committing generated reports. Keep the summary, provenance,
+attachment link and checksum in this runbook.
 
 The [benchmark harness](../../src/regshape/tests/benchmark_downloads.py) requires
 at least 20 measured samples and at least one unmeasured warm-up per mode.
@@ -121,9 +128,20 @@ report is not complete evidence.
 
 ### Read the evidence
 
-The [recorded raw run](download-benchmark-2026-11-18.json) retains environment,
-source commit, each measured sample, p50/p95, comparisons and gate outcomes.
-Check `complete` before interpreting `numeric_gates_passed`.
+The [recorded raw run ZIP](https://github.com/user-attachments/files/35053758/download-benchmark-2026-11-18.zip),
+[attached to #138](https://github.com/toddysm/regshape/issues/138#issuecomment-6991708597),
+retains environment, source commit, each measured sample, p50/p95, comparisons
+and gate outcomes. Its contained JSON is byte-identical to the original report;
+the generated data is not part of the source tree. Download and unpack the ZIP,
+then check `complete` before interpreting `numeric_gates_passed`.
+
+SHA-256 checksums:
+
+```text
+f2bbb8d979b45b6dc3ad0681c49f96881d2f01dd7c590eb50c0e28b53393f681  download-benchmark-2026-11-18.zip
+8356ee2a3bcd96ec16b7502ce8772e854b25da0d53329e502e4ac5600afbd71e  download-benchmark-2026-11-18.json
+```
+
 Each sample records:
 
 - Physical requests, consumed entity bytes, accepted bytes, retries,

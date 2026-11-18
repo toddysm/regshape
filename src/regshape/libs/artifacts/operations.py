@@ -421,6 +421,7 @@ def _pull_artifact(
                     and context.coordinator is not None
                     and context.options.concurrency > 1
                 ):
+                    # Defer acquisition wiring to break the public SDK blob/artifact import cycle.
                     from regshape.libs.artifacts.download import receive_graph_blobs
 
                     plan = plan_graph(

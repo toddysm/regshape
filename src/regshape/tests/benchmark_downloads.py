@@ -288,7 +288,9 @@ def measure(
     server.wait_idle()
     if [blob.digest for blob in blobs] != list(objects):
         raise RuntimeError("Benchmark returned wrong or unordered verified digests")
-    if options.transport != "legacy" and statuses[-1].event != "summary":
+    if options.transport != "legacy" and (
+        not statuses or statuses[-1].event != "summary"
+    ):
         raise RuntimeError("Benchmark has no final metrics")
     stats = statuses[-1].stats if statuses else None
     physical = sum(server.calls[key] for key in ("blob", "storage", "probe", "token"))

@@ -484,3 +484,23 @@ def test_benchmark_measures_real_operations_and_preserves_legacy_gaps(
             )
         else:
             assert sample["scratch_read_bytes"] == sample["scratch_write_bytes"] == 0
+
+
+@pytest.mark.parametrize("count", [1, 2], ids=["single", "batch"])
+def test_benchmark_reports_missing_final_metrics_explicitly(tmp_path, count):
+    """Missing callbacks fail with the benchmark diagnostic for single and batch downloads."""
+    objects = {address(raw): raw for raw in (b"a", b"b")[:count]}
+    api_name = "get_blob" if count == 1 else "get_blobs"
+    download = getattr(benchmark_downloads, api_name)
+
+    def without_status(*args, **kwargs):
+        """Perform the real download while simulating an API that omits its status callback."""
+        kwargs.pop("download_status_callback")
+        return download(*args, **kwargs)
+
+    with (
+        DownloadFixture(objects) as server,
+        patch.object(benchmark_downloads, api_name, side_effect=without_status),
+        pytest.raises(RuntimeError, match="^Benchmark has no final metrics$"),
+    ):
+        measure(server, objects, DownloadOptions(), tmp_path)
