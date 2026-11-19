@@ -27,7 +27,11 @@ It never calls `requests` directly — all HTTP traffic goes through a
 ```
 src/regshape/libs/blobs/
 ├── __init__.py        # Package init; re-exports public symbols
-└── operations.py      # Public domain operations + private helpers
+├── operations.py      # Singular domain operations and legacy receipt
+├── download.py        # Frozen policy, batch inputs/results and typed status
+├── batch.py           # Shared singular/batch download facade
+├── _download_worker.py # Internal verified full-stream worker
+└── _ranges.py         # Internal negotiation and ordered bounded range assembly
 ```
 
 ### Module-level constants
@@ -120,6 +124,10 @@ Downloads a blob and verifies its digest.
 Import `DownloadOptions` from `regshape.libs.blobs` or `regshape.libs.artifacts`.
 Omitted options select one operation-owned pool with C=4/W=1 and three retries
 (including HTTP 429), unless an enabled explicit client retry policy applies.
+An explicit `max_retries` in 0..10 wins, including zero; an explicit client retry
+configuration with retries disabled otherwise resolves to zero. A budget
+override retains the caller's status/backoff/exception policy, so it does not add
+429 to an explicit status set that excludes it.
 `DownloadOptions.sequential()` selects C=W=1 on the same modern pool;
 `DownloadOptions.legacy()` bypasses the pool, new authentication provider and
 worker cloning entirely. Unsupported existing custom clients retain the original
@@ -147,21 +155,33 @@ path. Existing `BlobInfo` fields and CLI JSON are unchanged.
 reports the verified requested digest and consumed entity size. Legacy receipt
 retains its response-header metadata.
 
-**Behaviour:**
+**Behaviour and output ownership:**
 
-1. Derive algorithm from `digest.partition(":")`. Raise `BlobError` immediately
-   if the algorithm is unsupported (before any network I/O).
-2. Call `client.get(path, stream=True)`.
-3. Pass response to `_raise_for_blob_error`.
-4. Stream response body: if `output_path` is set, write to file via
-   `_stream_to_file`; otherwise consume chunks only to update the hasher.
-5. On `OSError` during file write, raise `BlobError` "Cannot write to output
-   path".
-6. After streaming, compare `"{algorithm}:{hexdigest}"` against `digest`. On
-   mismatch: delete the output file (if written) and raise `BlobError`
-   "Digest mismatch".
-7. Close the streamed response, then return `_blob_info_from_response(response, digest)`.
-   See [transfer progress](#transfer-progress) for opt-in lifecycle and size checks.
+1. Validate policy, digest and receive inputs before acquisition. Pooled digests
+   require full lowercase SHA-256/SHA-512 addresses, not abbreviated examples.
+2. Select the pooled full/range strategy above or the original serial receiver
+   for legacy; never bypass the caller's transport configuration silently.
+3. Stream/hash/discard for `output_path=None`. Saved unbounded output overwrites
+   a caller-trusted path; `max_bytes` enables exclusive bounded output. Pooled
+   reads use at most 64 KiB, independent of HTTP range size.
+4. Verify size and the complete digest, close responses/worker outputs, drain
+   observations and validate retained output identity before successful return.
+   Range parts are hashed in order, never as independent concatenated digests.
+5. On most transport/disk/callback failures or cancellation, unbounded partial
+   files may remain. Digest mismatch instead deletes the invalid output
+   filename after identity checks, **even after overwrite**; original contents
+   are not restored. For a trusted unbounded symlink only the link is removed,
+   leaving unverified bytes in its target. Failed bounded outputs are removed
+   by retained identity. Replacement/cleanup errors are reported, not ignored.
+
+The C*R range scratch bound is per invocation, excludes output/staging and
+incurs extra spool write/read I/O even for verify-only. A memory-backed scratch
+root consumes memory. Full streams cannot retry after any hash/file commitment;
+private uncommitted parts can retry within policy. Cancellation drains/joins
+before cleanup; a trickling peer can prevent a bounded join deadline despite
+finite socket-inactivity timeouts.
+See [tuning, SDK examples and recovery](../../docs/guides/parallel-downloads.md)
+and [transfer progress](#transfer-progress) for lifecycle and size checks.
 
 **Decorator:** `@track_time`
 
@@ -170,10 +190,16 @@ retains its response-header metadata.
 ### `get_blobs`
 
 ```python
-get_blobs(
-    client, repo, downloads, *, download_options=None,
-    progress_callback=None, download_status_callback=None,
-) -> BlobBatchResult
+def get_blobs(
+    client: RegistryClient,
+    repo: str,
+    downloads: Iterable[BlobDownload],
+    *,
+    download_options: DownloadOptions | None = None,
+    progress_callback: ProgressCallback | None = None,
+    download_status_callback: Callable[[DownloadStatus], None] | None = None,
+) -> BlobBatchResult:
+    ...
 ```
 
 Import `BlobDownload`, `get_blobs`, `BlobBatchResult`, `DownloadStats` and
@@ -187,6 +213,9 @@ Results retain input order.
 The first observed failure cancels/drains peers and raises the original error,
 not a partial result. Earlier verified standalone files may remain.
 Legacy transport is unsupported; metrics are never fabricated for it.
+Standalone invocations launched separately do not share this cap; pass all
+entries in one batch when a single ceiling is required. `BlobDownload` fields
+mirror singular output/size/buffer controls; `None` output means verify-only.
 See the [batch/status reference](../../docs/library/downloads.md#public-batch-downloads)
 for exact request fields, ownership, conservative portable filename collision
 rules, final statistics, shared range scheduling and observer examples.

@@ -52,6 +52,11 @@ chunked uploads.
 See the complete [blob signatures](../../specs/operations/blobs.md),
 [layout push signature](../../specs/cli/layout-push.md), and
 [Docker push signature](../../specs/docker/docker-desktop-integration.md).
+`get_blobs` additionally accepts the same blob progress observer, under one
+batch-wide cap. Singular, batch and artifact downloads expose a separate
+[`download_status_callback` with typed status/statistics](downloads.md#status-and-statistics);
+it does not change `TransferProgress` or CLI JSON. Range parts are aggregated
+into the parent blob's current accepted prefix, not independent progress rows.
 
 ## Event fields
 

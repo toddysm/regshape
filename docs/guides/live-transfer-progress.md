@@ -371,7 +371,11 @@ and rate. On short terminals, excess active rows wait offscreen rather than
 scrolling the live block out of reach. The library aggregates range progress
 into its parent blob before delivery to the renderer; workers never write to
 the terminal. See [download controls](../library/downloads.md) for scheduling
-and range policies.
+and range policies, or [tuning and SDK examples](parallel-downloads.md) for
+per-invocation caps, scratch costs and retry/rollback choices. The functional
+interleaving from [#145](https://github.com/toddysm/regshape/issues/145) is distinct
+from the [#141](https://github.com/toddysm/regshape/issues/141) visual formatting
+above; neither adds fields or controls to stdout/JSON.
 
 Changed-ETag fallback observations are collected without interrupting an active
 download. Once the operation has closed progress and cleanup, its successful
@@ -380,6 +384,11 @@ coalesce unique affected blob counts. Warnings remain visible with
 `--no-progress`, artifact `--json`, `NO_COLOR` and redirected stderr; failures say
 that fallback was attempted, not that recovery succeeded. A failed output sink
 is not reused to deliver a warning.
+No verbose/telemetry flag is required. ETag rotation alone is not corruption;
+only a clean full fallback matching the original digest/size succeeds. The
+same row advances attempt and resets accepted bytes after old workers drain;
+cumulative received-byte statistics can grow. See
+[exact warning wording](parallel-downloads.md#an-etag-changed-check-the-final-outcome).
 
 ### What the numbers mean
 
@@ -430,6 +439,11 @@ Blob 1/1 sha256:ab12... Retrying attempt 2 0 B/100.0 MiB
 Buffered chunk retries do not double-count accepted bytes and need not produce
 a separate retry label. Progress does not enable a new retry policy, resume a
 failed upload, or repair authentication or transport errors.
+Pooled **downloads** separately default to three per-request retries, including
+429, and expose `--download-retries N` (zero disables). They can retry full streams
+only before hash/file commitment, or an uncommitted private range within policy.
+`--sequential` keeps pooled retry behavior; only `--legacy-transport` rolls back
+transport. See [throttling recovery](parallel-downloads.md#recover-from-429-without-disabling-verification).
 
 ### Failure and cancellation
 
@@ -454,6 +468,11 @@ command after result data was printed. Progress cleanup is best-effort if
 terminal output itself is failing;
 it must not replace the original transfer exception. A failed operation does
 not undo data already accepted by the registry.
+Download cancellation stops scheduling and wakes retry backoff but waits for
+active workers before safe cleanup. Finite Requests timeouts limit socket
+inactivity, not an entire read: a trickling peer can delay joining indefinitely.
+Standalone blob partial-file/overwrite rules and complete-artifact publication
+remain distinct; see [output and cancellation](parallel-downloads.md#output-cancellation-and-troubleshooting).
 
 ## Push a layout or Docker image
 

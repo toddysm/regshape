@@ -102,7 +102,9 @@ content fails. Valid embedded descriptor data is verified and stored locally.
 ### Control parallel acquisition
 
 Supported clients default to four pooled request slots and one full stream per
-blob. Documents are discovered serially and all unique graph/byte limits are
+blob (C=4/W=1). This is one **per-invocation** cap across object, range,
+authentication and redirect requests, not a machine-wide limit or C times W.
+Documents are discovered serially and all unique graph/byte limits are
 reserved before independent blobs overlap. For eligible blobs at least four
 times the range size, opt into parallel byte ranges:
 
@@ -116,6 +118,13 @@ by concurrency times range size, in addition to stored artifact bytes. Scratch
 defaults to the private artifact staging namespace; `--scratch-dir` selects an
 existing caller-trusted root instead. Pooled retries default to three, including
 429 throttling; `--download-retries 0` disables them.
+Retries belong to each request, not the artifact as a whole; committed full
+streams cannot replay. A memory-backed scratch root uses RAM, and ranges add
+spool writes/reads in addition to saved artifact I/O. With the default range
+size, eligible blobs start at 32 MiB. Ranges and strong ETags are optional
+registry/storage capabilities; valid limitations select one full-stream
+fallback per blob, while malformed data or digest mismatch fails.
+HTTP ranges are not in-order OCI chunked uploads.
 
 Use `--sequential` for one-at-a-time acquisition on pooled transport; do not
 combine it with explicit concurrency/range ceilings. For genuine rollback,
@@ -127,7 +136,16 @@ before effects. See [download policy](../library/downloads.md).
 If an ETag changes, the affected blob may restart as a full stream. One bounded
 warning is emitted after the entire result/error and cleanup, counting unique
 affected blobs rather than repeated references. This remains active when
-progress is disabled and leaves stdout/JSON unchanged.
+progress is disabled and leaves stdout/JSON unchanged. Rotation alone is not
+corruption; success requires a clean fallback matching the original digest/size.
+Discarded attempts can increase received bytes. The warning uses plain stderr
+at normal verbosity, including with `--json`, nonterminal stderr and `NO_COLOR`;
+failure wording says the operation did not complete.
+
+For scratch/tmpfs budgeting, exact warning text, retry configuration precedence,
+SDK examples and 429 recovery, follow the
+[parallel-download guide](parallel-downloads.md). Its cancellation guidance
+includes the unbounded join latency possible with trickling peers.
 
 ## 2. Choose directory or archive
 
@@ -337,6 +355,9 @@ can always succeed.
 | Unsupported native operation, unsafe parent/ACL, Windows | Use a supported Linux/macOS environment meeting the trust contract; do not disable safety checks. |
 | Existing output | Choose another new destination; inspect existing content before any manual removal. No resume is attempted. |
 | Missing/corrupt object, invalid source/tag, exhausted budget | Fix the source or deliberately adjust the named budget; retry to a new destination. A partial graph is not success. |
+| HTTP 429 / retry exhaustion | Wait for quota, reduce `--concurrency`/`--ranges-per-blob` or use pooled `--sequential`, and deliberately choose `--download-retries N`. Do not bypass integrity checks. |
+| Missing range metadata or ETag-change warning | Check the selected strategy/final outcome, not just transferred bytes; a safe full fallback can succeed only after digest/size verification. See [fallback recovery](parallel-downloads.md#4-handle-capability-fallback-and-retries). |
+| Scratch disk/memory pressure | Budget C*R on top of output staging/archive costs. Use trusted disk scratch or reduce C/R; tmpfs uses memory and verify-only ranges still spool. |
 | Cancellation or handled failure before publication | Active row fails/cancels; no success JSON. Owned incomplete storage is cleaned when safe. Keyboard interruption retains `Aborted!` behavior. |
 | Cleanup failure, replacement race, or process kill | Inspect the reported retained path. Do not blindly remove `.regshape-*` paths or another process's data; automatic takeover is not supported. |
 | Summary/diagnostic/log failure **after publication** | Exit is nonzero, but complete output is retained. Verify that output before retrying; failure is not proof that the destination is absent. |
@@ -364,6 +385,9 @@ layer-position downloads [#112](https://github.com/toddysm/regshape/issues/112)
 remain **Planned/unimplemented**. Full pull includes those blobs but adds no
 `--part`, `--raw`, `--platform`, or component selector.
 No release or package-version change is implied by these docs.
+Cancellation stops scheduling before joining active readers. Socket-inactivity
+timeouts do not bound elapsed read time; a continuously trickling peer can delay
+cleanup indefinitely. Do not remove scratch or staging while it is still owned.
 
 ## Try the workflow without a registry
 
@@ -405,7 +429,8 @@ with TemporaryDirectory() as temporary:
         with (
             patch("regshape.libs.transport.client.resolve_credentials",
                   return_value=(None, None)),
-            patch("requests.request", side_effect=store.respond),
+            patch("requests.request", side_effect=store.respond) as send,
+            patch("requests.Session.request", side_effect=send),
         ):
             pulled = runner.invoke(regshape, [
                 "artifact", "pull", "-a", "registry.example/source:moving",
