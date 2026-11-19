@@ -108,7 +108,12 @@ class _TelemetrySession(AbstractContextManager[TelemetryConfig]):
         self._owned_log_file: IO | None = None
 
     def __enter__(self) -> TelemetryConfig:
-        """Open an optional append-only log, then activate the configuration."""
+        """Reject a closed log before opening files or activating the configuration."""
+        if self.config.log_file is not None and self.config.log_file.closed:
+            raise ValueError(
+                "Telemetry log stream is closed; supply an open log_file or set "
+                "log_file=None before entering another telemetry session."
+            )
         self._previous_config = get_telemetry_config()
         if self.config.log_file_path and self.config.log_file is None:
             self._owned_log_file = open(self.config.log_file_path, "a")
@@ -163,12 +168,18 @@ def telemetry_session(
     after cleanup by default, including for nested sessions and failing operations.
     Final flushing always uses this session's configuration, even if a nested
     scope retained another active configuration.
+    A closed ``log_file`` is rejected on entry, before the operation runs.
+    Reset it to None to reopen ``log_file_path`` in a new session.
 
     :param config: Configuration to activate; yielded unchanged on entry.
     :param restore_config: Restore the previous active configuration on exit.
-        Set False when an outer result/diagnostic scope still needs this config;
-        file cleanup and flushing are unchanged.
+        Set False when an outer result/diagnostic scope still needs this config.
+        Retention does not keep an owned log open: later telemetry writes to
+        that closed handle raise ValueError. Detach it with ``log_file=None``
+        for primary-output-only telemetry, or supply an open caller-owned log
+        before emitting more telemetry. File cleanup and flushing are unchanged.
     :returns: A context manager for one telemetry scope.
+    :raises ValueError: On entry if ``config.log_file`` is already closed.
     :raises OSError: If opening or closing the owned log fails.
     :raises BaseException: Operation and telemetry sink errors propagate.
         Secondary flush/close failures are logged without replacing an active

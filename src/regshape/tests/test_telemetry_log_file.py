@@ -235,6 +235,75 @@ def test_session_can_retain_config_for_outer_diagnostics() -> None:
         configure_telemetry(previous)
 
 
+@pytest.mark.parametrize("owned_log", [False, True])
+def test_session_rejects_closed_log_before_running_operation(
+    tmp_path: Path, owned_log: bool,
+) -> None:
+    """Closed borrowed/retained logs fail on entry; resetting an owned log permits reuse."""
+    previous = get_telemetry_config()
+    output = io.StringIO()
+    path = tmp_path / "telemetry.log"
+    config = TelemetryConfig(
+        output=output, output_format="json", method_timings=[("first", 0.1)],
+        log_file_path=str(path) if owned_log else None,
+        log_file=None if owned_log else io.StringIO(),
+    )
+    with telemetry_session(config):
+        pass
+    log = config.log_file
+    assert log is not None
+    if not owned_log:
+        log.close()
+    config.method_timings.append(("second", 0.2))
+    with (
+        pytest.raises(ValueError, match="Telemetry log stream is closed"),
+        telemetry_session(config),
+    ):
+        pytest.fail("A closed log must be rejected before the operation runs")
+    assert get_telemetry_config() is previous
+    assert config.log_file is log
+    assert config.method_timings == [("second", 0.2)]
+    assert [json.loads(line)["name"] for line in output.getvalue().splitlines()] == ["first"]
+    if owned_log:
+        config.log_file = None
+        with telemetry_session(config):
+            pass
+        assert [json.loads(line)["name"] for line in path.read_text().splitlines()] == [
+            "first", "second",
+        ]
+        assert config.log_file is not None and config.log_file.closed
+        assert get_telemetry_config() is previous
+
+
+def test_retained_owned_log_requires_detaching_before_late_telemetry(tmp_path: Path) -> None:
+    """Retention leaves the owned log closed; detaching it allows primary-only diagnostics."""
+    previous = get_telemetry_config()
+    output = io.StringIO()
+    path = tmp_path / "telemetry.log"
+    config = TelemetryConfig(
+        output=output, output_format="json", log_file_path=str(path),
+        method_timings=[("inner", 0.1)],
+    )
+    try:
+        with telemetry_session(config, restore_config=False):
+            pass
+        assert get_telemetry_config() is config
+        assert config.log_file is not None and config.log_file.closed
+        config.method_timings.append(("late", 0.2))
+        with pytest.raises(ValueError, match="closed file"):
+            flush_telemetry()
+        assert config.method_timings == []
+        config.log_file = None
+        config.method_timings.append(("detached", 0.3))
+        flush_telemetry()
+        assert [json.loads(line)["name"] for line in output.getvalue().splitlines()] == [
+            "inner", "late", "detached",
+        ]
+        assert [json.loads(line)["name"] for line in path.read_text().splitlines()] == ["inner"]
+    finally:
+        configure_telemetry(previous)
+
+
 @pytest.mark.parametrize("primary", [None, ValueError("operation"), SystemExit(3)])
 def test_session_preserves_first_error_and_closes_log(
     primary: BaseException | None,

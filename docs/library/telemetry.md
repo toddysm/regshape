@@ -49,6 +49,9 @@ session's configuration even when a nested scope retains another configuration.
   before opening another owned-file session with the same configuration.
 - If you supply `log_file`, it is borrowed, not closed; `log_file_path` is not
   opened. The primary `output` stream is also never closed by the session.
+- A closed `log_file`, whether borrowed or retained from a previous session,
+  raises `ValueError` on entry, before the operation runs or configuration
+  becomes active. Supply an open stream or reset `log_file` to `None` first.
 - A log-open error propagates before the configuration becomes active.
 - Operation errors, including cancellation/exit exceptions, propagate after
   cleanup. Secondary flush/close failures are logged without replacing the
@@ -63,7 +66,15 @@ configuration. Use `flush_telemetry()` when managing a scope manually.
 For an outer diagnostic scope that must continue using the same configuration
 after cleanup, pass `restore_config=False` to `telemetry_session`. The supplied
 configuration then remains active until explicitly replaced; log ownership and
-final flushing are unchanged.
+final flushing are unchanged. Retention does **not** keep an owned log open.
+Later telemetry output, including `flush_telemetry()` with queued data, raises
+`ValueError` if it writes to that closed log. Primary output may already have
+been written, and a failed flush has already consumed its queued data.
+
+Before emitting more telemetry, set `config.log_file = None` for primary-output-only
+diagnostics, or supply an open caller-owned log stream. Clearing the handle does
+not reopen `log_file_path` during a manual flush; entering a new session opens it
+in append mode. The primary stream must also remain open.
 
 The Click-only `telemetry_options` decorator lives in `regshape.cli.telemetry`,
 not in the library. It maps the existing six
