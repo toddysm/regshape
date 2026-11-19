@@ -940,10 +940,16 @@ def test_compressed_http_fallback_verifies_stored_blob_bytes(tmp_path):
 
 @pytest.fixture
 def range_server():
-    """Run a local framed range registry, with deterministic delayed-prefix controls."""
+    """Keep later responses pending until the deliberately blocked prefix is in flight.
+
+    Worker startup/HTTP arrival order is arbitrary. Arrival events prevent the
+    higher completions from releasing a prefix that has not reached the server.
+    Setting ``release`` up front disables the delay for retry-only tests.
+    """
     state = {
         "lock": threading.Lock(), "requests": [], "active": 0, "peak": 0,
         "higher": [threading.Event(), threading.Event()], "release": threading.Event(),
+        "entered": {start: threading.Event() for start in (R, 2 * R, 3 * R)},
         "beyond": threading.Event(), "errors": [], "throttle": 0, "throttle_calls": 0,
     }
 
@@ -956,7 +962,7 @@ def range_server():
             """Keep synthetic HTTP traffic out of test output."""
 
         def do_GET(self):
-            """Block range one until two later results fill its still-uncommitted window."""
+            """Hold the prefix until higher results complete, and higher results until it arrives."""
             with state["lock"]:
                 throttled = state["throttle"] > 0
                 if throttled:
@@ -975,11 +981,19 @@ def range_server():
                 state["requests"].append((interval, self.headers.get("If-Range")))
                 state["active"] += 1
                 state["peak"] = max(state["peak"], state["active"])
+                if start in state["entered"]:
+                    state["entered"][start].set()
             try:
                 if start >= 4 * R:
                     state["beyond"].set()
                 if start == R and not state["release"].wait(5):
                     state["errors"].append("blocked prefix was not released")
+                elif (
+                    start in (2 * R, 3 * R)
+                    and not state["release"].is_set()
+                    and not state["entered"][R].wait(5)
+                ):
+                    state["errors"].append("blocked prefix did not reach the server")
                 body = PAYLOAD[start:end + 1]
                 self.send_response(206)
                 self.send_header("Content-Length", str(len(body)))
@@ -1006,10 +1020,26 @@ def range_server():
         thread.join()
 
 
-def test_real_http_ranges_overlap_without_advancing_past_committed_window(tmp_path, range_server):
-    """Physical requests overlap, but completed later spools cannot authorize unbounded scheduling."""
+@pytest.mark.parametrize("later_ranges_first", [False, True])
+def test_real_http_ranges_overlap_without_advancing_past_committed_window(
+    tmp_path, range_server, monkeypatch, later_ranges_first,
+):
+    """Prove overlap/window bounds even when later HTTP handlers beat the delayed prefix."""
     authority, state = range_server
     faults = []
+
+    if later_ranges_first:
+        from regshape.libs.blobs._ranges import _RangePart
+
+        original = _RangePart.run
+
+        def run(part, worker):
+            """Model worker startup skew using arrival events, never sleeps or counter changes."""
+            if not part.full and part.start == R:
+                assert all(state["entered"][start].wait(5) for start in (2 * R, 3 * R))
+            return original(part, worker)
+
+        monkeypatch.setattr(_RangePart, "run", run)
 
     def release():
         """Inspect the full uncommitted window before releasing its blocked lowest range."""

@@ -61,6 +61,14 @@ counts, but does not equate lingering server handlers with live client leases.
 The dedicated oversubscribed barrier tests independently verify limiter
 saturation for every probe/token/redirect path without discarded data bodies.
 
+The range committed-window fixture holds later responses until the blocked
+prefix handler has actually arrived. Worker startup order is not guaranteed:
+otherwise later completions could release the prefix before it reaches HTTP,
+producing a false serial peak. Both normal and deliberately later-ranges-first
+arrival orders retain the original physical/SDK peak, scratch, request-count,
+window, byte-verification and cleanup assertions. This is fixture synchronization,
+not a production scheduling or performance change.
+
 ## Reproduce the performance measurements
 
 Run on an otherwise quiet host with enough temporary storage for a 128 MiB
