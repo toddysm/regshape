@@ -2,13 +2,15 @@
 
 """Tests for :mod:`regshape.libs.manifests.operations`."""
 
+import hashlib
 import json
+from unittest.mock import MagicMock
 
 import pytest
 import requests
-from unittest.mock import MagicMock
 
 from regshape.libs.errors import AuthError, ManifestError, ReferenceValidationError
+from regshape.libs.manifests import DEFAULT_MANIFEST_ACCEPT
 from regshape.libs.manifests.operations import (
     _raise_for_manifest_error,
     delete_manifest,
@@ -16,8 +18,8 @@ from regshape.libs.manifests.operations import (
     head_manifest,
     push_manifest,
 )
+from regshape.libs.models.mediatype import ALL_MANIFEST_MEDIA_TYPES, OCI_IMAGE_MANIFEST
 from regshape.libs.transport import RegistryClient, TransportConfig
-
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -64,6 +66,31 @@ def _make_response(
 # ===========================================================================
 # get_manifest
 # ===========================================================================
+
+@pytest.mark.parametrize("operation", [get_manifest, head_manifest])
+@pytest.mark.parametrize("options", [{}, {"accept": None}])
+def test_manifest_reads_use_library_accept_default(operation, options):
+    """Omission and explicit None negotiate all supported manifest media types."""
+    client = _mock_client()
+    client.get.return_value = client.head.return_value = _make_response(200)
+    operation(client, REPO, TAG, **options)
+    request = client.get if operation is get_manifest else client.head
+    request.assert_called_once_with(
+        f"/v2/{REPO}/manifests/{TAG}", headers={"Accept": DEFAULT_MANIFEST_ACCEPT},
+    )
+    assert request.call_args.kwargs["headers"]["Accept"].split(",") == sorted(ALL_MANIFEST_MEDIA_TYPES)
+
+
+@pytest.mark.parametrize("operation", [get_manifest, head_manifest])
+@pytest.mark.parametrize("accept", ["application/x.conformance", ""])
+def test_manifest_reads_preserve_explicit_accept(operation, accept):
+    """Break-mode overrides, including an empty header, are never defaulted."""
+    client = _mock_client()
+    client.get.return_value = client.head.return_value = _make_response(200)
+    operation(client, REPO, TAG, accept=accept)
+    request = client.get if operation is get_manifest else client.head
+    assert request.call_args.kwargs["headers"] == {"Accept": accept}
+
 
 class TestGetManifest:
 
@@ -189,6 +216,44 @@ class TestHeadManifest:
 # ===========================================================================
 
 class TestPushManifest:
+
+    @pytest.mark.parametrize("options", [{}, {"content_type": None}])
+    @pytest.mark.parametrize("body,expected", [
+        (b'{"mediaType":"application/x.example.manifest"}', "application/x.example.manifest"),
+        (b'{"schemaVersion":2}', OCI_IMAGE_MANIFEST),
+        (b"not JSON", OCI_IMAGE_MANIFEST), (b"[]", OCI_IMAGE_MANIFEST),
+        (b"null", OCI_IMAGE_MANIFEST), (b"42", OCI_IMAGE_MANIFEST),
+        (b'"text"', OCI_IMAGE_MANIFEST), (b"\xff", OCI_IMAGE_MANIFEST),
+    ])
+    def test_infers_content_type_without_rewriting_body(self, body, expected, options):
+        """SDK callers get the former CLI inference/fallback without transforming bytes."""
+        client = _mock_client()
+        client.put.return_value = _make_response(201)
+        push_manifest(client, REPO, TAG, body, **options)
+        client.put.assert_called_once_with(
+            f"/v2/{REPO}/manifests/{TAG}", headers={"Content-Type": expected}, data=body,
+        )
+
+    @pytest.mark.parametrize("content_type", ["application/x.conformance", ""])
+    def test_explicit_content_type_bypasses_body_inference(self, content_type):
+        """Explicit overrides are sent verbatim even for an undecodable body."""
+        client = _mock_client()
+        client.put.return_value = _make_response(201)
+        push_manifest(client, REPO, TAG, b"\xff", content_type=content_type)
+        assert client.put.call_args.kwargs["headers"] == {"Content-Type": content_type}
+
+    def test_inferred_type_is_available_to_strict_publication(self):
+        """Resolve the default before strict input validation, retaining digest checks."""
+        client = _mock_client()
+        body = b'{"schemaVersion":2}'
+        digest = "sha256:" + hashlib.sha256(body).hexdigest()
+        response = _make_response(201, digest=digest)
+        response.request = requests.Request(
+            "PUT", f"https://{REGISTRY}/v2/{REPO}/manifests/{TAG}", data=body,
+        ).prepare()
+        client.put.return_value = response
+        assert push_manifest(client, REPO, TAG, body, expected_digest=digest) == digest
+        assert client.put.call_args.kwargs["headers"] == {"Content-Type": OCI_IMAGE_MANIFEST}
 
     def test_returns_digest_from_response_header(self):
         client = _mock_client()

@@ -25,8 +25,7 @@ from regshape.libs.errors import (
     ReferenceValidationError,
     ReferrerError,
 )
-from regshape.libs.manifests import head_manifest
-from regshape.libs.models.mediatype import ALL_MANIFEST_MEDIA_TYPES
+from regshape.libs.manifests import DEFAULT_MANIFEST_ACCEPT, head_manifest
 from regshape.libs.referrers import list_referrers, list_referrers_all
 from regshape.libs.refs import parse_artifact_ref, validate_digest
 from regshape.libs.transport import RegistryClient, TransportConfig
@@ -104,6 +103,7 @@ def referrer_list(
     including a missing digest response header, exit with code 1.
     Explicit digests are validated by the shared library helper; unsupported
     algorithms and malformed SHA-256/SHA-512 payloads exit with code 2.
+    Manifest lookup uses the library-owned negotiation default.
 
     Use ``--artifact-type`` to filter by artifact type.  Use ``--all``
     to follow pagination and retrieve every referrer.  Use ``--json``
@@ -131,7 +131,7 @@ def referrer_list(
                 client=client,
                 repo=repo,
                 reference=reference,
-                accept=",".join(sorted(ALL_MANIFEST_MEDIA_TYPES)),
+                accept=DEFAULT_MANIFEST_ACCEPT,
             )
             if not digest.strip():
                 raise ManifestError(
