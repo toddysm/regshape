@@ -34,6 +34,9 @@ Pass `download_options=DownloadOptions.legacy()` to either operation to retain
 the original client's retry, logging/middleware and `last_response` behavior.
 `DownloadOptions.sequential()` still uses pooled transport and is **not** a
 compatibility rollback. The legacy example below shows the explicit rollback.
+Legacy unbounded receipt also retains its original mismatch cleanup: it unlinks
+the output pathname without file-identity checks and only logs deletion errors.
+Do not assume the pooled worker's replacement-file protection applies to legacy.
 
 ## Policy
 

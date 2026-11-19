@@ -193,10 +193,13 @@ usable size metadata, not necessarily an `Accept-Ranges` header. They are not
 the in-order POST/PATCH/PUT protocol used by chunked uploads.
 
 Standalone output is **not transactional**. Most transport/disk/callback failures
-and cancellation can leave overwritten partial bytes. Digest mismatch deletes
-the invalid output filename after identity checks, even after overwrite; no
+and cancellation can leave overwritten partial bytes. Pooled digest-mismatch
+cleanup deletes the invalid output filename after identity checks, even after overwrite; no
 original contents are restored. With a trusted symlink output, only the link
-is removed and the target may retain invalid bytes. Verify-only discards bytes
+is removed and the target may retain invalid bytes. Legacy unbounded receipt
+instead unlinks the output pathname without identity checks on mismatch and
+only logs deletion errors; it does not protect replacement files.
+Verify-only discards bytes
 after hashing, but still downloads the full content and can use bounded range
 scratch. Finite socket-inactivity timeouts do not bound cancellation-to-join
 latency for a trickling peer; cleanup waits for workers to stop.

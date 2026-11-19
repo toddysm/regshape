@@ -134,6 +134,9 @@ middleware, retry and `last_response` behavior. Do not combine it with explicit
 sequential/concurrency/range-count/retry/scratch controls. `--range-size` remains
 validated but unused. Legacy is not a way to request batch/status APIs or ranged
 downloads, and its retry budget is not the pooled default.
+It also retains weaker legacy unbounded-output cleanup: digest mismatch unlinks
+the pathname without checking file identity, and deletion errors are only logged.
+Transport rollback does not add pooled replacement-file protection.
 
 In the SDK, use `DownloadOptions.sequential()` versus
 `DownloadOptions.legacy()`. Existing custom singular/artifact clients without a
@@ -341,11 +344,14 @@ redirecting stdout alone does not.
 
 Ordinary standalone output overwrites/truncates the target and can leave
 unverified partial bytes on transport/disk/callback failure or cancellation.
-Digest mismatch deletes the invalid output filename, **even if it overwrote an
-existing file**, when identity checks permit; it does not restore original
+On pooled transport, digest mismatch deletes the invalid output filename,
+**even if it overwrote an existing file**, when identity checks permit; it does not restore original
 contents. For a caller-owned symlink, only the link is removed and its target
 can retain invalid bytes. Bounded SDK outputs are exclusive and removed on
-failure by retained identity. Never treat file existence as verification.
+failure by retained identity. Legacy unbounded receipt instead unlinks the
+output pathname **without identity checks** on mismatch and only logs deletion
+errors; it does not protect a replacement file. Neither transport restores
+overwritten contents. Never treat file existence as verification.
 
 Artifact failures before publication clean owned incomplete storage when safe,
 with no success result. Complete published output remains if later diagnostics

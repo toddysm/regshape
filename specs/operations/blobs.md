@@ -164,15 +164,20 @@ retains its response-header metadata.
 3. Stream/hash/discard for `output_path=None`. Saved unbounded output overwrites
    a caller-trusted path; `max_bytes` enables exclusive bounded output. Pooled
    reads use at most 64 KiB, independent of HTTP range size.
-4. Verify size and the complete digest, close responses/worker outputs, drain
-   observations and validate retained output identity before successful return.
+4. Pooled calls verify size and the complete digest, close responses/worker
+   outputs, drain observations and validate retained output identity before successful return.
    Range parts are hashed in order, never as independent concatenated digests.
 5. On most transport/disk/callback failures or cancellation, unbounded partial
-   files may remain. Digest mismatch instead deletes the invalid output
+   files may remain. Pooled digest mismatch instead deletes the invalid output
    filename after identity checks, **even after overwrite**; original contents
    are not restored. For a trusted unbounded symlink only the link is removed,
    leaving unverified bytes in its target. Failed bounded outputs are removed
    by retained identity. Replacement/cleanup errors are reported, not ignored.
+
+Legacy retains the original serial receiver, not the pooled cleanup guarantee.
+On digest mismatch, legacy unbounded output is unlinked by pathname without
+identity checks; deletion errors are only logged. Replacement files are not
+protected, and neither transport restores overwritten contents.
 
 The C*R range scratch bound is per invocation, excludes output/staging and
 incurs extra spool write/read I/O even for verify-only. A memory-backed scratch
