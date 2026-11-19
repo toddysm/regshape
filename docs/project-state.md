@@ -2,14 +2,19 @@
 
 <!-- doc-type: overview -->
 
-Tracking reconciled on **2026-11-16 (UTC)** against
-[main at 809ad59](https://github.com/toddysm/regshape/commit/809ad590bdcb3572f74210e9b8db885ae7e88a15)
+Download delivery reconciled on **2026-11-19 (UTC)** against
+[main at 5c2cc7b](https://github.com/toddysm/regshape/commit/5c2cc7b6521928ed39a2de983ed93c7e3597fd45)
 and current issue states, native sub-issues and merged pull requests.
 The original baseline was captured on 2026-10-30 at
 [ed17d2e](https://github.com/toddysm/regshape/commit/ed17d2eef64da73528998e5c0917dff4e91820c5);
-unchanged capability evidence is retained below. Parallel-download foundations
-are merged, but their remaining command integration, validation and final
-documentation are not complete.
+unchanged capability evidence is retained below. Parallel-download foundations,
+functional interleaved progress, ranged blob downloads and parallel artifact
+acquisition are merged, along with visual formatting, final user documentation
+and owner-accepted compatibility/performance/registry validation. All 11 direct
+children of [#131](https://github.com/toddysm/regshape/issues/131) and nested
+retry-documentation [#143](https://github.com/toddysm/regshape/issues/143) are
+closed as completed. Controlled Linux performance passed; the macOS ranged
+performance limitation and Docker Hub backend-pinning exception remain explicit.
 This inventory distinguishes implemented behavior from partial capabilities,
 unmerged proposals, and planned work. It is a dated snapshot, not an assertion
 that every registry or platform has been tested.
@@ -104,7 +109,7 @@ the first version of every operation in that row.
 | Python Package Index (PyPI) release publication | Implemented | [Closed #57](https://github.com/toddysm/regshape/issues/57), [v0.1.1 release](https://github.com/toddysm/regshape/releases/tag/v0.1.1) | - | [Developer guide: contributing](../CONTRIBUTING.md) | [Overview/install reference](../README.md) | - |
 | Homebrew distribution and release-driven formula updates | Partial | [Tracker #63](https://github.com/toddysm/regshape/issues/63), [remaining documentation fix #62](https://github.com/toddysm/regshape/issues/62) | - | - | [How-to: Homebrew installation](guides/homebrew-install.md) | - |
 | Package version and build-number reporting | Planned | [#129](https://github.com/toddysm/regshape/issues/129) | [Captured requirements](https://github.com/toddysm/regshape/issues/129) | - | - | - |
-| OCI image-specification guidance for the development skill | In progress | [#66](https://github.com/toddysm/regshape/issues/66), [open #67](https://github.com/toddysm/regshape/pull/67) | [Issue requirements: #66](https://github.com/toddysm/regshape/issues/66) | [Current development skill](../.github/skills/regshape-dev/SKILL.md) | - | - |
+| OCI image-specification guidance for the development skill | Implemented | [Closed #66](https://github.com/toddysm/regshape/issues/66), [merged #67](https://github.com/toddysm/regshape/pull/67) | [Issue requirements: #66](https://github.com/toddysm/regshape/issues/66) | [Development skill](../.github/skills/regshape-dev/SKILL.md), [image-specification reference](../.github/skills/regshape-dev/references/oci-image-spec.md) | - | 2026-11-16 |
 | Live progress for blob get/upload and layout/Docker push | Implemented | [Feature #72](https://github.com/toddysm/regshape/issues/72), merged [#80](https://github.com/toddysm/regshape/pull/80), [#81](https://github.com/toddysm/regshape/pull/81), [#82](https://github.com/toddysm/regshape/pull/82), [#83](https://github.com/toddysm/regshape/pull/83), [#84](https://github.com/toddysm/regshape/pull/84) | [Lightweight design: #72, revision 2](https://github.com/toddysm/regshape/issues/72) | [Developer reference: transfer callbacks](library/transfer-progress.md), [API reference: blobs](../specs/operations/blobs.md) | [How-to: live transfer progress](guides/live-transfer-progress.md) | 2026-11-03 |
 | Artifact-oriented CLI options with compatible legacy aliases | Implemented | [Feature #87](https://github.com/toddysm/regshape/issues/87), merged [#96](https://github.com/toddysm/regshape/pull/96), [#97](https://github.com/toddysm/regshape/pull/97), [#98](https://github.com/toddysm/regshape/pull/98), [#99](https://github.com/toddysm/regshape/pull/99) | [Functional requirements: artifact options](../specs/cli/artifact-options.md#part-i-functional-requirements) | [Engineering design: artifact options](../specs/cli/artifact-options.md#part-ii-engineering-design), [API source: reference parsers](../src/regshape/libs/refs.py) | [How-to: artifact options and migration](guides/artifact-options.md) | 2026-11-04 |
 | Canonical artifact, manifest and blob references | Planned | [#88](https://github.com/toddysm/regshape/issues/88) | [Design and migration requirements](https://github.com/toddysm/regshape/issues/88) | - | - | - |
@@ -112,11 +117,12 @@ the first version of every operation in that row.
 | Complete artifact download, compressed OCI layout and recursive index push | Implemented | [Feature #91](https://github.com/toddysm/regshape/issues/91), [runtime merged through #126](https://github.com/toddysm/regshape/pull/126), [final docs #127](https://github.com/toddysm/regshape/pull/127) | [Approved functional requirements](../specs/cli/artifact-pull.md#part-i-functional-requirements) | [Approved engineering design](../specs/cli/artifact-pull.md#part-ii-engineering-design), [API reference](../specs/operations/artifacts.md) | [How-to: complete-artifact workflow](guides/artifact-pull.md), [command reference](../specs/cli/artifact.md) | 2026-11-06 |
 | Config and zero-based layer-content selection from artifact manifests | Planned | [Feature #112](https://github.com/toddysm/regshape/issues/112) | [Captured requirements](https://github.com/toddysm/regshape/issues/112) | - | - | - |
 | Local OCI layout graph display with per-index metadata | Planned | [#130](https://github.com/toddysm/regshape/issues/130) | [Captured requirements](https://github.com/toddysm/regshape/issues/130) | - | - | - |
-| Parallel artifact blobs and ranged blob downloads | In progress | [Feature #131](https://github.com/toddysm/regshape/issues/131), [merged design #140](https://github.com/toddysm/regshape/pull/140), [transport #134](https://github.com/toddysm/regshape/issues/134), [coordinator #135](https://github.com/toddysm/regshape/issues/135), [public batch/status #144](https://github.com/toddysm/regshape/issues/144); target 0.2 | [Approved requirements and engineering design](../specs/operations/parallel-downloads.md) | [Artifact API](../specs/operations/artifacts.md), [blob API](../specs/operations/blobs.md) | [Reference: download policy, pooled transport and batch/status APIs](library/downloads.md); parallel graph/range integration, CLI rendering and final workflow documentation pending | - |
+| Parallel artifact blobs and ranged blob downloads | Implemented | [Feature #131](https://github.com/toddysm/regshape/issues/131), [merged design #140](https://github.com/toddysm/regshape/pull/140), [interleaved renderer #154](https://github.com/toddysm/regshape/pull/154), [ranged blobs #155](https://github.com/toddysm/regshape/pull/155), [parallel graph #156](https://github.com/toddysm/regshape/pull/156), [validation #159](https://github.com/toddysm/regshape/pull/159), [final docs #160](https://github.com/toddysm/regshape/pull/160); target 0.2 | [Approved requirements and engineering design](../specs/operations/parallel-downloads.md) | [Download policy, pooled transport and batch/status reference](library/downloads.md), [artifact API](../specs/operations/artifacts.md), [blob API](../specs/operations/blobs.md), [validation evidence and limitations](library/download-validation.md) | [How-to: parallel and ranged downloads](guides/parallel-downloads.md), [artifact command](../specs/cli/artifact.md), [blob command](../specs/cli/blob.md) | 2026-11-19 |
+| Download progress colors, aligned columns and 20-cell bars | Implemented | [#141](https://github.com/toddysm/regshape/issues/141), [merged #157](https://github.com/toddysm/regshape/pull/157) | [Visual requirements and acceptance criteria](https://github.com/toddysm/regshape/issues/141) | [Shared renderer contract](library/transfer-progress.md#shared-cli-renderer-contract) | [How-to: live transfer progress](guides/live-transfer-progress.md), [artifact workflow](guides/artifact-pull.md) | 2026-11-18 |
 | Persistent resume for interrupted blob and artifact downloads | Deferred | [Follow-up #142](https://github.com/toddysm/regshape/issues/142); release unassigned | [Captured future scope](https://github.com/toddysm/regshape/issues/142) | - | - | - |
 | Chunked upload conformance review and follow-up improvements | Deferred | [Follow-up #133](https://github.com/toddysm/regshape/issues/133); release unassigned | [Captured future scope](https://github.com/toddysm/regshape/issues/133) | [Existing chunked upload API](../specs/operations/blobs.md#upload_blob_chunked) | [Existing blob upload command](../specs/cli/blob.md#blob-upload) | - |
 
-## Remaining parallel-download delivery
+## Completed parallel-download delivery
 
 The design [#132](https://github.com/toddysm/regshape/issues/132), worker-client
 foundation [#134](https://github.com/toddysm/regshape/issues/134), coordinator
@@ -129,33 +135,62 @@ Their changes merged through [#140](https://github.com/toddysm/regshape/pull/140
 [#150](https://github.com/toddysm/regshape/pull/150), and
 [#152](https://github.com/toddysm/regshape/pull/152), respectively.
 
-| Order | Remaining item | Dependency and disposition |
-| --- | --- | --- |
-| 1 | [#145: functional interleaved progress](https://github.com/toddysm/regshape/issues/145) | Prerequisite #135 is complete; dependency-ready, but renderer implementation is not started. |
-| 2a | [#136: ranged blobs and command controls](https://github.com/toddysm/regshape/issues/136) | After #145; other recorded prerequisites are complete. |
-| 2b | [#137: parallel artifact graph acquisition](https://github.com/toddysm/regshape/issues/137) | After #145; can proceed independently of range-specific #136. |
-| 3 | [#138: compatibility, performance and registry validation](https://github.com/toddysm/regshape/issues/138) | After both #136 and #137. |
-| 4 | [#139: final user documentation](https://github.com/toddysm/regshape/issues/139) | After required runtime work and #138; includes [#143: retry/throttling guidance](https://github.com/toddysm/regshape/issues/143), which depends on #136/#137. |
-| Side branch | [#141: visual progress formatting](https://github.com/toddysm/regshape/issues/141) | Consumes #145, not a prerequisite for it or #136/#137; settle delivery or explicit deferral before feature close-out. |
+Functional interleaved progress [#145](https://github.com/toddysm/regshape/issues/145)
+merged through [#154](https://github.com/toddysm/regshape/pull/154) on 2026-11-17
+at `f4cdc6332dba304dc24e65506e89c9c21adf556e`. Ranged blob downloads and command
+controls [#136](https://github.com/toddysm/regshape/issues/136) merged through
+[#155](https://github.com/toddysm/regshape/pull/155) on 2026-11-17 at
+`6b772222224c5375c9ddf018d52c83d4e718e90a`. Parallel artifact graph acquisition
+[#137](https://github.com/toddysm/regshape/issues/137) merged through
+[#156](https://github.com/toddysm/regshape/pull/156) on 2026-11-18 at
+`ff8f89c9c4511aa34d401bd9acb9165e5386638c`. All three issues are closed.
 
-Keep [#131](https://github.com/toddysm/regshape/issues/131) open until required
-delivery, documentation, the #141 disposition and a merged capability-inventory
-close-out are complete. Dependency readiness is not implementation authorization.
+| Completed item | Dependencies (all implemented) | Delivery evidence |
+| --- | --- | --- |
+| [#141: visual progress formatting](https://github.com/toddysm/regshape/issues/141) | #145; separate from download-engine correctness | [#157](https://github.com/toddysm/regshape/pull/157), merged 2026-11-18 at `1493511432612f4cba434d295b8c8e37475534aa` |
+| [#138: compatibility, performance and registry validation](https://github.com/toddysm/regshape/issues/138) | #136, #137 | [#159](https://github.com/toddysm/regshape/pull/159), merged 2026-11-18 at `ec7715dbe37498498e94d8bbde1dbb347fb95ec8` under the acceptance scope below |
+| [#143: retry/throttling guidance](https://github.com/toddysm/regshape/issues/143) | #136, #137; delivered through #139 | [#160](https://github.com/toddysm/regshape/pull/160); [verified completion checkpoint](https://github.com/toddysm/regshape/issues/143#issuecomment-6999113294) |
+| [#139: final user documentation](https://github.com/toddysm/regshape/issues/139) | #134, #135, #136, #137, #138, #144, #145; includes completed #143 | [#160](https://github.com/toddysm/regshape/pull/160), merged 2026-11-19 at `5c2cc7b6521928ed39a2de983ed93c7e3597fd45` |
+
+The [owner's explicit validation acceptance](https://github.com/toddysm/regshape/issues/138#issuecomment-6995228540)
+covers controlled Linux results: object parallelism **3.7429x**, ranges **1.5715x**
+and all three p95 guardrails passing. The original complete macOS ranged result
+was **1.4209x**, below the 1.5x gate; no macOS or universal performance pass is
+claimed. Harbor deployment pins and actual Docker Hub storage redirects are
+recorded, but the approved Docker Hub managed-service/backend-pinning exception
+does not prove independently implemented registry backends. See the
+[validation runbook](library/download-validation.md) for environments, raw
+evidence, registry scope and retained limitations. No benchmarks or live-registry
+trials were rerun for this inventory reconciliation.
+
+All required delivery and documentation items are complete. GitHub automatically
+closed [#131](https://github.com/toddysm/regshape/issues/131) when #160 merged,
+before the inventory close-out. This reconciliation in
+[#158](https://github.com/toddysm/regshape/pull/158) supplies that missing
+inventory record; it does not claim that closure originally followed the
+required ordering or that version 0.2 was released.
 The [deferred resume work](https://github.com/toddysm/regshape/issues/142) and
 [upload review](https://github.com/toddysm/regshape/issues/133) are separate,
 release-unassigned follow-ups, not prerequisites for this 0.2 delivery.
 
 ### Tracking corrections
 
+- [#66](https://github.com/toddysm/regshape/issues/66) is closed through
+  [#67](https://github.com/toddysm/regshape/pull/67), merged on 2026-11-16 at
+  `10c3af8db4e192e80f816a6bd5a980b5f4bee436`, an ancestor of the captured
+  baseline. The development-skill guidance is implemented, not still in review.
 - [#143](https://github.com/toddysm/regshape/issues/143) follows the approved
   revision-4 design and merged [download policy](library/downloads.md#policy),
   not the superseded default-off proposal. Pooled downloads default to three
   retries unless an explicit caller policy applies; an explicit download
   override wins, including zero. Legacy transport retains its original retry
-  policy. Final command documentation remains blocked on #136/#137.
-- [#145](https://github.com/toddysm/regshape/issues/145) no longer has a
-  dependency blocker: #135 merged through #149. Removing the stale blocked
-  label does not start implementation or change its acceptance criteria.
+  policy. Its #136/#137 runtime prerequisites and final documentation in
+  [#160](https://github.com/toddysm/regshape/pull/160) are merged; all eight
+  criteria were verified before #143 was closed as completed.
+- [#145](https://github.com/toddysm/regshape/issues/145) is closed through
+  [#154](https://github.com/toddysm/regshape/pull/154), not merely dependency-ready.
+  Visual columns/colors are also implemented through
+  [#141/#157](https://github.com/toddysm/regshape/pull/157).
 - [#63](https://github.com/toddysm/regshape/issues/63) records #61 as complete,
   with merged macOS/Linux validation evidence. Only #62 remains open; version
   reporting #129 is an optional way to retain the guide's verification command,
@@ -239,6 +274,10 @@ row per unique blob and overwrites that row for byte updates, retry,
 verification/commit, and final state. Image pushes show indeterminate
 preparation and unique done/skipped counts; shared references do not duplicate
 rows or downgrade an uploaded blob.
+Download workers deliver serialized immutable parent-object snapshots to the
+invoking thread. The renderer preserves object identities/ordinals through
+interleaving and attempt changes; chunk progress does not create child rows,
+and full byte counts do not finalize verification/storage.
 
 The [library callback contract](library/transfer-progress.md) reports actual
 logical bytes with trusted or unknown totals. File-backed uploads and integrity
@@ -301,7 +340,10 @@ Local packaging/publication is separate from network progress. Suppression and
 structured-output rules preserve stdout/file data. `layout validate --recursive`
 and `layout push` use verified directory/archive snapshots; publication sends
 dependencies and subjects before parents, with root aliases last. These are not
-resume, parallel transfer or registry transaction/rollback features.
+resume or registry transaction/rollback features. Parallel graph/range
+acquisition and its final documentation are implemented through #131, with
+the accepted validation scope recorded above and tuning/recovery documented in
+the [parallel-download guide](guides/parallel-downloads.md).
 
 Safe native operations require supported Linux/macOS filesystems and the
 documented trusted-private namespace. Windows fails closed. Completed publication
@@ -354,7 +396,17 @@ also passed; it did not test a release-driven formula bump.
 ## Validation baseline and maintenance
 
 The [test workflow](../.github/workflows/tests.yml) covers Python 3.10, 3.11,
-and 3.12. The final artifact-documentation head
+and 3.12. The final download-documentation head
+`7576f7240d945690fd6cfa1703296ea85673ba62` passed all seven standard test jobs
+(the three Python versions, legacy Requests/urllib3, minimum Click, and native
+macOS/Windows selectors) plus Python/Actions CodeQL and its aggregate check in
+[#160](https://github.com/toddysm/regshape/pull/160). The dispatch-only benchmark
+job was skipped in ordinary pull-request CI; it is not additional performance
+evidence. The separate controlled Linux run and retained macOS limitation are
+recorded in the [validation runbook](library/download-validation.md).
+
+Historical complete-artifact validation is retained for its original scope.
+The final artifact-documentation head
 `ecb06871fb0285bf1f5c55b9c308e76988c33041` passed
 **3,140 tests per version**, plus **1,302 minimum-Click 8.1.0 compatibility tests**
 and **1,469 legacy Requests/urllib3 tests** on Python 3.10, in
