@@ -6,13 +6,14 @@
 
 .. module:: regshape.libs.manifests
    :platform: Unix, Windows
-   :synopsis: OCI manifest operations, reference preflight and receive observations.
+   :synopsis: OCI manifest operations, protocol defaults, preflight and observations.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
 from regshape.libs.manifests.download import ManifestDownload, download_manifest
 from regshape.libs.manifests.operations import (
+    DEFAULT_MANIFEST_ACCEPT,
     delete_manifest,
     get_manifest,
     head_manifest,
@@ -27,6 +28,7 @@ from regshape.libs.progress import (
 )
 
 __all__ = [
+    "DEFAULT_MANIFEST_ACCEPT",
     "ManifestDownload",
     "ManifestKind",
     "ManifestPhase",

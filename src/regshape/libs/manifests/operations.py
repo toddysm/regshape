@@ -20,6 +20,7 @@ responsibility.
 """
 
 import hashlib
+import json
 
 import requests
 
@@ -27,7 +28,12 @@ from regshape.libs._http import ClosingResponse, download_total
 from regshape.libs.decorators.timing import track_time
 from regshape.libs.errors import AuthError, ManifestError, ReferenceValidationError
 from regshape.libs.models.error import OciErrorResponse
-from regshape.libs.models.mediatype import INDEX_MEDIA_TYPES, MANIFEST_MEDIA_TYPES
+from regshape.libs.models.mediatype import (
+    ALL_MANIFEST_MEDIA_TYPES,
+    INDEX_MEDIA_TYPES,
+    MANIFEST_MEDIA_TYPES,
+    OCI_IMAGE_MANIFEST,
+)
 from regshape.libs.progress import (
     ManifestKind,
     ManifestPhase,
@@ -38,6 +44,7 @@ from regshape.libs.refs import format_ref, validate_digest
 from regshape.libs.transport import RegistryClient
 
 _MANIFEST_CHUNK_SIZE = 64 * 1024
+DEFAULT_MANIFEST_ACCEPT = ",".join(sorted(ALL_MANIFEST_MEDIA_TYPES))
 
 
 class _BufferedManifestText(requests.Response):
@@ -75,7 +82,7 @@ def get_manifest(
     client: RegistryClient,
     repo: str,
     reference: str,
-    accept: str,
+    accept: str | None = None,
     *,
     progress_callback: ManifestProgressCallback | None = None,
 ) -> tuple[str, str, str]:
@@ -88,7 +95,8 @@ def get_manifest(
     :param repo: Repository name (e.g. ``myrepo/myimage``).
     :param reference: Tag or digest (e.g. ``latest`` or
                       ``sha256:abc...``).
-    :param accept: Value for the ``Accept`` header.
+    :param accept: ``Accept`` header override, sent verbatim (including empty
+        strings). Omitted/``None`` uses :data:`DEFAULT_MANIFEST_ACCEPT`.
     :param progress_callback: Optional synchronous byte observer. Enables streaming
         in 64 KiB reads; RECEIVED follows decoding and response cleanup, not
         model/digest validation or caller output. Omission retains buffered decoding.
@@ -104,6 +112,8 @@ def get_manifest(
     closed on every path; secondary cleanup/notification failures never replace
     an active error. Length metadata is advisory, not an integrity guarantee.
     """
+    if accept is None:
+        accept = DEFAULT_MANIFEST_ACCEPT
     path = f"/v2/{repo}/manifests/{reference}"
     with _ManifestProgress(progress_callback) as progress:
         stream_options = {"stream": True} if progress_callback is not None else {}
@@ -135,7 +145,7 @@ def head_manifest(
     client: RegistryClient,
     repo: str,
     reference: str,
-    accept: str,
+    accept: str | None = None,
 ) -> tuple[str, str, int]:
     """Return metadata for *repo*/*reference* without downloading the body.
 
@@ -144,12 +154,15 @@ def head_manifest(
     :param client: Authenticated transport client for the target registry.
     :param repo: Repository name.
     :param reference: Tag or digest.
-    :param accept: Value for the ``Accept`` header.
+    :param accept: ``Accept`` header override, sent verbatim (including empty
+        strings). Omitted/``None`` uses :data:`DEFAULT_MANIFEST_ACCEPT`.
     :returns: ``(digest, media_type, size)``
     :raises AuthError: On authentication failure.
     :raises ManifestError: On a non-2xx registry response.
     :raises requests.exceptions.RequestException: On transport errors.
     """
+    if accept is None:
+        accept = DEFAULT_MANIFEST_ACCEPT
     path = f"/v2/{repo}/manifests/{reference}"
     response = client.head(path, headers={"Accept": accept})
     _raise_for_manifest_error(response, client.config.registry, repo, reference)
@@ -168,7 +181,7 @@ def push_manifest(
     repo: str,
     reference: str,
     body: bytes,
-    content_type: str,
+    content_type: str | None = None,
     *,
     expected_digest: str | None = None,
 ) -> str:
@@ -180,7 +193,10 @@ def push_manifest(
     :param repo: Repository name.
     :param reference: Tag or digest to create/overwrite.
     :param body: Raw manifest JSON bytes.
-    :param content_type: Value for the ``Content-Type`` header.
+    :param content_type: Header override, sent verbatim (including empty
+        strings). Omitted/``None`` uses the JSON object's ``mediaType`` field,
+        falling back to ``OCI_IMAGE_MANIFEST`` for a missing field, non-object
+        JSON or undecodable/invalid JSON. The body bytes are never rewritten.
     :param expected_digest: Optional strict SHA-256/SHA-512 payload identity.
         When supplied, verify bytes before sending, require 201 Created, and
         verify any reported digest (including a different supported algorithm).
@@ -198,6 +214,17 @@ def push_manifest(
     an active error. Omitting expected_digest retains legacy 2xx/header behavior.
     """
     from regshape.libs.manifests.download import _digest_algorithm, _validate_inputs
+
+    if content_type is None:
+        try:
+            obj = json.loads(body)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            content_type = OCI_IMAGE_MANIFEST
+        else:
+            content_type = (
+                obj.get("mediaType", OCI_IMAGE_MANIFEST)
+                if isinstance(obj, dict) else OCI_IMAGE_MANIFEST
+            )
 
     if expected_digest is not None:
         requested = _validate_inputs(repo, reference, content_type, expected_digest, None, max(1, len(body)))

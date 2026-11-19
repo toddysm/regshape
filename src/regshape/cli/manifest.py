@@ -36,15 +36,8 @@ from regshape.libs.manifests import (
     validate_manifest_digest,
 )
 from regshape.libs.models.manifest import ImageIndex, ImageManifest, parse_manifest
-from regshape.libs.models.mediatype import ALL_MANIFEST_MEDIA_TYPES, OCI_IMAGE_MANIFEST
 from regshape.libs.refs import parse_artifact_ref
 from regshape.libs.transport import RegistryClient, TransportConfig
-
-# ---------------------------------------------------------------------------
-# Default Accept header value when the caller does not override it.
-# Registries return the most specific type they support for the reference.
-# ---------------------------------------------------------------------------
-_DEFAULT_ACCEPT = ",".join(sorted(ALL_MANIFEST_MEDIA_TYPES))
 
 # ---------------------------------------------------------------------------
 # Part names accepted by ``manifest get --part``
@@ -151,6 +144,8 @@ def _get_with_progress(
     Expected failures retain their existing exit code/message for emission after
     cleanup. Unexpected output/transport-callback exceptions propagate unchanged.
     The outer command finalizes only after this scenario wrapper also returns.
+    Manifest negotiation defaults belong to the SDK; only user overrides
+    are forwarded by this command.
     """
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
@@ -169,8 +164,8 @@ def _get_with_progress(
             client=client,
             repo=repo,
             reference=reference,
-            accept=accept or _DEFAULT_ACCEPT,
             progress_callback=progress.observe,
+            **({"accept": accept} if accept is not None else {}),
         )
     except (AuthError, ManifestError, requests.exceptions.RequestException) as exc:
         raise _ManifestCommandFailure(str(exc)) from exc
@@ -224,6 +219,7 @@ def info(ctx, image_ref, accept):
     Issues a HEAD request and returns the digest, media type, and size
     from response headers.  Credentials are resolved automatically from
     the credential store populated by ``auth login``.
+    Unless overridden with ``--accept``, negotiation is owned by the SDK.
     """
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
@@ -239,7 +235,7 @@ def info(ctx, image_ref, accept):
             client=client,
             repo=repo,
             reference=reference,
-            accept=accept or _DEFAULT_ACCEPT,
+            **({"accept": accept} if accept is not None else {}),
         )
     except (AuthError, ManifestError, requests.exceptions.RequestException) as exc:
         emit_error(image_ref, str(exc))
@@ -276,6 +272,7 @@ def descriptor(ctx, image_ref, accept):
     Descriptor wire format.  The output can be used directly as a
     Descriptor object in another manifest.  Credentials are resolved
     automatically from the credential store populated by ``auth login``.
+    Unless overridden with ``--accept``, negotiation is owned by the SDK.
     """
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
@@ -291,7 +288,7 @@ def descriptor(ctx, image_ref, accept):
             client=client,
             repo=repo,
             reference=reference,
-            accept=accept or _DEFAULT_ACCEPT,
+            **({"accept": accept} if accept is not None else {}),
         )
     except (AuthError, ManifestError, requests.exceptions.RequestException) as exc:
         emit_error(image_ref, str(exc))
@@ -345,6 +342,8 @@ def put(ctx, image_ref, manifest_file, from_stdin, content_type):
     Provide the manifest JSON via ``--file`` or ``--stdin`` (exactly one
     is required).  Credentials are resolved automatically from the
     credential store populated by ``auth login``.
+    The SDK infers Content-Type unless the user supplies an override; the
+    command passes the original file/stdin bytes without parsing them.
     """
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
@@ -365,14 +364,6 @@ def put(ctx, image_ref, manifest_file, from_stdin, content_type):
     else:
         body = sys.stdin.buffer.read()
 
-    # Infer Content-Type from the JSON body unless overridden
-    if content_type is None:
-        try:
-            obj = json.loads(body)
-            content_type = obj.get("mediaType", OCI_IMAGE_MANIFEST)
-        except (json.JSONDecodeError, AttributeError):
-            content_type = OCI_IMAGE_MANIFEST
-
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
     try:
@@ -381,7 +372,7 @@ def put(ctx, image_ref, manifest_file, from_stdin, content_type):
             repo=repo,
             reference=reference,
             body=body,
-            content_type=content_type,
+            **({"content_type": content_type} if content_type is not None else {}),
         )
     except (AuthError, ManifestError, requests.exceptions.RequestException) as exc:
         emit_error(image_ref, str(exc))

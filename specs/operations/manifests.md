@@ -36,6 +36,14 @@ src/regshape/libs/manifests/
 
 ## Public Operations
 
+### Protocol defaults
+
+`DEFAULT_MANIFEST_ACCEPT` is exported from `regshape.libs.manifests` and equals
+`",".join(sorted(ALL_MANIFEST_MEDIA_TYPES))`. `get_manifest` and `head_manifest`
+use it only when `accept` is omitted or `None`; explicit strings, including
+`""`, are sent verbatim. These defaults are available in the SDK without the CLI.
+See the [manifest library reference](../../docs/library/manifests.md).
+
 ### `get_manifest`
 
 ```python
@@ -44,7 +52,7 @@ def get_manifest(
     client: RegistryClient,
     repo: str,
     reference: str,
-    accept: str,
+    accept: str | None = None,
     *,
     progress_callback: ManifestProgressCallback | None = None,
 ) -> tuple[str, str, str]:
@@ -59,7 +67,7 @@ older installed libraries may not accept `progress_callback`.
 | `client` | `RegistryClient` | required | Authenticated transport client |
 | `repo` | `str` | required | Repository name (e.g. `"myrepo/myimage"`) |
 | `reference` | `str` | required | Tag or digest (e.g. `"latest"` or `"sha256:abc..."`) |
-| `accept` | `str` | required | Value for the `Accept` header |
+| `accept` | `str \| None` | `None` | Header override; `None` selects `DEFAULT_MANIFEST_ACCEPT` |
 | `progress_callback` | `ManifestProgressCallback \| None` | `None` | Keyword-only synchronous byte observer; enables streamed response consumption |
 
 **Returns:** `(body_str, content_type, digest)` — the response decoded using
@@ -244,7 +252,7 @@ def head_manifest(
     client: RegistryClient,
     repo: str,
     reference: str,
-    accept: str,
+    accept: str | None = None,
 ) -> tuple[str, str, int]:
 ```
 
@@ -255,7 +263,7 @@ Returns metadata for a manifest without downloading its body.
 | `client` | `RegistryClient` | required | Authenticated transport client |
 | `repo` | `str` | required | Repository name |
 | `reference` | `str` | required | Tag or digest |
-| `accept` | `str` | required | Value for the `Accept` header |
+| `accept` | `str \| None` | `None` | Header override; `None` selects `DEFAULT_MANIFEST_ACCEPT` |
 
 **Returns:** `(digest, media_type, size)` — `Docker-Content-Digest` header,
 `Content-Type` header, and `Content-Length` header (parsed as `int`, defaulting
@@ -281,7 +289,7 @@ def push_manifest(
     repo: str,
     reference: str,
     body: bytes,
-    content_type: str,
+    content_type: str | None = None,
     *,
     expected_digest: str | None = None,
 ) -> str:
@@ -289,13 +297,20 @@ def push_manifest(
 
 Pushes a manifest to a repository, creating or overwriting the reference.
 
+When `content_type` is omitted or `None`, the SDK uses the JSON object's
+`mediaType` field. A missing field, non-object JSON, invalid JSON or undecodable
+bytes falls back to `OCI_IMAGE_MANIFEST`. The original bytes and any present
+field value are not normalized. Explicit header strings (even `""`) bypass
+inference and are sent verbatim for conformance testing. Inference precedes
+strict `expected_digest` validation; the existing strict checks still apply.
+
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `client` | `RegistryClient` | required | Authenticated transport client |
 | `repo` | `str` | required | Repository name |
 | `reference` | `str` | required | Tag or digest to create/overwrite |
 | `body` | `bytes` | required | Raw manifest JSON bytes |
-| `content_type` | `str` | required | Value for the `Content-Type` header |
+| `content_type` | `str \| None` | `None` | Verbatim header override, otherwise inferred from body `mediaType` |
 | `expected_digest` | `str \| None` | `None` | Keyword-only strict SHA-256/SHA-512 payload identity |
 
 **Returns:** `str` — the `Docker-Content-Digest` response header value for legacy
