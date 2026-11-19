@@ -27,12 +27,13 @@ from regshape.cli.progress import ProgressDisplay
 from regshape.cli.telemetry import telemetry_options
 from regshape.libs.decorators.output import flush_telemetry
 from regshape.libs.decorators.scenario import track_scenario
-from regshape.libs.errors import AuthError, ManifestError
+from regshape.libs.errors import AuthError, ManifestError, ReferenceValidationError
 from regshape.libs.manifests import (
     delete_manifest,
     get_manifest,
     head_manifest,
     push_manifest,
+    validate_manifest_digest,
 )
 from regshape.libs.models.manifest import ImageIndex, ImageManifest, parse_manifest
 from regshape.libs.models.mediatype import ALL_MANIFEST_MEDIA_TYPES, OCI_IMAGE_MANIFEST
@@ -404,23 +405,18 @@ def delete(ctx, image_ref):
 
     ARTIFACT must be a digest reference (``registry/repo@sha256:...``).
     The OCI Distribution Spec requires deletion by digest; tag references
-    are rejected with exit code 2.  Credentials are resolved automatically
-    from the credential store populated by ``auth login``.
+    and malformed digests are rejected by the library with exit code 2.
+    Validation precedes automatic credential resolution from ``auth login``.
     """
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
         registry, repo, reference = parse_artifact_ref(image_ref)
+        validate_manifest_digest(reference)
+    except ReferenceValidationError as exc:
+        emit_error(image_ref, str(exc), exit_code=2)
     except ValueError as exc:
         emit_error(image_ref, str(exc))
-
-    if not reference.startswith("sha256:") and not reference.startswith("sha512:"):
-        emit_error(
-            image_ref,
-            "manifest delete requires a digest reference (@sha256:...); "
-            "tag references are not supported by the OCI spec for delete operations",
-            exit_code=2,
-        )
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
@@ -430,6 +426,8 @@ def delete(ctx, image_ref):
             repo=repo,
             digest=reference,
         )
+    except ReferenceValidationError as exc:
+        emit_error(image_ref, str(exc), exit_code=2)
     except (AuthError, ManifestError, requests.exceptions.RequestException) as exc:
         emit_error(image_ref, str(exc))
 

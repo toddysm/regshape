@@ -8,7 +8,7 @@ import pytest
 import requests
 from unittest.mock import MagicMock
 
-from regshape.libs.errors import AuthError, TagError
+from regshape.libs.errors import AuthError, ReferenceValidationError, TagError
 from regshape.libs.tags.operations import (
     _raise_for_delete_error,
     _raise_for_list_error,
@@ -125,6 +125,25 @@ class TestListTags:
 # ===========================================================================
 
 class TestDeleteTag:
+
+    @pytest.mark.parametrize("reference", [
+        "sha256:" + "a" * 64, "sha512:" + "b" * 128,
+        "sha384:abc", "sha256:xyz", "sha256:",
+    ])
+    def test_digest_shaped_input_rejected_before_http(self, reference):
+        """Unsupported/malformed digests remain the wrong kind for tag deletion."""
+        client = _mock_client()
+        with pytest.raises(ReferenceValidationError, match="tag delete requires a tag"):
+            delete_tag(client, REPO, reference)
+        client.delete.assert_not_called()
+
+    @pytest.mark.parametrize("reference", ["sha256:" + "a" * 64, "sha384:abc"])
+    def test_strict_false_sends_digest_verbatim(self, reference):
+        """The explicit conformance opt-out reaches transport with no rewriting."""
+        client = _mock_client()
+        client.delete.return_value = _make_response(202)
+        delete_tag(client, REPO, reference, strict=False)
+        client.delete.assert_called_once_with(f"/v2/{REPO}/manifests/{reference}")
 
     def test_succeeds_silently_on_202(self):
         client = _mock_client()

@@ -31,10 +31,10 @@ import requests
 
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.decorators.timing import track_time
-from regshape.libs.errors import AuthError, TagError
+from regshape.libs.errors import AuthError, ReferenceValidationError, TagError
 from regshape.libs.models.error import OciErrorResponse
 from regshape.libs.models.tags import TagList
-from regshape.libs.refs import format_ref
+from regshape.libs.refs import format_ref, is_digest
 from regshape.libs.transport import RegistryClient
 from regshape.libs.transport.urls import (
     MAX_REDIRECTS,
@@ -219,6 +219,8 @@ def delete_tag(
     client: RegistryClient,
     repo: str,
     tag: str,
+    *,
+    strict: bool = True,
 ) -> None:
     """Delete *tag* from *repo*.
 
@@ -229,13 +231,38 @@ def delete_tag(
     :param client: Authenticated transport client for the target registry.
     :param repo: Repository name.
     :param tag: Tag name to delete (must not be a digest).
+    :param strict: Reject digest-shaped inputs, including unsupported algorithms,
+        before HTTP. ``False`` sends the value verbatim for conformance tests.
+        This guard does not otherwise validate tag spelling.
+    :raises ReferenceValidationError: If strict is enabled and *tag* is digest-shaped.
     :raises AuthError: On authentication failure.
     :raises TagError: On a non-2xx registry response.
     :raises requests.exceptions.RequestException: On transport errors.
     """
+    if strict:
+        validate_tag_reference(tag)
     path = f"/v2/{repo}/manifests/{tag}"
     response = client.delete(path)
     _raise_for_delete_error(response, client.config.registry, repo, tag)
+
+
+def validate_tag_reference(tag: str) -> str:
+    """Reject digest-shaped tag-delete targets without credentials or transport.
+
+    This is a kind guard, not a complete tag-spelling validator. Unsupported
+    algorithms and malformed digest payloads cannot masquerade as tags.
+
+    :param tag: Parsed tag-or-digest token.
+    :returns: A token without digest shape, unchanged.
+    :raises ReferenceValidationError: On a digest-shaped token, retaining the
+        existing tag-delete usage message.
+    """
+    if is_digest(tag):
+        raise ReferenceValidationError(
+            "tag delete requires a tag reference; "
+            "use 'manifest delete' for digest references"
+        )
+    return tag
 
 
 # ===========================================================================

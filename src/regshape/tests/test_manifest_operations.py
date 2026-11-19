@@ -8,7 +8,7 @@ import pytest
 import requests
 from unittest.mock import MagicMock
 
-from regshape.libs.errors import AuthError, ManifestError
+from regshape.libs.errors import AuthError, ManifestError, ReferenceValidationError
 from regshape.libs.manifests.operations import (
     _raise_for_manifest_error,
     delete_manifest,
@@ -26,7 +26,7 @@ from regshape.libs.transport import RegistryClient, TransportConfig
 REGISTRY = "acr.example.io"
 REPO = "myrepo/myimage"
 TAG = "latest"
-DIGEST = "sha256:abc123"
+DIGEST = "sha256:" + "a" * 64
 OCI_MANIFEST_JSON = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json"})
 CONTENT_TYPE = "application/vnd.oci.image.manifest.v1+json"
 
@@ -236,6 +236,33 @@ class TestPushManifest:
 # ===========================================================================
 
 class TestDeleteManifest:
+
+    @pytest.mark.parametrize("reference", [
+        "latest", "sha384:" + "a" * 96, "sha256:abc123",
+        "sha256:" + "z" * 64, "sha512:" + "a" * 64,
+    ])
+    def test_invalid_digest_rejected_before_http(self, reference):
+        """Default guards reject tags and invalid content addresses without DELETE."""
+        client = _mock_client()
+        with pytest.raises(ReferenceValidationError, match="manifest delete requires a digest"):
+            delete_manifest(client, REPO, reference)
+        client.delete.assert_not_called()
+
+    @pytest.mark.parametrize("reference", ["latest", "sha384:abc", "sha256:xyz"])
+    def test_strict_false_sends_invalid_reference_verbatim(self, reference):
+        """Opted-in conformance callers can deliberately send wrong-kind inputs."""
+        client = _mock_client()
+        client.delete.return_value = _make_response(202)
+        delete_manifest(client, REPO, reference, strict=False)
+        client.delete.assert_called_once_with(f"/v2/{REPO}/manifests/{reference}")
+
+    def test_sha512_digest_is_supported(self):
+        """A complete SHA-512 digest is accepted without weakening the default guard."""
+        client = _mock_client()
+        client.delete.return_value = _make_response(202)
+        digest = "sha512:" + "a" * 128
+        delete_manifest(client, REPO, digest)
+        client.delete.assert_called_once_with(f"/v2/{REPO}/manifests/{digest}")
 
     def test_succeeds_silently_on_202(self):
         client = _mock_client()

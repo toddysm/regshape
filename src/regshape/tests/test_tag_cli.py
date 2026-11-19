@@ -230,6 +230,17 @@ class TestTagListCommand:
 
 class TestTagDeleteCommand:
 
+    @pytest.mark.parametrize("digest", ["sha384:abc", "sha256:abc"])
+    def test_unsupported_or_malformed_digest_is_a_usage_error(self, digest):
+        """Library reference-kind guards reject digest tokens before HTTP."""
+        with patch("regshape.libs.transport.RegistryClient.delete") as delete_request:
+            result = _runner().invoke(
+                regshape, ["tag", "delete", "-i", f"{REGISTRY}/{REPO}@{digest}"],
+            )
+        assert result.exit_code == 2, result.output
+        assert "tag delete requires a tag reference" in result.stderr
+        delete_request.assert_not_called()
+
     def test_delete_success(self):
         with patch("regshape.cli.tag.delete_tag", return_value=None):
             result = _runner().invoke(regshape, [

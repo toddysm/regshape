@@ -4,7 +4,47 @@
 
 import pytest
 
-from regshape.libs.refs import format_ref, parse_artifact_ref, parse_image_ref
+from regshape.libs.errors import ReferenceValidationError
+from regshape.libs.refs import (
+    format_ref,
+    is_digest,
+    parse_artifact_ref,
+    parse_image_ref,
+    validate_digest,
+)
+
+
+@pytest.mark.parametrize("reference,digest_shaped", [
+    ("latest", False), ("sha256", False), ("v1.2-rc_1", False), ("", False),
+    ("sha256:" + "a" * 64, True), ("sha512:" + "b" * 128, True),
+    ("sha384:abc", True), ("sha256:", True), ("sha256:xyz", True),
+])
+def test_digest_classification_preserves_invalid_digest_kind(reference, digest_shaped):
+    """Malformed and unsupported digests must not fall through to tag resolution."""
+    assert is_digest(reference) is digest_shaped
+    separator = "@" if digest_shaped else ":"
+    assert format_ref("registry.example.invalid", "pkg", reference) == (
+        f"registry.example.invalid/pkg{separator}{reference}"
+    )
+
+
+@pytest.mark.parametrize("reference", ["sha256:" + "a" * 64, "sha512:" + "b" * 128])
+def test_validate_digest_preserves_complete_supported_identity(reference):
+    """Validation accepts both supported algorithms without rewriting the token."""
+    assert validate_digest(reference) == reference
+
+
+@pytest.mark.parametrize("reference", [
+    "latest", "", None, "sha384:" + "a" * 96, "SHA256:" + "a" * 64,
+    "sha256", "sha256:", "sha256:" + "a" * 63, "sha256:" + "a" * 65,
+    "sha512:" + "a" * 127, "sha512:" + "a" * 129,
+    "sha256:" + "g" * 64, "sha256:" + "A" * 64,
+    "sha256:" + "a" * 64 + "\n", " sha256:" + "a" * 64,
+])
+def test_validate_digest_rejects_unsupported_or_malformed_identity(reference):
+    """Reject wrong algorithms, invalid lengths/non-hex and unnormalized input."""
+    with pytest.raises(ReferenceValidationError):
+        validate_digest(reference)
 
 
 # ===========================================================================

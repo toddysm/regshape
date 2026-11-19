@@ -69,7 +69,7 @@ def docker():
 @click.option("--json", "as_json", is_flag=True, default=False, help="Output JSON.")
 @click.pass_context
 def list_cmd(ctx, name_filter, as_json):
-    """List images available in the local Docker daemon."""
+    """List local Docker images, abbreviating SHA-256 IDs in table output only."""
     try:
         images = list_images(name_filter=name_filter)
     except DockerError as exc:
@@ -105,17 +105,14 @@ def list_cmd(ctx, name_filter, as_json):
                     repo = parts[0] if len(parts) == 2 else tag
                     tag_name = parts[1] if len(parts) == 2 else "<none>"
                     short_id = img.id[:19] if len(img.id) > 19 else img.id
-                    # Strip sha256: prefix for display
-                    if short_id.startswith("sha256:"):
-                        short_id = short_id[7:19]
+                    short_id = short_id.removeprefix("sha256:")
                     size_str = _format_size(img.size)
                     click.echo(
                         f"{repo:<30} {tag_name:<15} {short_id:<14} {size_str:<10} {img.created}"
                     )
             else:
                 short_id = img.id[:19] if len(img.id) > 19 else img.id
-                if short_id.startswith("sha256:"):
-                    short_id = short_id[7:19]
+                short_id = short_id.removeprefix("sha256:")
                 size_str = _format_size(img.size)
                 click.echo(
                     f"{'<none>':<30} {'<none>':<15} {short_id:<14} {size_str:<10} {img.created}"

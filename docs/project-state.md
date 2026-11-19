@@ -26,13 +26,20 @@ during this scoped build. Telemetry separation
 [#177](https://github.com/toddysm/regshape/pull/177). Click option handling lives
 in the CLI; configuration, decorators and the managed
 [telemetry session](library/telemetry.md) are available directly from the library.
-The current authorized work is
-[#165](https://github.com/toddysm/regshape/issues/165): library credential
-verification and persisted login, with related tests and
-[SDK documentation](library/auth.md), using hosted continuous integration.
+Library credential verification and persisted login
+[#165](https://github.com/toddysm/regshape/issues/165) merged through
+[#178](https://github.com/toddysm/regshape/pull/178), with
+[SDK documentation](library/auth.md).
+The current authorized build order is shared reference validation
+[#169](https://github.com/toddysm/regshape/issues/169), manifest protocol defaults
+[#168](https://github.com/toddysm/regshape/issues/168), then referrer digest resolution
+[#166](https://github.com/toddysm/regshape/issues/166), using hosted continuous
+integration and separate pull requests. Shared reference validation is underway;
+the remaining two items await their predecessors. These changes are not yet
+reported as delivered.
 The inventory prerequisite merged through
-[#176](https://github.com/toddysm/regshape/pull/176). Siblings #166 through #175
-remain outside this build; the complete separation feature is not yet implemented.
+[#176](https://github.com/toddysm/regshape/pull/176). Siblings #167 and #170 through
+#175 remain outside this build; the complete separation feature is not yet implemented.
 
 Artifact-oriented option naming is implemented under
 [#87](https://github.com/toddysm/regshape/issues/87). The approved
@@ -119,7 +126,7 @@ the first version of every operation in that row.
 | Local Open Container Initiative (OCI) image-layout authoring, validation, and registry push | Implemented | - | - | [Design: layout creation](../specs/layout/oci-layout-create.md), [design/reference: layout push](../specs/cli/layout-push.md) | [How-to: create layouts](guides/create-oci-layout.md), [command reference: layouts](../specs/cli/layout.md) | - |
 | Docker daemon image listing, export/conversion, and registry push | Implemented | - | - | [Design: Docker integration](../specs/docker/docker-desktop-integration.md) | [How-to: Docker integration](guides/docker-desktop-integration.md) | - |
 | Opt-in request diagnostics, timing, metrics, and log output | Partial | Ordinary-transfer coverage gaps are not separately filed | - | [Design: telemetry](../specs/telemetry-enhancements.md) | [Option reference: current telemetry flags](#telemetry-options-current-baseline) | - |
-| Framework-independent Python library and thin CLI | In progress | [Feature #163](https://github.com/toddysm/regshape/issues/163); delivered [telemetry #164](https://github.com/toddysm/regshape/issues/164), current scope [auth login #165](https://github.com/toddysm/regshape/issues/165) | [Issue-backed design: #163, approved scope #165](https://github.com/toddysm/regshape/issues/163) | [Telemetry boundary](../specs/architecture.md#8-telemetry-decorators) | [Telemetry library usage](library/telemetry.md), [authentication API](library/auth.md) | - |
+| Framework-independent Python library and thin CLI | In progress | [Feature #163](https://github.com/toddysm/regshape/issues/163); delivered [telemetry #164](https://github.com/toddysm/regshape/issues/164), [auth login #165](https://github.com/toddysm/regshape/issues/165); approved order [#169](https://github.com/toddysm/regshape/issues/169), [#168](https://github.com/toddysm/regshape/issues/168), [#166](https://github.com/toddysm/regshape/issues/166) | [Issue-backed design: #163, revision 3](https://github.com/toddysm/regshape/issues/163) | [Telemetry boundary](../specs/architecture.md#8-telemetry-decorators), [manifest delete contract](../specs/operations/manifests.md#delete_manifest), [tag delete contract](../specs/operations/tags.md#delete_tag) | [Telemetry library usage](library/telemetry.md), [authentication API](library/auth.md), [reference validation](guides/artifact-options.md#classify-and-validate-sdk-references) | - |
 | Break Mode request mutation | Planned | [#29](https://github.com/toddysm/regshape/issues/29) | [Issue requirements: #29](https://github.com/toddysm/regshape/issues/29) | [Architecture: Break Mode](../specs/architecture.md) | - | - |
 | Break Mode telemetry integration | Planned | [#38](https://github.com/toddysm/regshape/issues/38); depends on #29 | [Issue requirements: #38](https://github.com/toddysm/regshape/issues/38) | [Design: telemetry enhancements](../specs/telemetry-enhancements.md) | - | - |
 | Python Package Index (PyPI) release publication | Implemented | [Closed #57](https://github.com/toddysm/regshape/issues/57), [v0.1.1 release](https://github.com/toddysm/regshape/releases/tag/v0.1.1) | - | [Developer guide: contributing](../CONTRIBUTING.md) | [Overview/install reference](../README.md) | - |

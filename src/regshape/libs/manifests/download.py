@@ -21,7 +21,7 @@ from regshape.libs._http import (
     report_secondary_failure,
 )
 from regshape.libs.decorators.timing import track_time
-from regshape.libs.errors import ManifestError
+from regshape.libs.errors import ManifestError, ReferenceValidationError
 from regshape.libs.manifests._stream import entity_chunks, reject_redirect
 from regshape.libs.manifests.operations import (
     _BufferedManifestText,
@@ -33,11 +33,11 @@ from regshape.libs.progress import (
     ManifestProgressCallback,
     _ManifestProgress,
 )
+from regshape.libs.refs import validate_digest
 from regshape.libs.transport import RegistryClient
 
 _CHUNK_SIZE = 64 * 1024
 _DEFAULT_MAX_BYTES = 16 * 1024 * 1024
-_DIGEST = re.compile(r"(sha256:[0-9a-f]{64}|sha512:[0-9a-f]{128})")
 _TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
 _REPO = re.compile(
     r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*"
@@ -64,9 +64,11 @@ class ManifestDownload:
 
 
 def _digest_algorithm(value: str) -> str:
-    """Validate a strict supported content address before using its algorithm."""
-    if not isinstance(value, str) or _DIGEST.fullmatch(value) is None:
-        raise ValueError("Digest must be lowercase sha256:64-hex or sha512:128-hex")
+    """Use shared digest validation while retaining the download error contract."""
+    try:
+        validate_digest(value)
+    except ReferenceValidationError as exc:
+        raise ValueError("Digest must be lowercase sha256:64-hex or sha512:128-hex") from exc
     return value.partition(":")[0]
 
 
