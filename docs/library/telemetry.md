@@ -39,7 +39,8 @@ text stream to redirect diagnostics; its lifetime remains yours.
 On every exit, the session flushes any remaining timings and enabled metrics,
 closes its owned log, and by default restores the previous active configuration. Nested
 sessions therefore return to their parent's configuration. Timings already
-consumed by `track_scenario` are not repeated.
+consumed by `track_scenario` are not repeated. Final flushing uses the owning
+session's configuration even when a nested scope retains another configuration.
 
 - If `log_file_path` is set and `log_file` is `None`, the session opens the
   path in append mode. The parent directory must exist. On cleanup it closes

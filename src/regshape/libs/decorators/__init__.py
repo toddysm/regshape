@@ -122,8 +122,9 @@ class _TelemetrySession(AbstractContextManager[TelemetryConfig]):
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> Literal[False]:
-        """Flush and close owned resources, preserving errors and the outer scope."""
+        """Flush this scope's data and close its log, preserving errors and retained config."""
         primary_error = exc
+        token = _telemetry_config.set(self.config)
         try:
             from regshape.libs.decorators.output import flush_telemetry
             try:
@@ -144,6 +145,7 @@ class _TelemetrySession(AbstractContextManager[TelemetryConfig]):
                     finally:
                         self._owned_log_file = None
         finally:
+            _telemetry_config.reset(token)
             if self.restore_config:
                 _telemetry_config.set(self._previous_config)
         return False
@@ -159,6 +161,8 @@ def telemetry_session(
     the configuration for outer cleanup inspection. Caller-supplied streams
     are not closed. Restore the previous active configuration
     after cleanup by default, including for nested sessions and failing operations.
+    Final flushing always uses this session's configuration, even if a nested
+    scope retained another active configuration.
 
     :param config: Configuration to activate; yielded unchanged on entry.
     :param restore_config: Restore the previous active configuration on exit.

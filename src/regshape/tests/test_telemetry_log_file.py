@@ -188,22 +188,34 @@ def test_session_borrows_streams_and_runs_library_decorators() -> None:
     assert get_telemetry_config() is previous
 
 
-def test_nested_sessions_flush_and_restore_their_own_configuration() -> None:
-    """An inner scope must neither flush into its parent nor leave its config active."""
+@pytest.mark.parametrize("restore_inner", [False, True])
+@pytest.mark.parametrize("restore_outer", [False, True])
+def test_nested_sessions_flush_and_restore_their_own_configuration(
+    tmp_path: Path, restore_inner: bool, restore_outer: bool,
+) -> None:
+    """Each scope flushes its own data/log even when a nested config remains active."""
     previous = get_telemetry_config()
     outer_output = io.StringIO()
     inner_output = io.StringIO()
-    outer = TelemetryConfig(output=outer_output, method_timings=[("outer", 0.1)])
+    log_path = tmp_path / "outer.log"
+    outer = TelemetryConfig(
+        output=outer_output, method_timings=[("outer", 0.1)], log_file_path=str(log_path),
+    )
     inner = TelemetryConfig(output=inner_output, method_timings=[("inner", 0.2)])
-    with telemetry_session(outer):
-        with telemetry_session(inner):
-            assert get_telemetry_config() is inner
-        assert get_telemetry_config() is outer
-        assert "inner" in inner_output.getvalue()
-        assert outer_output.getvalue() == ""
-    assert "outer" in outer_output.getvalue()
-    assert "inner" not in outer_output.getvalue()
-    assert get_telemetry_config() is previous
+    retained = outer if restore_inner else inner
+    try:
+        with telemetry_session(outer, restore_config=restore_outer):
+            with telemetry_session(inner, restore_config=restore_inner):
+                assert get_telemetry_config() is inner
+            assert get_telemetry_config() is retained
+            assert "inner" in inner_output.getvalue()
+            assert outer_output.getvalue() == ""
+        assert "outer" in outer_output.getvalue()
+        assert "inner" not in outer_output.getvalue()
+        assert log_path.read_text() == outer_output.getvalue()
+        assert get_telemetry_config() is (previous if restore_outer else retained)
+    finally:
+        configure_telemetry(previous)
 
 
 def test_session_can_retain_config_for_outer_diagnostics() -> None:

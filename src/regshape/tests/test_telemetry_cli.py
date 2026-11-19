@@ -1,5 +1,6 @@
 """Thin Click wiring checks for the library-managed telemetry lifecycle."""
 
+import io
 import json
 from collections.abc import Iterator
 from pathlib import Path
@@ -50,6 +51,9 @@ def test_telemetry_flags_are_consumed_and_delegate_log_lifecycle(
         assert config.output_format == "json"
         assert config.log_file_path == str(path)
         assert config.log_file is not None and not config.log_file.closed
+        # Click 8.1 snapshots stderr before its capture wrapper is flushed.
+        if isinstance(config.output, io.TextIOWrapper):
+            config.output.reconfigure(write_through=True)
         click.echo(value)
 
     result = runner.invoke(
