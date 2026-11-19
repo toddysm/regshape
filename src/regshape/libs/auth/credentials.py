@@ -107,10 +107,14 @@ def _verify_credentials(
     :param password: Password or access token to verify.
     :param insecure: Use HTTP instead of HTTPS when ``True``.
     :param timeout: Registry request timeout in seconds; defaults to 10.
-    :raises AuthError: If authentication fails or the final status is not 200.
+    :raises AuthError: If either credential is ``None``, authentication fails
+        or the final status is not 200.
     :raises requests.exceptions.RequestException: On transport errors.
     :raises ValueError: If the registry is empty or includes a scheme.
     """
+    if username is None or password is None:
+        raise AuthError("Login failed", "username and password must not be None")
+
     # The transport imports credential resolution during its initialization.
     from regshape.libs.transport.client import RegistryClient, TransportConfig
 
@@ -154,7 +158,7 @@ def login(
     :param insecure: Use HTTP instead of HTTPS when ``True``.
     :param docker_config_path: Alternate Docker config file used for storage.
     :param timeout: Registry request timeout in seconds; defaults to 10.
-    :raises AuthError: If verification fails.
+    :raises AuthError: If either credential is ``None`` or verification fails.
     :raises CredentialStoreError: If storage raises an ``AuthError``.
     :raises requests.exceptions.RequestException: On verification transport errors.
     :raises ValueError: If the registry is empty or includes a scheme.

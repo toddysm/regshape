@@ -34,13 +34,18 @@ before returning or raising; no credentials are stored.
 Returns `None` on success. Raises `AuthError` on authentication failure or a
 non-200 final response. Requests transport exceptions propagate unchanged.
 An empty registry or one containing a URL scheme raises `ValueError`.
+If either credential is `None`, raises `AuthError` before constructing the
+transport or looking up stored credentials. Login requires explicit values;
+it never substitutes stored or anonymous credentials for missing arguments.
 
 A registry that allows anonymous access to `/v2/` may return `200` without
 challenging the supplied credentials. Success does not establish repository
 pull/push permissions or token scope.
 
 Verification retains `@track_time`. Its method-timing label remains
-`_verify_credentials` for compatibility with existing CLI telemetry. Use a
+`_verify_credentials` for compatibility with existing CLI telemetry. The public
+function is an alias, so introspection (`__name__` and `help()`) and tracebacks
+also retain that private implementation name. Use a
 [library telemetry session](telemetry.md) to collect SDK timing or HTTP diagnostics.
 
 ## `login`

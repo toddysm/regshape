@@ -1,5 +1,6 @@
 """Verify SDK authentication outcomes, configuration and persistence ordering."""
 
+import json
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -9,6 +10,33 @@ from regshape.libs.auth import login, verify_credentials
 from regshape.libs.errors import AuthError, CredentialStoreError
 
 REGISTRY = "registry.example.com"
+
+
+@pytest.mark.parametrize("operation", [verify_credentials, login])
+@pytest.mark.parametrize(
+    ("username", "password"), [(None, None), (None, "token"), ("alice", None)]
+)
+def test_missing_credentials_rejected_before_io(
+    operation, username, password, tmp_path
+):
+    """Missing explicit credentials cannot resolve or overwrite stored credentials."""
+    config_path = tmp_path / "config.json"
+    original_config = json.dumps({"auths": {REGISTRY: {"auth": "Z29vZDpzZWNyZXQ="}}})
+    config_path.write_text(original_config)
+    options = {"docker_config_path": str(config_path)} if operation is login else {}
+
+    with (
+        patch("regshape.libs.transport.client.RegistryClient") as factory,
+        patch("regshape.libs.auth.credentials.dockerconfig.load_config") as load,
+        patch("regshape.libs.auth.credentials.store_credentials") as store,
+        pytest.raises(AuthError, match="username and password must not be None"),
+    ):
+        operation(REGISTRY, username, password, **options)
+
+    factory.assert_not_called()
+    load.assert_not_called()
+    store.assert_not_called()
+    assert config_path.read_text() == original_config
 
 
 @pytest.mark.parametrize("options", [{}, {"insecure": True, "timeout": 27}])
