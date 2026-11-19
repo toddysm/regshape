@@ -43,18 +43,17 @@ regshape auth logout [OPTIONS] --registry <registry>
 
 ### Behavior
 
-1. Resolve credentials from flags (or prompt interactively if omitted).
-2. Issue `GET /v2/` using a direct HTTP request with the `requests` library
-   so that the full Bearer challenge/401-retry cycle is executed automatically
-   (required for Docker Hub and other token-based registries).
-   > **Note:** This will migrate to `RegistryClient` (via `AuthMiddleware`) once
-   > the `libs/transport/` layer is implemented.
-3. If the final response is `200` or `401` on retry, treat as credential failure.
-4. On success, persist credentials:
-   - If the registry has a `credHelpers` entry in `~/.docker/config.json`,
-     use `dockercredstore.store()`.
-   - Otherwise, write Base64-encoded `username:password` into the `auths`
-     section of `~/.docker/config.json`.
+1. Resolve credentials from flags, `--password-stdin` or stored Docker
+   credentials; prompt interactively for any missing username/password.
+2. Delegate verification and persistence to
+   [`regshape.libs.auth.login`](../../docs/library/auth.md#login).
+   The library uses `RegistryClient` for `GET /v2/`, including the full
+   authentication challenge/retry cycle. Only a final `200` succeeds.
+3. After successful verification, the library stores credentials using the
+   configured credential helper, global `credsStore` or Docker config `auths`
+   fallback. Failed verification never attempts storage.
+4. Print `Login succeeded.`. The CLI retains responsibility for input and
+   error rendering; it makes no HTTP requests itself.
 
 ### Exit Codes
 
@@ -183,7 +182,7 @@ which those registries accept for public repositories.
 
 | File | Role |
 |------|------|
-| `src/regshape/libs/auth/credentials.py` | `resolve_credentials()` helper |
+| `src/regshape/libs/auth/credentials.py` | Credential resolution, verification, login, storage and removal |
 | `src/regshape/cli/auth.py` | Click `auth` group + `login` / `logout` commands |
 | `src/regshape/cli/main.py` | Top-level group; registers `auth` group; calls `resolve_credentials()` |
 

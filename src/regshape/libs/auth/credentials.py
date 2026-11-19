@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 
 """
-:mod: `credentials` - Credential resolution for OCI registries
+:mod: `credentials` - Credential management for OCI registries
 ==============================================================
 
     module:: credentials
     :platform: Unix, Windows
-    :synopsis: Resolves credentials for an OCI registry using a priority chain:
-               explicit flags → Docker credHelpers → docker config auths → anonymous.
+    :synopsis: Resolves, verifies, stores and removes registry credentials.
+               Resolution uses explicit arguments, Docker credential helpers,
+               Docker config auths, then anonymous access.
     moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
@@ -16,11 +17,12 @@ import binascii
 import json
 import logging
 import os
-
 from typing import Optional, Tuple
 
+from regshape.libs._http import ClosingResponse
 from regshape.libs.auth import dockerconfig, dockercredstore
-from regshape.libs.errors import AuthError
+from regshape.libs.decorators.timing import track_time
+from regshape.libs.errors import AuthError, CredentialStoreError
 
 log = logging.getLogger(__name__)
 
@@ -83,6 +85,89 @@ def resolve_credentials(
     # Priority 4 — anonymous
     log.debug("No credentials found for %s; using anonymous access", registry)
     return None, None
+
+
+@track_time
+def _verify_credentials(
+        registry: str,
+        username: str,
+        password: str,
+        *,
+        insecure: bool = False,
+        timeout: int = 10,
+) -> None:
+    """Verify credentials with ``GET /v2/`` without persisting them.
+
+    The registry transport handles authentication challenges and retries.
+    A final HTTP 200 response indicates success; other statuses are rejected.
+    The response is closed before returning or raising.
+
+    :param registry: Registry hostname, optionally with a port, without a scheme.
+    :param username: Explicit username to verify.
+    :param password: Password or access token to verify.
+    :param insecure: Use HTTP instead of HTTPS when ``True``.
+    :param timeout: Registry request timeout in seconds; defaults to 10.
+    :raises AuthError: If authentication fails or the final status is not 200.
+    :raises requests.exceptions.RequestException: On transport errors.
+    :raises ValueError: If the registry is empty or includes a scheme.
+    """
+    # The transport imports credential resolution during its initialization.
+    from regshape.libs.transport.client import RegistryClient, TransportConfig
+
+    config = TransportConfig(
+        registry=registry,
+        insecure=insecure,
+        username=username,
+        password=password,
+        timeout=timeout,
+    )
+    client = RegistryClient(config)
+    with ClosingResponse(client.get("/v2/")) as response:
+        if response.status_code != 200:
+            raise AuthError(
+                "Login failed",
+                f"authentication rejected (status {response.status_code})",
+            )
+
+
+# Preserve the existing CLI method-timing label while exposing a public SDK API.
+verify_credentials = _verify_credentials
+
+
+def login(
+        registry: str,
+        username: str,
+        password: str,
+        *,
+        insecure: bool = False,
+        docker_config_path: str | None = None,
+        timeout: int = 10,
+) -> None:
+    """Verify explicit credentials, then persist them using Docker configuration.
+
+    Credentials are stored only after successful verification. This operation
+    does not resolve missing credentials, prompt or print a success message.
+
+    :param registry: Registry hostname, optionally with a port, without a scheme.
+    :param username: Explicit username to verify and store.
+    :param password: Password or access token to verify and store.
+    :param insecure: Use HTTP instead of HTTPS when ``True``.
+    :param docker_config_path: Alternate Docker config file used for storage.
+    :param timeout: Registry request timeout in seconds; defaults to 10.
+    :raises AuthError: If verification fails.
+    :raises CredentialStoreError: If storage raises an ``AuthError``.
+    :raises requests.exceptions.RequestException: On verification transport errors.
+    :raises ValueError: If the registry is empty or includes a scheme.
+    """
+    verify_credentials(
+        registry, username, password, insecure=insecure, timeout=timeout,
+    )
+    try:
+        store_credentials(
+            registry, username, password, docker_config_path=docker_config_path,
+        )
+    except AuthError as error:
+        raise CredentialStoreError(error) from error
 
 
 def store_credentials(

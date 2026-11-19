@@ -523,6 +523,57 @@ class TestAuthLoginCommand:
         assert result.exit_code == 0, result.output
         assert "Login succeeded." in result.output
 
+    def test_login_delegates_to_library(self):
+        """The CLI forwards resolved input and connection/storage options to the SDK."""
+        with patch("regshape.cli.auth.registry_login") as mock_login:
+            result = self._runner().invoke(
+                regshape,
+                ["--insecure", "auth", "login", "-r", REGISTRY,
+                 "-u", "alice", "--password-stdin", "--docker-config", "custom.json"],
+                input="token\n",
+            )
+
+        assert result.exit_code == 0, result.output
+        assert result.stdout == "Login succeeded.\n"
+        mock_login.assert_called_once_with(
+            REGISTRY, "alice", "token", insecure=True, docker_config_path="custom.json",
+        )
+
+    @pytest.mark.parametrize("status", [403, 500])
+    def test_login_rejection_preserves_message(self, status):
+        """Final registry rejection retains the existing stderr wording and exit code."""
+        with patch("requests.request", return_value=_make_response(status)), \
+             patch("regshape.libs.auth.credentials.store_credentials") as store:
+            result = self._runner().invoke(
+                regshape,
+                ["auth", "login", "-r", REGISTRY, "-u", "alice", "-p", "wrong"],
+            )
+
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert result.stderr == (
+            f"Error [{REGISTRY}]: Login failed : "
+            f"authentication rejected (status {status})\n"
+        )
+        store.assert_not_called()
+
+    def test_login_storage_failure_preserves_message(self):
+        """Storage errors keep their CLI-specific prefix after delegation to the SDK."""
+        with patch("requests.request", return_value=_make_response(200)), \
+             patch("regshape.libs.auth.credentials.store_credentials",
+                   side_effect=AuthError("store failed", "helper unavailable")):
+            result = self._runner().invoke(
+                regshape,
+                ["auth", "login", "-r", REGISTRY, "-u", "alice", "-p", "token"],
+            )
+
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert result.stderr == (
+            f"Error [{REGISTRY}]: Could not store credentials: "
+            "store failed : helper unavailable\n"
+        )
+
 
 # ===========================================================================
 # TestAuthLogoutCommand
