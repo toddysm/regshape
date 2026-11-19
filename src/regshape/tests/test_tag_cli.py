@@ -238,7 +238,7 @@ class TestTagDeleteCommand:
                 regshape, ["tag", "delete", "-i", f"{REGISTRY}/{REPO}@{digest}"],
             )
         assert result.exit_code == 2, result.output
-        assert "tag delete requires a tag reference" in result.stderr
+        assert "tag delete requires a tag reference" in result.output
         delete_request.assert_not_called()
 
     def test_delete_success(self):
