@@ -282,6 +282,55 @@ Without `--output`, `blob get` still downloads and verifies the content, then
 discards it. Use `blob head` when you only need metadata or an existence check.
 The tiny example can finish before intermediate frames are visible.
 
+### Read aligned download rows
+
+On wide terminals, `artifact pull` and `blob get` use padded columns separated by two spaces:
+object (at least 18 characters), shortened digest (algorithm and 12 hexadecimal
+characters plus `...`), a bracketed 20-cell bar, right-aligned received/total
+bytes (at least 23 characters), then status. Widths grow together for all live
+rows when a larger field arrives, not independently per object. Uploads and
+standalone `manifest get` keep the layouts illustrated elsewhere in this guide.
+
+For example, separate snapshots of a blob download include:
+
+```text
+Blob 1/1            sha256:aaaaaaaaaaaa...  [■■■■■■■■■■□□□□□□□□□□]      24.0 MiB / 48.0 MiB  Downloading
+Blob 1/1            sha256:aaaaaaaaaaaa...  [■■■■■■■■■■■■■■■■■■■■]      48.0 MiB / 48.0 MiB  Verifying
+Blob 1/1            sha256:aaaaaaaaaaaa...  [■■■■■■■■■■■■■■■■■■■■]      48.0 MiB / 48.0 MiB  Downloaded
+```
+
+Only the object keyword/type, role and digest are colored: bright magenta for indexes,
+bright cyan for manifests, bright yellow for configuration blobs and bright blue
+for layers/other blobs. Numbers, padding, bars, bytes and statuses remain neutral.
+Setting `NO_COLOR` to a non-empty value disables colors, not progress;
+an empty value leaves colors enabled.
+If stderr's encoding cannot represent `■`/`□`, bars use `=`/`-`.
+The same fallback applies when `VTE_CJK_WIDTH=2` advertises double-width
+ambiguous characters, or conservatively in Japanese/Chinese/Korean locales.
+`VTE_CJK_WIDTH=1` explicitly selects narrow squares when the encoding supports
+them. If a custom terminal uses wide squares without a matching locale, set
+`VTE_CJK_WIDTH=2`; an output-only stream cannot safely discover that setting.
+
+Unknown totals show a moving indeterminate cell and `received / ?`, never a
+percentage or remaining-time estimate. A known empty body retains a zero total;
+failed or cancelled empty downloads show an empty bar.
+Rates and estimates are optional suffixes. A full bar is **not** verification,
+storage or whole-artifact publication success; read the lifecycle status.
+
+Narrow terminals first omit the digest and spare byte padding, shortening retry
+and local-storage statuses while keeping shared column widths. At 80 columns,
+ordinary byte counts retain the full 20-cell bar and received/total bytes:
+
+```text
+Blob 1/3            [■■■■■■■■■■□□□□□□□□□□]  24.0 MiB / 48.0 MiB  Downloading
+```
+
+Smaller terminals omit the bar, then totals and long object labels.
+Very narrow rows use `IN`/`MN`/`BN` (kind plus ordinal, such as `I1`,
+`M1`, `B10`) and shortened statuses; an elided byte field
+ends in `~`. Progress reserves the final terminal column to avoid wrapping.
+Resizing clears the previous live block without erasing earlier diagnostics.
+
 ## Read a progress row
 
 Each blob has **one persistent row**, not a line for every state. Byte updates,
@@ -319,9 +368,14 @@ The renderer also accepts interleaved objects: an object's number remains stable
 while other objects advance or finish first. Completed rows are retained above
 the remaining live block; retries reset only the affected object's byte count
 and rate. On short terminals, excess active rows wait offscreen rather than
-scrolling the live block out of reach. This renderer support does **not** enable
-parallel artifact graph acquisition or HTTP range requests by itself; those
-engines and command controls remain separate delivery work.
+scrolling the live block out of reach. The library aggregates range progress
+into its parent blob before delivery to the renderer; workers never write to
+the terminal. See [download controls](../library/downloads.md) for scheduling
+and range policies, or [tuning and SDK examples](parallel-downloads.md) for
+per-invocation caps, scratch costs and retry/rollback choices. The functional
+interleaving from [#145](https://github.com/toddysm/regshape/issues/145) is distinct
+from the [#141](https://github.com/toddysm/regshape/issues/141) visual formatting
+above; neither adds fields or controls to stdout/JSON.
 
 Changed-ETag fallback observations are collected without interrupting an active
 download. Once the operation has closed progress and cleanup, its successful
@@ -329,14 +383,18 @@ result is written/flushed before one fixed warning on stderr. Artifact pulls
 coalesce unique affected blob counts. Warnings remain visible with
 `--no-progress`, artifact `--json`, `NO_COLOR` and redirected stderr; failures say
 that fallback was attempted, not that recovery succeeded. A failed output sink
-is not reused to deliver a warning. The current full-stream-only download engine
-does not generate changed-ETag range fallbacks yet.
+is not reused to deliver a warning.
+No verbose/telemetry flag is required. ETag rotation alone is not corruption;
+only a clean full fallback matching the original digest/size succeeds. The
+same row advances attempt and resets accepted bytes after old workers drain;
+cumulative received-byte statistics can grow. See
+[exact warning wording](parallel-downloads.md#an-etag-changed-check-the-final-outcome).
 
 ### What the numbers mean
 
 | Transfer | Counted bytes |
 | --- | --- |
-| Blob download | Payload chunks actually consumed, including verification-only downloads |
+| Blob download | Unique accepted payload bytes for the current attempt, including verification-only downloads; retries/duplicate ranges are not added again |
 | Monolithic upload | Bytes consumed by the HTTP client from the source; not proof of registry acceptance |
 | Chunked upload | Bytes in chunks whose requests succeeded; buffered request retries count once |
 | Already present | Zero transferred bytes; a unique skipped blob |
@@ -381,6 +439,11 @@ Blob 1/1 sha256:ab12... Retrying attempt 2 0 B/100.0 MiB
 Buffered chunk retries do not double-count accepted bytes and need not produce
 a separate retry label. Progress does not enable a new retry policy, resume a
 failed upload, or repair authentication or transport errors.
+Pooled **downloads** separately default to three per-request retries, including
+429, and expose `--download-retries N` (zero disables). They can retry full streams
+only before hash/file commitment, or an uncommitted private range within policy.
+`--sequential` keeps pooled retry behavior; only `--legacy-transport` rolls back
+transport. See [throttling recovery](parallel-downloads.md#recover-from-429-without-disabling-verification).
 
 ### Failure and cancellation
 
@@ -405,6 +468,11 @@ command after result data was printed. Progress cleanup is best-effort if
 terminal output itself is failing;
 it must not replace the original transfer exception. A failed operation does
 not undo data already accepted by the registry.
+Download cancellation stops scheduling and wakes retry backoff but waits for
+active workers before safe cleanup. Finite Requests timeouts limit socket
+inactivity, not an entire read: a trickling peer can delay joining indefinitely.
+Standalone blob partial-file/overwrite rules and complete-artifact publication
+remain distinct; see [output and cancellation](parallel-downloads.md#output-cancellation-and-troubleshooting).
 
 ## Push a layout or Docker image
 

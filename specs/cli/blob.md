@@ -24,6 +24,9 @@ Usage: regshape blob [OPTIONS] COMMAND [ARGS]...
 | `upload` | Upload a blob (monolithic or chunked) |
 | `mount` | Mount a blob from another repository |
 
+For download controls, scratch budgeting, SDK equivalents and recovery, use
+the [parallel-download guide](../../docs/guides/parallel-downloads.md).
+
 ---
 
 ## Usage
@@ -148,9 +151,9 @@ Unlike `blob head`, this transfers the entire blob.
 
 1. Validate download controls and conflicts before resolving credentials.
 2. Resolve credentials and issue full or eligible ranged `GET /v2/{name}/blobs/{digest}`.
-3. If `--output` is provided: stream the response body to the file at
-   `--output` in `--chunk-size` byte increments, computing a running
-   digest as each chunk is written.
+3. If `--output` is provided: stream/hash into that caller-trusted path,
+   overwriting an existing file. Pooled I/O buffers are at most 64 KiB;
+   ranges are assembled/hashed in original byte order.
 4. After the last byte is written, compare the computed digest against
    `--digest`. If they differ: delete the partial file and exit `1` with
    an error message.
@@ -174,8 +177,32 @@ and verifies one fresh full GET, retaining the original size/digest requirement.
 conflicts with explicit sequential/concurrency/range-count/retry/scratch controls;
 `--range-size` remains validated but unused. Legacy keeps the original transport
 and retry behavior; sequential keeps pooled behavior. Pooled retry backoff honors
-`Retry-After` and cancellation. Exhausted throttling errors identify the retry and
-concurrency controls.
+bounded `Retry-After` and cancellation. The budget is per request, including its
+authentication resends/probe, not a whole-blob retry allowance after commitment.
+429/503 delays above 300 seconds fail explicitly. Exhausted throttling errors
+identify the retry and concurrency controls. For example, the diagnostic suffix
+is `registry throttled the download. Adjust --download-retries or reduce
+--concurrency/--ranges-per-blob (or use --sequential).`
+
+Both object/range requests and authentication/redirect traffic share one
+per-invocation cap; other commands/SDK calls have separate caps. Range scratch
+is bounded by concurrency times range size, excluding output and metadata.
+Temporary memory-backed storage consumes RAM; spooling adds a write and ordered
+read even when no output is saved. HTTP ranges require a strong validator and
+usable size metadata, not necessarily an `Accept-Ranges` header. They are not
+the in-order POST/PATCH/PUT protocol used by chunked uploads.
+
+Standalone output is **not transactional**. Most transport/disk/callback failures
+and cancellation can leave overwritten partial bytes. Pooled digest-mismatch
+cleanup deletes the invalid output filename after identity checks, even after overwrite; no
+original contents are restored. With a trusted symlink output, only the link
+is removed and the target may retain invalid bytes. Legacy unbounded receipt
+instead unlinks the output pathname without identity checks on mismatch and
+only logs deletion errors; it does not protect replacement files.
+Verify-only discards bytes
+after hashing, but still downloads the full content and can use bounded range
+scratch. Finite socket-inactivity timeouts do not bound cancellation-to-join
+latency for a trickling peer; cleanup waits for workers to stop.
 
 The [batch/status APIs](../../docs/library/downloads.md#public-batch-downloads)
 are library APIs; this command's stdout JSON is unchanged.
@@ -183,6 +210,11 @@ The command collects typed status independently of animation and emits any
 changed-ETag warning only after cleanup and the flushed JSON result. Failure
 warnings do not claim verification; failed renderer sinks retain their original
 exception rather than being reused for formatted errors/warnings.
+Warnings use plain stderr at normal verbosity, including `--no-progress`,
+nonterminal stderr and non-empty `NO_COLOR`. A successful warning asserts a
+verified full fallback; a failure warning says the operation did not complete.
+ETag rotation alone is not corruption. See
+[exact warning text and partial-output rules](../../docs/guides/parallel-downloads.md#an-etag-changed-check-the-final-outcome).
 
 #### Exit Codes
 
@@ -199,34 +231,37 @@ exception rather than being reused for formatted errors/warnings.
 #### Examples
 
 ```bash
-# Download a layer to disk
-regshape blob get \
-  --repo registry.example.com/myrepo \
-  --digest sha256:abc123 \
-  --output ./layer.tar.gz
+# Replace with a real config/layer digest in this repository.
+REPO='registry.example.com/myrepo'
+DIGEST='sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03'
 
-# Verify blob exists and print metadata without saving content
+# Download a blob to a trusted path (can overwrite).
 regshape blob get \
-  --repo registry.example.com/myrepo \
-  --digest sha256:abc123
+  --repo "$REPO" --digest "$DIGEST" --output ./layer.blob
 
-# Use a larger chunk size for a faster download
-regshape blob get \
-  --repo registry.example.com/myrepo \
-  --digest sha256:abc123 \
-  --output ./layer.tar.gz \
-  --chunk-size 1048576
+# Verify all bytes and print metadata without retaining content.
+regshape blob get --repo "$REPO" --digest "$DIGEST"
 
-# Request three concurrent 8 MiB ranges when the blob and registry permit
-regshape blob get --repo registry.example.com/myrepo --digest sha256:abc123 \
+# Streaming buffer size is independent of ranges (pooled maximum 64 KiB).
+regshape blob get --repo "$REPO" --digest "$DIGEST" --chunk-size 65536
+
+# Request up to three concurrent 8 MiB ranges for an eligible >=32 MiB blob.
+regshape blob get --repo "$REPO" --digest "$DIGEST" \
   --concurrency 4 --ranges-per-blob 3 --range-size 8388608
 
-# Keep pooled transport but serialize requests, or explicitly roll back transport
-regshape blob get --repo registry.example.com/myrepo --digest sha256:abc123 --sequential
-regshape blob get --repo registry.example.com/myrepo --digest sha256:abc123 --legacy-transport
+# Lower pressure and deliberately override the retry budget, including zero.
+regshape blob get --repo "$REPO" --digest "$DIGEST" --sequential --download-retries 5
+regshape blob get --repo "$REPO" --digest "$DIGEST" --download-retries 0
+
+# Explicitly roll back transport; no pooled retry/scratch overrides.
+regshape blob get --repo "$REPO" --digest "$DIGEST" --legacy-transport
 ```
 
 #### Output Format
+
+The fields are unchanged; pooled receipt reports verified digest and consumed
+entity size, while legacy retains header-derived metadata. The digest below is
+abbreviated for display, not a valid input.
 
 ```json
 {

@@ -102,7 +102,9 @@ content fails. Valid embedded descriptor data is verified and stored locally.
 ### Control parallel acquisition
 
 Supported clients default to four pooled request slots and one full stream per
-blob. Documents are discovered serially and all unique graph/byte limits are
+blob (C=4/W=1). This is one **per-invocation** cap across object, range,
+authentication and redirect requests, not a machine-wide limit or C times W.
+Documents are discovered serially and all unique graph/byte limits are
 reserved before independent blobs overlap. For eligible blobs at least four
 times the range size, opt into parallel byte ranges:
 
@@ -116,6 +118,13 @@ by concurrency times range size, in addition to stored artifact bytes. Scratch
 defaults to the private artifact staging namespace; `--scratch-dir` selects an
 existing caller-trusted root instead. Pooled retries default to three, including
 429 throttling; `--download-retries 0` disables them.
+Retries belong to each request, not the artifact as a whole; committed full
+streams cannot replay. A memory-backed scratch root uses RAM, and ranges add
+spool writes/reads in addition to saved artifact I/O. With the default range
+size, eligible blobs start at 32 MiB. Ranges and strong ETags are optional
+registry/storage capabilities; valid limitations select one full-stream
+fallback per blob, while malformed data or digest mismatch fails.
+HTTP ranges are not in-order OCI chunked uploads.
 
 Use `--sequential` for one-at-a-time acquisition on pooled transport; do not
 combine it with explicit concurrency/range ceilings. For genuine rollback,
@@ -127,7 +136,16 @@ before effects. See [download policy](../library/downloads.md).
 If an ETag changes, the affected blob may restart as a full stream. One bounded
 warning is emitted after the entire result/error and cleanup, counting unique
 affected blobs rather than repeated references. This remains active when
-progress is disabled and leaves stdout/JSON unchanged.
+progress is disabled and leaves stdout/JSON unchanged. Rotation alone is not
+corruption; success requires a clean fallback matching the original digest/size.
+Discarded attempts can increase received bytes. The warning uses plain stderr
+at normal verbosity, including with `--json`, nonterminal stderr and `NO_COLOR`;
+failure wording says the operation did not complete.
+
+For scratch/tmpfs budgeting, exact warning text, retry configuration precedence,
+SDK examples and 429 recovery, follow the
+[parallel-download guide](parallel-downloads.md). Its cancellation guidance
+includes the unbounded join latency possible with trickling peers.
 
 ## 2. Choose directory or archive
 
@@ -254,7 +272,7 @@ See [push results and failure boundaries](../../specs/cli/layout-push.md).
 
 ## Progress: captured screens, not an overall percentage
 
-These are actual captures using the repository's
+These are wide-terminal captures using the repository's
 [nested/shared fixture](../../src/regshape/tests/artifact_fixtures.py) and
 [command terminal harness](../../src/regshape/tests/test_artifact_pull_cli.py).
 Digests are shortened **display labels**, not runnable inputs. The fixture
@@ -263,16 +281,16 @@ contains opaque payloads, not an executable image.
 The initial root row is upgraded in place when its kind/digest becomes known:
 
 ```text
-Manifest 1 Preparing 0 B (total unknown)
+Manifest 1          -                       [□□□□■□□□□□□□□□□□□□□□]                  0 B / ?  Preparing
 ```
 
 Successive snapshots of the same tiny config row include:
 
 ```text
-Blob 1 (config) sha256:99c7... Downloading 0 B/25 B [------------] 0%
-Blob 1 (config) sha256:99c7... Received 25 B/25 B
-Blob 1 (config) sha256:99c7... Verifying 25 B/25 B
-Blob 1 (config) sha256:99c7... Downloaded 25 B/25 B
+Blob 1 (config)     sha256:99c78239400e...  [□□□□□□□□□□□□□□□□□□□□]               0 B / 25 B  Downloading
+Blob 1 (config)     sha256:99c78239400e...  [■■■■■■■■■■■■■■■■■■■■]              25 B / 25 B  Verifying
+Blob 1 (config)     sha256:99c78239400e...  [■■■■■■■■■■■■■■■■■■■■]              25 B / 25 B  Received
+Blob 1 (config)     sha256:99c78239400e...  [■■■■■■■■■■■■■■■■■■■■]              25 B / 25 B  Downloaded
 ```
 
 These are overwritten states, not four retained rows. Blob transport can also
@@ -281,16 +299,16 @@ Receipt or 100% transferred is not stored success. No artificial delay is added
 for the 25-byte config. Routine redraws are throttled, so very short states need
 not be visibly distinct on every terminal.
 
-Final archive screen, with one row per unique object:
+Final archive screen, with one row per unique object (completion order can vary):
 
 ```text
-Index 1 sha256:43ba... Downloaded 974 B/974 B
-Index 2 sha256:b572... Downloaded 183 B/183 B
-Index 3 sha256:e169... Downloaded 586 B/586 B
-Manifest 1 sha256:6ffc... Downloaded 736 B/736 B
-Blob 1 (config) sha256:99c7... Downloaded 25 B/25 B
-Blob 2 (layer) sha256:59e5... Downloaded 32 B/32 B
-Manifest 2 sha256:4f82... Downloaded 724 B/724 B
+Index 1             sha256:43ba918cc708...  [■■■■■■■■■■■■■■■■■■■■]            974 B / 974 B  Downloaded
+Index 2             sha256:b572bf153499...  [■■■■■■■■■■■■■■■■■■■■]            183 B / 183 B  Downloaded
+Index 3             sha256:e169cf10b886...  [■■■■■■■■■■■■■■■■■■■■]            586 B / 586 B  Downloaded
+Manifest 1          sha256:6ffc2b1d3ab2...  [■■■■■■■■■■■■■■■■■■■■]            736 B / 736 B  Downloaded
+Manifest 2          sha256:4f8254f069e3...  [■■■■■■■■■■■■■■■■■■■■]            724 B / 724 B  Downloaded
+Blob 1 (config)     sha256:99c78239400e...  [■■■■■■■■■■■■■■■■■■■■]              25 B / 25 B  Downloaded
+Blob 2 (layer)      sha256:59e5ca540bed...  [■■■■■■■■■■■■■■■■■■■■]              32 B / 32 B  Downloaded
 Packaging OCI archive ... done
 Publishing artifact ... done
 ```
@@ -300,40 +318,29 @@ five edges, not five more transfers. The directory variant has only Publishing,
 not Packaging. These local phases are separate from network throughput; stored
 objects alone do not mean the artifact is published.
 
-The [renderer fixtures](../../src/regshape/tests/test_artifact_pull_cli.py#L289)
-exercise unknown totals, local sources, cancellation, and failure. Representative
-captured rows from those normalized observations:
-
-```text
-Index 1 Downloading 50 B (total unknown) 25 B/s
-Index 1 Received 50 B (total unknown)
-Index 1 Verifying 50 B (total unknown)
-Index 1 Failed 50 B
-Index 1 Cancelled 50 B
-Blob 1 (config) sha256:4413... Stored (embedded) 2 B/2 B
-Blob 1 (config) sha256:4413... Stored (local) 2 B/2 B
-```
-
-Unknown totals have no percentage or remaining-time estimate. Embedded/local
-rows have no network rate; duplicates do not create fake skipped rows.
+The [renderer fixtures](../../src/regshape/tests/test_artifact_pull_cli.py)
+exercise unknown totals, local sources, cancellation, and failure.
+Unknown totals display `received / ?` and a moving indeterminate cell, with no
+percentage or remaining-time estimate. Embedded/local rows end with
+`Stored (embedded)` or `Stored (local)` and have no network rate; duplicates do
+not create fake skipped rows. Each bar has exactly 20 cells. Only the object
+type, role and digest are colored; a non-empty `NO_COLOR` disables styles without changing visible
+column positions, and incompatible encodings use `=`/`-` instead of `■`/`□`.
+See [download columns and compact-terminal behavior](live-transfer-progress.md#read-aligned-download-rows).
 Final stdout field order and the full result schema are in the
 [command reference](../../specs/cli/artifact.md#completed-output).
 
-Actual missing-config capture from the simple-root failure fixture (Hypertext
-Transfer Protocol, HTTP, status 404):
+The simple-root missing-config fixture retains one completed manifest row and a
+`Failed` config row, then emits the Hypertext Transfer Protocol (HTTP) 404 error:
 
 ```text
-Manifest 1 sha256:8787... Downloaded 543 B/543 B
-Blob 1 (config) sha256:0232... Failed 0 B/19 B
 Error [registry.example/source:moving]: Blob not found: registry.example/source@sha256:023288e5045e93ce2bf1d4159183249b2fe416d09d1ae79e0d48f6d2809e1b64 : HTTP 404
 ```
 
-Cancellation at the same mocked boundary instead retained:
+Cancellation at the same mocked boundary instead retains a `Cancelled` config
+row and the completed manifest, followed by:
 
 ```text
-Manifest 1 sha256:8787... Downloaded 543 B/543 B
-Blob 1 (config) sha256:0232... Cancelled 0 B/19 B
-
 Aborted!
 ```
 
@@ -348,6 +355,9 @@ can always succeed.
 | Unsupported native operation, unsafe parent/ACL, Windows | Use a supported Linux/macOS environment meeting the trust contract; do not disable safety checks. |
 | Existing output | Choose another new destination; inspect existing content before any manual removal. No resume is attempted. |
 | Missing/corrupt object, invalid source/tag, exhausted budget | Fix the source or deliberately adjust the named budget; retry to a new destination. A partial graph is not success. |
+| HTTP 429 / retry exhaustion | Wait for quota, reduce `--concurrency`/`--ranges-per-blob` or use pooled `--sequential`, and deliberately choose `--download-retries N`. Do not bypass integrity checks. |
+| Missing range metadata or ETag-change warning | Check the selected strategy/final outcome, not just transferred bytes; a safe full fallback can succeed only after digest/size verification. See [fallback recovery](parallel-downloads.md#4-handle-capability-fallback-and-retries). |
+| Scratch disk/memory pressure | Budget C*R on top of output staging/archive costs. Use trusted disk scratch or reduce C/R; tmpfs uses memory and verify-only ranges still spool. |
 | Cancellation or handled failure before publication | Active row fails/cancels; no success JSON. Owned incomplete storage is cleaned when safe. Keyboard interruption retains `Aborted!` behavior. |
 | Cleanup failure, replacement race, or process kill | Inspect the reported retained path. Do not blindly remove `.regshape-*` paths or another process's data; automatic takeover is not supported. |
 | Summary/diagnostic/log failure **after publication** | Exit is nonzero, but complete output is retained. Verify that output before retrying; failure is not proof that the destination is absent. |
@@ -375,6 +385,9 @@ layer-position downloads [#112](https://github.com/toddysm/regshape/issues/112)
 remain **Planned/unimplemented**. Full pull includes those blobs but adds no
 `--part`, `--raw`, `--platform`, or component selector.
 No release or package-version change is implied by these docs.
+Cancellation stops scheduling before joining active readers. Socket-inactivity
+timeouts do not bound elapsed read time; a continuously trickling peer can delay
+cleanup indefinitely. Do not remove scratch or staging while it is still owned.
 
 ## Try the workflow without a registry
 
@@ -416,7 +429,8 @@ with TemporaryDirectory() as temporary:
         with (
             patch("regshape.libs.transport.client.resolve_credentials",
                   return_value=(None, None)),
-            patch("requests.request", side_effect=store.respond),
+            patch("requests.request", side_effect=store.respond) as send,
+            patch("requests.Session.request", side_effect=send),
         ):
             pulled = runner.invoke(regshape, [
                 "artifact", "pull", "-a", "registry.example/source:moving",

@@ -52,6 +52,11 @@ chunked uploads.
 See the complete [blob signatures](../../specs/operations/blobs.md),
 [layout push signature](../../specs/cli/layout-push.md), and
 [Docker push signature](../../specs/docker/docker-desktop-integration.md).
+`get_blobs` additionally accepts the same blob progress observer, under one
+batch-wide cap. Singular, batch and artifact downloads expose a separate
+[`download_status_callback` with typed status/statistics](downloads.md#status-and-statistics);
+it does not change `TransferProgress` or CLI JSON. Range parts are aggregated
+into the parent blob's current accepted prefix, not independent progress rows.
 
 ## Event fields
 
@@ -112,6 +117,19 @@ retain relative order. Excess live rows wait offscreen when the terminal is
 short. Full snapshots and rate clocks are retained only for active objects;
 completed identities/ordinals remain compact deduplication metadata. Routine
 redraws and displayed success counts do not scan completed history.
+
+Artifact pulls and blob downloads render two-space-separated object, digest,
+20-cell bar, bytes and status columns. Object/digest/byte widths are shared and
+grow monotonically within the invocation; earlier scrollback is not rewritten.
+Padding, truncation and cursor footprints use plain visible text before
+applying semantic color to type/role and digest only. A non-empty `NO_COLOR` disables those
+styles; unsupported output encodings, wide-ambiguous terminal hints and
+conservatively East Asian locales select ASCII bar cells. Unknown totals
+remain indeterminate with `received / ?`. Compact layouts omit optional fields
+uniformly, preserving cleanup across resizes. See the
+[download row guide](../guides/live-transfer-progress.md#read-aligned-download-rows).
+Uploads and standalone manifests retain their existing layouts and completion
+rules. No worker/part event is promoted to a new terminal row.
 
 The [download status callback](downloads.md#status-and-statistics)
 is separate from byte progress. CLI consumers collect `etag_changed` without a

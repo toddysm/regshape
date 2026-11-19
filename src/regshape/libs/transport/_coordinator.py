@@ -436,7 +436,9 @@ class _Coordinator:
         self.progress_callback = progress_callback
         self.status_callback = status_callback
         self.parent = get_telemetry_config()
-        self.queue: Queue[_Record] = Queue(maxsize=4 * transport.options.concurrency)
+        self.queue: Queue[_Record | None] = Queue(
+            maxsize=4 * transport.options.concurrency
+        )
         self.cancelled = threading.Event()
         self.executor: ThreadPoolExecutor | None = None
         self.thread = threading.get_ident()
@@ -709,11 +711,28 @@ class _Coordinator:
             value, error, worker.stats, telemetry, worker.records, secondary_errors
         )
 
-    def _pump(self, *, discard: bool = False) -> None:
-        """Pump one record without waiting on Futures; defer success until caller finalization."""
+    def _wake(self, future: Future[_Outcome]) -> None:
+        """Wake observation pumping when a task stops, without retaining its result.
+
+        A full queue is already a wake-up; coalesce that notification rather
+        than blocking an executor callback or enlarging the bounded bridge.
+        """
         try:
-            record = self.queue.get(timeout=0.01)
+            self.queue.put_nowait(None)
+        except Full:
+            pass
+
+    def _pump(self, *, discard: bool = False, wait: bool = True) -> None:
+        """Pump one record, waiting only when no scheduling progress was made.
+
+        Nonwaiting turns refill available slots without an idle polling delay.
+        Success remains deferred until invoking-thread finalization.
+        """
+        try:
+            record = self.queue.get(timeout=0.01 if wait else 0)
         except Empty:
+            return
+        if record is None:
             return
         pending = self.pending.get(record.task)
         if pending is None:
@@ -885,6 +904,8 @@ class _Coordinator:
         source. Healthy terminal observers run before secondary cleanup diagnostics.
         Strategy is delivered before dispatch; rejected/unsubmitted jobs still
         retain a stopped record for invoking-thread cleanup.
+        Consume at most one result per source per turn so a freed slot can
+        receive the next range while another stopped range is assembled.
         Failures becoming ready between scans wait for error/fallback handling,
         never reaching a success result consumer.
 
@@ -910,6 +931,7 @@ class _Coordinator:
             while ready or self.pending:
                 if self.cancelled.is_set():
                     raise _DownloadCancelled("Download cancelled")
+                dispatched = False
                 for _ in range(len(ready)):
                     if len(self.pending) >= self.transport.options.concurrency:
                         break
@@ -1001,6 +1023,8 @@ class _Coordinator:
                                     Context().run, self._task, number, job
                                 )
                                 submitted = True
+                                pending.future.add_done_callback(self._wake)
+                                dispatched = True
                             finally:
                                 if not submitted:
                                     pending.future.set_result(_Outcome(
@@ -1011,7 +1035,7 @@ class _Coordinator:
                         ready.append(source)
                     else:
                         self._complete_source(source)
-                self._pump()
+                self._pump(wait=not dispatched and bool(self.pending))
                 if self.cancelled.is_set():
                     raise _DownloadCancelled("Download cancelled")
                 for pending in tuple(self.pending.values()):
@@ -1085,6 +1109,7 @@ class _Coordinator:
                         pending.job.cleanup(True)
                         self._release(pending)
                         self.failure_transfer = None
+                        break
                     self._complete_source(source)
                     if not source.pending:
                         del active_sources[identity]
@@ -1188,6 +1213,8 @@ class _Coordinator:
         if self.executor is not None:
             self.executor.shutdown(wait=True)
             self.executor = None
+            while not self.queue.empty():
+                self._pump(discard=True)
 
     def __exit__(
         self,

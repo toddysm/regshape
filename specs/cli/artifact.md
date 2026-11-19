@@ -88,6 +88,28 @@ before publication. `--sequential` keeps one-at-a-time graph acquisition but sti
 uses pooled transport; only `--legacy-transport` bypasses the new context.
 Range size remains validated but unused with legacy transport.
 See [range/retry behavior](../../docs/library/downloads.md).
+The cap is per invocation, not machine-wide, and includes authentication and
+redirects. With the default 8 MiB range size, range eligibility starts at
+32 MiB. Ranges need usable complete-size metadata and a strong ETag; neither
+range support nor that validator is an OCI requirement. Valid capability limits
+select one full-stream fallback per blob; malformed data and digest mismatch
+fail. Spooling adds writes/reads and its C*R bound excludes saved artifact
+staging/archive bytes. Memory-backed scratch consumes RAM, not free disk.
+See the [tuning and troubleshooting guide](../../docs/guides/parallel-downloads.md).
+
+Pooled retries default to three per request beyond the initial attempt, sharing
+the budget across authentication resends/probes. `--download-retries 0` disables
+them; `--sequential --download-retries 5` deliberately combines serial pooled
+scheduling and a larger budget. Exhausted 429 responses report the underlying
+registry/HTTP error; lower concurrency/range count and deliberately adjust
+the retry budget to recover. Unlike `blob get`, this command does not append a
+flag-specific throttling hint. 429/503 `Retry-After` is honored with backoff and a
+300-second maximum; larger delays fail rather than retrying early.
+Full-stream bytes already committed to output/hash cannot be replayed. A private
+uncommitted range may retry within its configured connection-error policy.
+Integrity/protocol failures are not repaired by retry, and failures before
+publication yield no success result. Cancellation wakes backoff but waits for
+active reads/worker shutdown; a trickling peer can prevent a bounded join time.
 
 Typed status collection remains active with `--json`, `--no-progress` and
 nonterminal stderr. If a validator changes, one warning follows the complete
@@ -95,6 +117,11 @@ artifact result/error and worker/output cleanup; repeated references count once
 per affected blob. Success states that fallback digests verified; failure says
 the operation did not complete. Warnings use stderr and do not alter stdout,
 JSON fields, publication or failure exit status.
+No verbose/telemetry flag is required, and `NO_COLOR` does not suppress the
+warning. An ETag rotation is not itself corruption: only a clean fallback
+matching the original size/digest succeeds. It resets the affected blob's
+accepted count/attempt after old jobs drain; received bytes remain cumulative.
+See [warning wording and recovery](../../docs/guides/parallel-downloads.md#an-etag-changed-check-the-final-outcome).
 
 ## Completed output
 
