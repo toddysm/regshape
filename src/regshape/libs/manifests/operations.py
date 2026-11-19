@@ -40,7 +40,7 @@ from regshape.libs.progress import (
     ManifestProgressCallback,
     _ManifestProgress,
 )
-from regshape.libs.refs import format_ref, validate_digest
+from regshape.libs.refs import format_ref, is_digest, validate_digest
 from regshape.libs.transport import RegistryClient
 
 _MANIFEST_CHUNK_SIZE = 64 * 1024
@@ -173,6 +173,44 @@ def head_manifest(
     except ValueError:
         size = 0
     return digest, media_type, size
+
+
+@track_time
+def resolve_digest(
+    client: RegistryClient,
+    repo: str,
+    reference: str,
+    *,
+    accept: str | None = None,
+) -> str:
+    """Resolve a parsed final reference token to a manifest digest.
+
+    Digest-shaped tokens pass through unchanged without HTTP or validation;
+    callers wanting strict supported-digest validation can use
+    :func:`~regshape.libs.refs.validate_digest`. Tags require one manifest HEAD.
+    A nonblank response digest is returned verbatim, not normalized/verified.
+
+    :param client: Caller-owned transport client for the target registry.
+    :param repo: Repository name, separate from the registry and reference.
+    :param reference: Parsed tag or digest token, not a complete artifact reference.
+    :param accept: Verbatim HEAD negotiation override. Omitted/``None`` uses
+        :data:`DEFAULT_MANIFEST_ACCEPT` through :func:`head_manifest`.
+    :returns: The original digest-shaped token or nonblank registry digest header.
+    :raises ManifestError: On registry errors or a missing/blank digest header.
+    :raises AuthError: On authentication failure.
+    :raises requests.exceptions.RequestException: On transport errors.
+    """
+    if is_digest(reference):
+        return reference
+    digest, _, _ = head_manifest(
+        client=client, repo=repo, reference=reference, accept=accept,
+    )
+    if not digest.strip():
+        raise ManifestError(
+            f"Cannot resolve tag {reference!r}",
+            "HEAD response is missing Docker-Content-Digest",
+        )
+    return digest
 
 
 @track_time

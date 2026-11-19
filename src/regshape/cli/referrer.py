@@ -25,7 +25,7 @@ from regshape.libs.errors import (
     ReferenceValidationError,
     ReferrerError,
 )
-from regshape.libs.manifests import DEFAULT_MANIFEST_ACCEPT, head_manifest
+from regshape.libs.manifests import resolve_digest
 from regshape.libs.referrers import list_referrers, list_referrers_all
 from regshape.libs.refs import parse_artifact_ref, validate_digest
 from regshape.libs.transport import RegistryClient, TransportConfig
@@ -97,13 +97,13 @@ def referrer_list(
     """List referrers for the manifest identified by ARTIFACT.
 
     ARTIFACT must embed the registry and may use a tag or digest reference.
-    Tags are resolved with a manifest HEAD request before querying referrers;
+    Tags are resolved by the SDK before querying referrers;
     digest references are used directly without a manifest lookup. References
     without a tag or digest resolve the ``latest`` tag. Resolution failures,
     including a missing digest response header, exit with code 1.
     Explicit digests are validated by the shared library helper; unsupported
     algorithms and malformed SHA-256/SHA-512 payloads exit with code 2.
-    Manifest lookup uses the library-owned negotiation default.
+    The SDK owns manifest lookup, negotiation defaults and missing-header errors.
 
     Use ``--artifact-type`` to filter by artifact type.  Use ``--all``
     to follow pagination and retrieve every referrer.  Use ``--json``
@@ -116,8 +116,8 @@ def referrer_list(
     except ValueError as exc:
         emit_error(image_ref, str(exc))
 
-    is_digest = "@" in image_ref
-    if is_digest:
+    # Preserve explicit @ usage errors before client/credential construction.
+    if "@" in image_ref:
         try:
             validate_digest(reference)
         except ReferenceValidationError as exc:
@@ -126,19 +126,7 @@ def referrer_list(
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
     try:
-        if not is_digest:
-            digest, _, _ = head_manifest(
-                client=client,
-                repo=repo,
-                reference=reference,
-                accept=DEFAULT_MANIFEST_ACCEPT,
-            )
-            if not digest.strip():
-                raise ManifestError(
-                    f"Cannot resolve tag {reference!r}",
-                    "HEAD response is missing Docker-Content-Digest",
-                )
-            reference = digest
+        reference = resolve_digest(client=client, repo=repo, reference=reference)
 
         if fetch_all:
             result = list_referrers_all(

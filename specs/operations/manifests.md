@@ -280,6 +280,44 @@ to `0` on parse failure or absence).
 
 ---
 
+### `resolve_digest`
+
+```python
+@track_time
+def resolve_digest(
+    client: RegistryClient,
+    repo: str,
+    reference: str,
+    *,
+    accept: str | None = None,
+) -> str:
+```
+
+Resolves a parsed final reference token, not a complete registry/repository
+reference. Classification uses `regshape.libs.refs.is_digest`: any digest-shaped
+token passes through unchanged without HTTP or validation. Call `validate_digest`
+separately when strict SHA-256/SHA-512 syntax validation is required.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `client` | `RegistryClient` | required | Caller-owned transport client |
+| `repo` | `str` | required | Repository name |
+| `reference` | `str` | required | Parsed tag or digest token |
+| `accept` | `str \| None` | `None` | Keyword-only HEAD override; `None` uses the library default |
+
+For a tag, calls `head_manifest` once and returns the registry's
+`Docker-Content-Digest` verbatim. Missing, empty or whitespace-only headers raise
+`ManifestError("Cannot resolve tag ...", "HEAD response is missing Docker-Content-Digest")`.
+Authentication, registry and transport errors propagate from HEAD. Resolution
+does not validate/verify a nonblank returned digest.
+
+The public export is `regshape.libs.manifests.resolve_digest`. Referrer operations
+retain their compatible `digest=` APIs: compose this resolver with
+`list_referrers` or `list_referrers_all`, as shown in the
+[SDK call path](../../docs/library/manifests.md#resolve-a-tag-and-list-referrers).
+
+---
+
 ### `push_manifest`
 
 ```python

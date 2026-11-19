@@ -36,6 +36,17 @@ src/regshape/libs/referrers/
 
 ## Public Operations
 
+### Tag references
+
+`list_referrers` and `list_referrers_all` retain their existing digest-only
+signatures. For a tag, first call the public
+`regshape.libs.manifests.resolve_digest(client, repo, reference)`, then pass
+its result as `digest` to either operation. The same client is used for HEAD
+and referrer GETs; digest-shaped input skips HEAD. Missing/blank digest headers
+raise `ManifestError` before listing. See the complete
+[SDK example](../../docs/library/manifests.md#resolve-a-tag-and-list-referrers)
+and [resolver contract](manifests.md#resolve_digest).
+
 ### `list_referrers`
 
 ```python
