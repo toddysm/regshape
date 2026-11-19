@@ -28,6 +28,19 @@ class AuthError(RegShapeError):
     pass
 
 
+class CredentialStoreError(AuthError):
+    """Credential persistence failed after successful login verification.
+
+    :param error: The original storage-layer authentication error.
+    :ivar error: Original error, retained for storage-specific CLI rendering.
+    """
+
+    def __init__(self, error: AuthError) -> None:
+        """Retain the storage error and add the failed operation's context."""
+        self.error = error
+        super().__init__("Could not store credentials", str(error))
+
+
 class ManifestError(RegShapeError):
     """
     Error caused by a malformed, unknown, or unprocessable manifest.

@@ -142,6 +142,7 @@ a release announcement or the separate planned config/layer-position selector.
 - [Complete Artifact Library](specs/operations/artifacts.md) — pull, observations, limits, and snapshots
 - [Download Policy, Batch API and Typed Status](docs/library/downloads.md) — pooled defaults, retries, rollback and statistics
 - [Library Telemetry](docs/library/telemetry.md) — framework-neutral configuration, scoped logs and cleanup
+- [Library Authentication](docs/library/auth.md) — verify credentials or verify and persist a registry login
 
 ## Contributing
 
