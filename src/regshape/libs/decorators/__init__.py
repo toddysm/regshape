@@ -6,8 +6,8 @@
 
     module:: decorators
     :platform: Unix, Windows
-    :synopsis: Provides three opt-in telemetry decorators controlled by CLI
-                flags and a shared TelemetryConfig context variable.
+    :synopsis: Provides framework-neutral telemetry decorators and scoped
+                configuration through a shared TelemetryConfig context variable.
 
                 ``@track_time``     -- per-method execution timing
                 ``@track_scenario`` -- named multi-step workflow timing
@@ -16,13 +16,12 @@
     moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
-import functools
 import sys
+from contextlib import AbstractContextManager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import IO, Callable, Optional
-
-import click
+from types import TracebackType
+from typing import IO, Literal, Optional
 
 from regshape.libs._http import report_secondary_failure
 from regshape.libs.decorators.metrics import PerformanceMetrics
@@ -48,8 +47,8 @@ class TelemetryConfig:
     :param output: Writable stream for telemetry output (defaults to stderr so
         it does not interfere with structured stdout output).
     :param log_file_path: Optional file path for telemetry log output.
-    :param log_file: File handle for log_file_path (managed by
-        telemetry_options).
+    :param log_file: Optional caller-owned log stream. A telemetry session
+        borrows this stream, or opens log_file_path when no stream is supplied.
     :param method_timings: Ordered list of ``(qualname, elapsed)`` pairs
         accumulated by ``@track_time`` during the current invocation. Consumed
         and cleared by ``@track_scenario`` (or by :func:`flush_telemetry` for
@@ -78,8 +77,8 @@ def configure_telemetry(config: TelemetryConfig) -> None:
     """
     Set the active telemetry configuration.
 
-    Call this once from ``cli/main.py`` after parsing CLI flags, before any
-    domain operations run.
+    This only activates the configuration; it does not open or close files or
+    flush telemetry. Use :func:`telemetry_session` for a managed scope.
 
     :param config: The telemetry configuration to activate.
     :type config: TelemetryConfig
@@ -98,116 +97,34 @@ def get_telemetry_config() -> TelemetryConfig:
     return _telemetry_config.get()
 
 
-def telemetry_options(func: Callable) -> Callable:
-    """
-    Click decorator that attaches ``--time-methods``, ``--time-scenarios``,
-    and ``--debug-calls`` options to a leaf command and automatically calls
-    :func:`configure_telemetry` before the command body executes.
+class _TelemetrySession(AbstractContextManager[TelemetryConfig]):
+    """Own one telemetry scope without modifying active exception objects."""
 
-    Apply this decorator on leaf commands so that the three telemetry flags
-    appear after the subcommand name on the command line, e.g.::
+    def __init__(self, config: TelemetryConfig, restore_config: bool) -> None:
+        """Borrow a configuration; defer file acquisition until entering."""
+        self.config = config
+        self.restore_config = restore_config
+        self._previous_config: TelemetryConfig
+        self._owned_log_file: IO | None = None
 
-        regshape auth login --time-methods --time-scenarios -r registry.example.com
+    def __enter__(self) -> TelemetryConfig:
+        """Open an optional append-only log, then activate the configuration."""
+        self._previous_config = get_telemetry_config()
+        if self.config.log_file_path and self.config.log_file is None:
+            self._owned_log_file = open(self.config.log_file_path, "a")
+            self.config.log_file = self._owned_log_file
+        configure_telemetry(self.config)
+        return self.config
 
-    The three parameters are consumed by the wrapper and never forwarded to
-    the original function, so the command callback does not need to declare
-    them.
-
-    Cleanup preserves an active command exception and closes the owned log file
-    even if flushing telemetry fails. A cleanup-only failure still propagates.
-
-    :param func: The Click command callback to decorate.
-    :return: Wrapped callback with telemetry options registered.
-    """
-    @click.option(
-        "--telemetry-verbosity", "-tv",
-        type=click.IntRange(0, 2),
-        default=1,
-        help="Verbosity level for telemetry output (0=off, 1=normal, 2=verbose).",
-    )
-    @click.option(
-        "--telemetry-format",
-        type=click.Choice(["text", "json"], case_sensitive=False),
-        default="text",
-        help="Telemetry output format: text or json.",
-    )
-    @click.option(
-        "--metrics",
-        is_flag=True,
-        default=False,
-        help="Display aggregate performance metrics.",
-    )
-    @click.option(
-        "--debug-calls",
-        is_flag=True,
-        default=False,
-        help="Print request/response headers for each HTTP call.",
-    )
-    @click.option(
-        "--time-scenarios",
-        is_flag=True,
-        default=False,
-        help="Print execution time for multi-step workflows.",
-    )
-    @click.option(
-        "--time-methods",
-        is_flag=True,
-        default=False,
-        help="Print execution time for individual method calls.",
-    )
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        """Run one command and close its log even when flushing diagnostics fails."""
-        ctx = click.get_current_context()
-        log_file_path = ctx.obj.get("log_file") if ctx.obj else None
-
-        verbosity = kwargs.pop("telemetry_verbosity", 1)
-
-        # Verbosity 0 means "off" — disable all telemetry feature flags
-        # so downstream decorators and renderers are no-ops.
-        if verbosity <= 0:
-            enabled_time_methods = False
-            enabled_time_scenarios = False
-            enabled_debug_calls = False
-            enabled_metrics = False
-        else:
-            enabled_time_methods = kwargs.pop("time_methods", False)
-            enabled_time_scenarios = kwargs.pop("time_scenarios", False)
-            enabled_debug_calls = kwargs.pop("debug_calls", False)
-            enabled_metrics = kwargs.pop("metrics", False)
-
-        # Still pop the flags from kwargs when verbosity=0 so they
-        # are not forwarded to the command callback.
-        if verbosity <= 0:
-            kwargs.pop("time_methods", None)
-            kwargs.pop("time_scenarios", None)
-            kwargs.pop("debug_calls", None)
-            kwargs.pop("metrics", None)
-
-        config = TelemetryConfig(
-            time_methods_enabled=enabled_time_methods,
-            time_scenarios_enabled=enabled_time_scenarios,
-            debug_calls_enabled=enabled_debug_calls,
-            metrics_enabled=enabled_metrics,
-            verbosity=verbosity,
-            output_format=kwargs.pop("telemetry_format", "text"),
-            log_file_path=log_file_path,
-        )
-
-        # Open log file in append mode if specified
-        if config.log_file_path:
-            config.log_file = open(config.log_file_path, "a")  # noqa: SIM115
-
-        configure_telemetry(config)
-        primary_error: BaseException | None = None
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> Literal[False]:
+        """Flush and close owned resources, preserving errors and the outer scope."""
+        primary_error = exc
         try:
-            result = func(*args, **kwargs)
-        except BaseException as error:
-            primary_error = error
-            raise
-        finally:
-            # flush any method timings not already consumed by a @track_scenario block;
-            # runs even when the command calls sys.exit() (raises SystemExit)
             from regshape.libs.decorators.output import flush_telemetry
             try:
                 flush_telemetry()
@@ -217,15 +134,43 @@ def telemetry_options(func: Callable) -> Callable:
                     raise
                 report_secondary_failure(primary_error, diagnostic_error, "Telemetry flush")
             finally:
-                if config.log_file is not None:
+                if self._owned_log_file is not None:
                     try:
-                        config.log_file.close()
+                        self._owned_log_file.close()
                     except BaseException as close_error:
                         if primary_error is None:
                             raise
                         report_secondary_failure(primary_error, close_error, "Telemetry log cleanup")
-        return result
-    return wrapper
+                    finally:
+                        self._owned_log_file = None
+        finally:
+            if self.restore_config:
+                _telemetry_config.set(self._previous_config)
+        return False
+
+
+def telemetry_session(
+    config: TelemetryConfig, *, restore_config: bool = True,
+) -> AbstractContextManager[TelemetryConfig]:
+    """Activate telemetry for a synchronous scope and flush it on every exit.
+
+    Open ``log_file_path`` in append mode only if ``log_file`` is not supplied.
+    Close only the stream opened by this session; retain its closed handle on
+    the configuration for outer cleanup inspection. Caller-supplied streams
+    are not closed. Restore the previous active configuration
+    after cleanup by default, including for nested sessions and failing operations.
+
+    :param config: Configuration to activate; yielded unchanged on entry.
+    :param restore_config: Restore the previous active configuration on exit.
+        Set False when an outer result/diagnostic scope still needs this config;
+        file cleanup and flushing are unchanged.
+    :returns: A context manager for one telemetry scope.
+    :raises OSError: If opening or closing the owned log fails.
+    :raises BaseException: Operation and telemetry sink errors propagate.
+        Secondary flush/close failures are logged without replacing an active
+        error; when cleanup alone fails, its first error propagates.
+    """
+    return _TelemetrySession(config, restore_config)
 
 
 # Sub-module imports come after the definitions above.
@@ -258,7 +203,7 @@ __all__ = [
     'TextOutput',
     'configure_telemetry',
     'get_telemetry_config',
-    'telemetry_options',
+    'telemetry_session',
     'SENSITIVE_HEADERS',
     'redact_header_value',
     'redact_headers',

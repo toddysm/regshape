@@ -6,6 +6,11 @@ This spec defines enhancements to the existing telemetry decorator infrastructur
 
 **GitHub Issue:** [#34 — Enhanced Telemetry and Debug Features](https://github.com/toddysm/regshape/issues/34)
 
+Telemetry's CLI/library boundary is updated by
+[#164](https://github.com/toddysm/regshape/issues/164). See the current
+[library telemetry reference](../docs/library/telemetry.md) for direct Python
+usage and resource ownership. Break Mode portions below remain a separate design.
+
 ## Table of Contents
 
 - [1. Current State](#1-current-state)
@@ -54,7 +59,7 @@ When `--log-file <path>` is specified, **all telemetry output** (timing blocks, 
 
 ### Design
 
-`TelemetryConfig` gains a `log_file_path` field. When set, `configure_telemetry()` opens the file for writing and stores the file handle in a new `log_file` field. A new helper, `telemetry_write()`, replaces direct `print(..., file=out)` calls in the output modules and writes to both `output` (stderr) and `log_file` (when present).
+`TelemetryConfig` has a `log_file_path` field. A library `telemetry_session(config)` opens that path in append mode when no `log_file` stream is supplied. `configure_telemetry()` only activates configuration; it performs no file I/O. The `telemetry_write()` helper writes to both `output` (stderr by default) and `log_file` (when present).
 
 ```python
 @dataclass
@@ -66,20 +71,21 @@ class TelemetryConfig:
 
 ### Wiring
 
-The `@telemetry_options` decorator in `libs/decorators/__init__.py` already consumes CLI kwargs before forwarding to the command. It will be extended to read the `--log-file` value from the Click context (`ctx.obj["log_file"]`) and pass it into `TelemetryConfig`:
+The `@telemetry_options` decorator in `cli/telemetry.py` consumes CLI kwargs before forwarding to the command. It reads the root `--log-file` value from the Click context and passes it into `TelemetryConfig`, then delegates lifecycle handling to `telemetry_session`:
 
 ```python
 @functools.wraps(func)
 def wrapper(*args, **kwargs):
     ctx = click.get_current_context()
     log_file_path = ctx.obj.get("log_file") if ctx.obj else None
-    configure_telemetry(TelemetryConfig(
+    config = TelemetryConfig(
         time_methods_enabled=kwargs.pop("time_methods", False),
         time_scenarios_enabled=kwargs.pop("time_scenarios", False),
         debug_calls_enabled=kwargs.pop("debug_calls", False),
         log_file_path=log_file_path,
-    ))
-    ...
+    )
+    with telemetry_session(config, restore_config=False):
+        return func(*args, **kwargs)
 ```
 
 ### Output Routing
@@ -105,16 +111,13 @@ All existing `print(...)` calls in `output.py` and `call_details.py` are replace
 
 ### File Lifecycle
 
-The log file is opened in **append mode** (`"a"`) when `configure_telemetry()` is called with a non-None `log_file_path`, and closed in the `finally` block of the `@telemetry_options` wrapper (alongside `flush_telemetry()`). Append mode ensures that consecutive commands don't overwrite previous output, which is useful when running a script of multiple `regshape` invocations.
-
-```python
-finally:
-    from regshape.libs.decorators.output import flush_telemetry
-    flush_telemetry()
-    cfg = get_telemetry_config()
-    if cfg.log_file is not None:
-        cfg.log_file.close()
-```
+The library session opens its owned log in **append mode** (`"a"`), flushes
+remaining telemetry on exit, closes its owned file even when flushing fails,
+and normally restores the previous configuration. Caller-supplied streams are borrowed.
+Primary operation errors survive secondary diagnostic/close failures; a sole
+cleanup failure propagates. These semantics are shared by Python callers and
+the Click adapter. The adapter retains the command configuration after cleanup
+with `restore_config=False` for its outer result/warning scopes.
 
 ---
 
@@ -585,7 +588,7 @@ class TelemetryConfig:
     :param output_format: Output format — "text" (default) or "json".
     :param output: Writable stream for telemetry output (defaults to stderr).
     :param log_file_path: Optional file path for telemetry log output.
-    :param log_file: File handle for log_file_path (managed by telemetry_options).
+    :param log_file: Borrowed log stream, or a stream managed by telemetry_session.
     :param method_timings: Accumulated (qualname, elapsed) pairs from @track_time.
     :param break_rule_log: Break rule application records from BreakModeMiddleware.
     :param metrics: Aggregate performance metrics.
@@ -612,13 +615,14 @@ class TelemetryConfig:
 
 | File | Changes |
 |------|---------|
-| `libs/decorators/__init__.py` | Add `PerformanceMetrics`, `BreakRuleEntry` dataclasses; extend `TelemetryConfig` with new fields; update `telemetry_options` to add `--metrics`, `--telemetry-format`, `--telemetry-verbosity` options and wire `--log-file` from context; add log file open/close lifecycle. |
-| `libs/decorators/output.py` | Add `telemetry_write()` helper; update `print_telemetry_block()` to accept break entries and metrics, dispatch to text/JSON renderers; add `_render_json_block()` for JSON mode; update `flush_telemetry()` to emit metrics and close log file. |
+| `libs/decorators/__init__.py` | Extend `TelemetryConfig`; expose framework-neutral `telemetry_session` for log ownership, final flushing and configuration restoration. |
+| `libs/decorators/output.py` | Add `telemetry_write()` helper; update `print_telemetry_block()` to accept break entries and metrics, dispatch to text/JSON renderers; add `_render_json_block()` for JSON mode; update `flush_telemetry()` to emit metrics. File ownership belongs to the session. |
 | `libs/decorators/call_details.py` | Update `format_curl_debug()` signature with `elapsed`, `resp_body`, `req_content_length`, `verbosity` params; add per-call timing line, body preview, content-length; add break rule `* Break:` lines; add metrics recording; update `@debug_call` to measure elapsed time, extract body preview, record metrics. |
 | `libs/decorators/timing.py` | No changes to core logic. `@track_time` is already minimal and correct. |
 | `libs/decorators/scenario.py` | Update `print_telemetry_block()` call to pass `break_entries` and `metrics`. |
 | `cli/main.py` | No changes (global `--log-file` is already stored in `ctx.obj`). |
-| CLI leaf commands | No changes (new options are injected by `@telemetry_options`). |
+| `cli/telemetry.py` | Own `telemetry_options`, translate the six Click flags and root log-file context into a library session. |
+| CLI leaf commands | Import `telemetry_options` from `regshape.cli.telemetry`. |
 
 ### New File
 
@@ -651,10 +655,10 @@ Add new fields to `TelemetryConfig`. No behavioral changes yet — new fields de
 
 ### Step 3: Log File Integration
 
-1. Update `telemetry_options` to read `--log-file` from context and open the file.
+1. Update CLI-only `telemetry_options` to read `--log-file` from context and delegate to the library session.
 2. Add `telemetry_write()` to `output.py`.
 3. Replace `print()` calls with `telemetry_write()` in `output.py` and `call_details.py`.
-4. Add file close in the `finally` block.
+4. Manage owned file close and final flushing in the library session.
 5. Test: verify dual output and file lifecycle.
 
 ### Step 4: Enhanced Debug-Calls Formatting

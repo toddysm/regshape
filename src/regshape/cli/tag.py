@@ -17,7 +17,7 @@ import requests
 
 from regshape.cli.formatting import emit_error, emit_json, emit_list
 from regshape.cli.options import artifact_option
-from regshape.libs.decorators import telemetry_options
+from regshape.cli.telemetry import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import AuthError, TagError
 from regshape.libs.refs import format_ref, parse_artifact_ref

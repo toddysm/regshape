@@ -849,13 +849,13 @@ def regshape(ctx, insecure, verbose, break_mode, break_rules, log_file):
 
 ## 8. Telemetry Decorators
 
-RegShape provides three decorator-based telemetry capabilities for measuring execution time, tracking multi-step workflows, and inspecting HTTP call details. All three are implemented in `libs/decorators/` and are controlled by dedicated CLI flags.
+RegShape provides three decorator-based telemetry capabilities for measuring execution time, tracking multi-step workflows, and inspecting HTTP call details. All three are implemented in `libs/decorators/` and are usable directly from Python. The CLI only maps dedicated flags into library configuration.
 
 ### Module Structure
 
 ```
 src/regshape/libs/decorators/
-├── __init__.py          # Exports: track_time, track_scenario, debug_call, telemetry_options, …
+├── __init__.py          # Exports: track_time, track_scenario, debug_call, telemetry_session, …
 ├── timing.py            # @track_time decorator — accumulates into TelemetryConfig.method_timings
 ├── scenario.py          # @track_scenario decorator — renders telemetry block + clears timings
 ├── call_details.py      # @debug_call decorator, format_curl_debug, http_request
@@ -864,7 +864,7 @@ src/regshape/libs/decorators/
 
 ### CLI Flags
 
-Three leaf-command flags control telemetry output. They are independent of each other and of `--verbose`, and they appear **after** the subcommand name so the command reads naturally:
+Leaf-command flags control telemetry output. They are independent of `--verbose` and appear **after** the subcommand name so the command reads naturally:
 
 ```
 regshape auth login --time-methods -r registry.example.com
@@ -875,8 +875,11 @@ regshape auth login --time-methods -r registry.example.com
 | `--time-methods` | flag | false | Print execution time for individual method calls |
 | `--time-scenarios` | flag | false | Print execution time for multi-step workflows |
 | `--debug-calls` | flag | false | Print request/response headers for each HTTP call |
+| `--metrics` | flag | false | Display aggregate performance metrics |
+| `--telemetry-format` | choice | text | Select text or JSON telemetry |
+| `--telemetry-verbosity` / `-tv` | integer 0–2 | 1 | Detail level; zero disables telemetry |
 
-These flags are applied to every leaf command via the centralized `@telemetry_options` decorator defined in `libs/decorators/__init__.py`. The decorator adds the three Click options **and** automatically calls `configure_telemetry()` before the command body runs, so individual command implementations do not need to handle telemetry setup themselves.
+Telemetry-enabled leaf commands use the centralized `@telemetry_options` decorator in `cli/telemetry.py`. It maps the six Click options and global log-file path into a library `telemetry_session`, so command callbacks do not own telemetry setup or cleanup.
 
 ```python
 # Applied once per leaf command; no per-command telemetry boilerplate needed.
@@ -889,7 +892,10 @@ def my_command(ctx, registry, ...):
     ...
 ```
 
-`telemetry_options` is defined in `libs/decorators/__init__.py` and exported alongside `track_time`, `track_scenario`, and `debug_call`.
+`telemetry_options` is CLI-only. The library has no Click or CLI imports.
+Python callers use `TelemetryConfig` and `telemetry_session` directly; see the
+[library reference](../docs/library/telemetry.md) for stream ownership,
+configuration restoration and error handling.
 
 ### TelemetryConfig
 

@@ -108,6 +108,7 @@ jobs:
       - name: Test command, progress and parser compatibility
         run: >-
           python -m pytest -q
+          src/regshape/tests/test_telemetry_cli.py
           src/regshape/tests/test_download_validation.py
           src/regshape/tests/test_artifact_options.py
           src/regshape/tests/test_artifact_cli.py

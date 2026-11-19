@@ -17,6 +17,7 @@ from regshape.cli.downloads import DownloadWarnings, download_options, download_
 from regshape.cli.formatting import emit_error, emit_json, emit_text
 from regshape.cli.options import artifact_option
 from regshape.cli.progress import ProgressDisplay
+from regshape.cli.telemetry import telemetry_options
 from regshape.libs.artifacts import (
     ArtifactFormat,
     ArtifactLimits,
@@ -27,7 +28,6 @@ from regshape.libs.artifacts import (
     pull_artifact,
 )
 from regshape.libs.blobs import DownloadOptions
-from regshape.libs.decorators import telemetry_options
 from regshape.libs.decorators.output import flush_telemetry
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import ArtifactError, AuthError, BlobError, ManifestError

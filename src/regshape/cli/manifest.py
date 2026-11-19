@@ -24,7 +24,7 @@ import requests
 from regshape.cli.formatting import emit_error, emit_json, emit_text, format_key_value
 from regshape.cli.options import artifact_option
 from regshape.cli.progress import ProgressDisplay
-from regshape.libs.decorators import telemetry_options
+from regshape.cli.telemetry import telemetry_options
 from regshape.libs.decorators.output import flush_telemetry
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import AuthError, ManifestError

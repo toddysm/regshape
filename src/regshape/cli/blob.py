@@ -26,6 +26,7 @@ import requests
 from regshape.cli.downloads import DownloadWarnings, download_options, download_policy
 from regshape.cli.formatting import emit_error, emit_json
 from regshape.cli.progress import ProgressDisplay
+from regshape.cli.telemetry import telemetry_options
 from regshape.libs.blobs import (
     delete_blob,
     get_blob,
@@ -34,7 +35,6 @@ from regshape.libs.blobs import (
     upload_blob_chunked,
     upload_blob_stream,
 )
-from regshape.libs.decorators import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import AuthError, BlobError
 from regshape.libs.models.blob import BlobInfo
