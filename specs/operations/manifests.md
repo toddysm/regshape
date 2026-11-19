@@ -335,6 +335,8 @@ def delete_manifest(
     client: RegistryClient,
     repo: str,
     digest: str,
+    *,
+    strict: bool = True,
 ) -> None:
 ```
 
@@ -345,15 +347,29 @@ deletion must be by digest, not by tag.
 |---|---|---|---|
 | `client` | `RegistryClient` | required | Authenticated transport client |
 | `repo` | `str` | required | Repository name |
-| `digest` | `str` | required | Manifest digest (e.g. `"sha256:abc..."`) |
+| `digest` | `str` | required | Complete lowercase SHA-256 (64 hex) or SHA-512 (128 hex) manifest digest |
+| `strict` | `bool` | `True` | Keyword-only digest guard; `False` sends the supplied value without reference validation for conformance testing |
 
 **Returns:** `None`
 
 **Behaviour:**
 
-1. Build path `"/v2/{repo}/manifests/{digest}"`.
-2. Call `client.delete(path)`.
-3. Pass response to `_raise_for_manifest_error`.
+1. Unless `strict=False`, validate the digest with the shared
+   [`validate_digest`](../../src/regshape/libs/refs.py) helper. Invalid algorithms,
+   malformed/short payloads and tag references raise
+   `ReferenceValidationError` (a `ValueError` subclass) before any HTTP request.
+2. Build path `"/v2/{repo}/manifests/{digest}"`.
+3. Call `client.delete(path)`.
+4. Pass response to `_raise_for_manifest_error`.
+
+The CLI maps reference-validation errors to exit code 2 with the existing
+manifest-delete usage message. Registry and transport failures retain their
+existing exception types and exit code 1. The strict opt-out is an SDK-only
+escape hatch for deliberately malformed requests, not a new CLI option.
+`validate_manifest_digest(digest: str) -> str` is exported from
+`regshape.libs.manifests` for credential-free preflight. It returns the original
+valid digest or raises the same `ReferenceValidationError`; the CLI calls it
+before constructing the client, and `delete_manifest` repeats it unless opted out.
 
 **Decorator:** `@track_time`
 

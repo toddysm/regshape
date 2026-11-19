@@ -176,6 +176,49 @@ The old Python function is retained; the CLI flag deprecation does not declare
 that Python interface deprecated. Downgrading to a package without the new entry point
 requires using `parse_image_ref` again.
 
+### Classify and validate SDK references
+
+The 0.2 development interface adds `is_digest` and `validate_digest` to
+`regshape.libs.refs`. Apply them to the parsed final token, not a full reference:
+
+```python
+from regshape.libs.errors import ReferenceValidationError
+from regshape.libs.refs import is_digest, parse_artifact_ref, validate_digest
+
+registry, repo, token = parse_artifact_ref("registry.example.com/team/package:v1")
+assert not is_digest(token)
+assert is_digest("sha384:abc")  # Digest-shaped, but not a supported digest.
+
+try:
+    validate_digest("sha384:abc")
+except ReferenceValidationError as error:
+    assert str(error) == "digest references must use sha256 or sha512"
+
+digest = "sha256:" + "a" * 64
+assert validate_digest(digest) == digest
+```
+
+Classification does not prove validity: digest-shaped tokens contain a colon,
+which OCI tag names cannot contain. Validation accepts only lowercase SHA-256
+with 64 hexadecimal characters or SHA-512 with 128, without rewriting the value.
+The existing parsers remain permissive and keep their return shape.
+`format_ref` uses this classification without validating: unsupported/malformed
+digest-shaped tokens use `@`, rather than being formatted as tags.
+
+The SDK's `delete_manifest` validates digests by default; `delete_tag` rejects
+digest-shaped inputs, including unsupported algorithms. Their
+`ReferenceValidationError` is a `ValueError` subclass; the CLI renders it as
+exit code 2. For preflight before constructing a transport client, use
+`regshape.libs.manifests.validate_manifest_digest(token)` or
+`regshape.libs.tags.validate_tag_reference(token)`; each returns the unchanged
+token or raises the same operation-specific validation error. The CLI uses these
+checks before credential lookup, and the operations independently enforce them.
+Both operations accept keyword-only `strict=False` for deliberately
+invalid registry-conformance requests. That opt-out does not make an invalid
+request safe and is not exposed as a new CLI flag. See the
+[manifest API](../../specs/operations/manifests.md#delete_manifest) and
+[tag API](../../specs/operations/tags.md#delete_tag) for the mutating operations.
+
 ## Output, validation and troubleshooting
 
 JavaScript Object Notation (JSON), raw text, field extraction, file output,

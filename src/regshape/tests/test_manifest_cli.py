@@ -417,6 +417,18 @@ class TestManifestPut:
 
 class TestManifestDelete:
 
+    @pytest.mark.parametrize("digest", ["sha384:abc", "sha256:abc"])
+    def test_invalid_digest_is_a_usage_error_without_delete(self, digest):
+        """Library validation maps unsupported/truncated digests to exit 2."""
+        with patch("regshape.libs.transport.RegistryClient.delete") as delete_request:
+            result = _runner().invoke(
+                regshape,
+                ["manifest", "delete", "-i", f"{REGISTRY}/{REPO}@{digest}"],
+            )
+        assert result.exit_code == 2, result.output
+        assert "manifest delete requires a digest reference" in result.output
+        delete_request.assert_not_called()
+
     def test_delete_success_plain(self):
         with patch("regshape.cli.manifest.delete_manifest", return_value=None):
             result = _runner().invoke(

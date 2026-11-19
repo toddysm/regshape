@@ -48,6 +48,14 @@ class ManifestError(RegShapeError):
     pass
 
 
+class ReferenceValidationError(ValueError):
+    """A reference violates a library operation's input contract before HTTP.
+
+    Unlike registry/domain failures, this is a caller usage error. The CLI
+    renders its message unchanged and maps it to exit code 2.
+    """
+
+
 class TagError(RegShapeError):
     """
     Error caused by a malformed or unprocessable tag-list response.

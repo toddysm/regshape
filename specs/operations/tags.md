@@ -192,6 +192,8 @@ def delete_tag(
     client: RegistryClient,
     repo: str,
     tag: str,
+    *,
+    strict: bool = True,
 ) -> None:
 ```
 
@@ -203,14 +205,28 @@ is routed through the manifests endpoint.
 | `client` | `RegistryClient` | required | Authenticated transport client |
 | `repo` | `str` | required | Repository name |
 | `tag` | `str` | required | Tag name to delete (must not be a digest) |
+| `strict` | `bool` | `True` | Keyword-only guard against digest-shaped inputs; `False` sends the value without reference validation for conformance testing |
 
 **Returns:** `None`
 
 **Behaviour:**
 
-1. Build path `"/v2/{repo}/manifests/{tag}"`.
-2. Call `client.delete(path)`.
-3. Pass response to `_raise_for_delete_error`.
+1. Unless `strict=False`, reject digest-shaped inputs using the shared
+   [`is_digest`](../../src/regshape/libs/refs.py) classifier. Unsupported
+   algorithms and malformed digest payloads remain digest-shaped, not tags.
+   Rejection raises `ReferenceValidationError` (a `ValueError` subclass) before
+   any HTTP request. This guard does not otherwise validate tag spelling.
+2. Build path `"/v2/{repo}/manifests/{tag}"`.
+3. Call `client.delete(path)`.
+4. Pass response to `_raise_for_delete_error`.
+
+The CLI maps reference-validation errors to exit code 2 with the existing
+tag-delete usage message; registry/transport failures retain exit code 1.
+The SDK-only strict opt-out is explicit and leaves the supplied value unchanged.
+`validate_tag_reference(tag: str) -> str` is exported from `regshape.libs.tags`
+for credential-free preflight. It returns the original non-digest-shaped token
+or raises the same `ReferenceValidationError`; the CLI calls it before client
+construction, and `delete_tag` independently enforces it unless opted out.
 
 **Decorator:** `@track_time`
 

@@ -19,9 +19,14 @@ from regshape.cli.formatting import emit_error, emit_json, emit_list
 from regshape.cli.options import artifact_option
 from regshape.cli.telemetry import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
-from regshape.libs.errors import AuthError, TagError
+from regshape.libs.errors import AuthError, ReferenceValidationError, TagError
 from regshape.libs.refs import format_ref, parse_artifact_ref
-from regshape.libs.tags import delete_tag, list_tags, list_tags_all
+from regshape.libs.tags import (
+    delete_tag,
+    list_tags,
+    list_tags_all,
+    validate_tag_reference,
+)
 from regshape.libs.transport import RegistryClient, TransportConfig
 
 # ===========================================================================
@@ -157,8 +162,9 @@ def delete(ctx, image_ref):
     """Delete the tag identified by ARTIFACT.
 
     ARTIFACT must be a tag reference (``registry/repo:tag``). Digest
-    references are rejected with exit code 2 — to delete a manifest by
-    digest use ``manifest delete``.  Deleting a tag does **not** delete the
+    references, including unsupported algorithms, are rejected by the library
+    with exit code 2 before credential lookup; to delete a manifest by digest
+    use ``manifest delete``.  Deleting a tag does **not** delete the
     underlying manifest, which remains addressable by digest.  Credentials
     are resolved automatically from the credential store populated by
     ``auth login``.
@@ -167,16 +173,11 @@ def delete(ctx, image_ref):
 
     try:
         registry, repo, reference = parse_artifact_ref(image_ref)
+        validate_tag_reference(reference)
+    except ReferenceValidationError as exc:
+        emit_error(image_ref, str(exc), exit_code=2)
     except ValueError as exc:
         emit_error(image_ref, str(exc))
-
-    if reference.startswith("sha256:") or reference.startswith("sha512:"):
-        emit_error(
-            image_ref,
-            "tag delete requires a tag reference; "
-            "use 'manifest delete' for digest references",
-            exit_code=2,
-        )
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
@@ -186,6 +187,8 @@ def delete(ctx, image_ref):
             repo=repo,
             tag=reference,
         )
+    except ReferenceValidationError as exc:
+        emit_error(image_ref, str(exc), exit_code=2)
     except (AuthError, TagError, requests.exceptions.RequestException) as exc:
         emit_error(image_ref, str(exc))
 

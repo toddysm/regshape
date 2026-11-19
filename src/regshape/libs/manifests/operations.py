@@ -25,7 +25,7 @@ import requests
 
 from regshape.libs._http import ClosingResponse, download_total
 from regshape.libs.decorators.timing import track_time
-from regshape.libs.errors import AuthError, ManifestError
+from regshape.libs.errors import AuthError, ManifestError, ReferenceValidationError
 from regshape.libs.models.error import OciErrorResponse
 from regshape.libs.models.mediatype import INDEX_MEDIA_TYPES, MANIFEST_MEDIA_TYPES
 from regshape.libs.progress import (
@@ -34,7 +34,7 @@ from regshape.libs.progress import (
     ManifestProgressCallback,
     _ManifestProgress,
 )
-from regshape.libs.refs import format_ref
+from regshape.libs.refs import format_ref, validate_digest
 from regshape.libs.transport import RegistryClient
 
 _MANIFEST_CHUNK_SIZE = 64 * 1024
@@ -238,6 +238,8 @@ def delete_manifest(
     client: RegistryClient,
     repo: str,
     digest: str,
+    *,
+    strict: bool = True,
 ) -> None:
     """Delete the manifest identified by *digest* from *repo*.
 
@@ -246,14 +248,36 @@ def delete_manifest(
 
     :param client: Authenticated transport client for the target registry.
     :param repo: Repository name.
-    :param digest: Manifest digest (e.g. ``sha256:abc...``).
+    :param digest: Complete lowercase SHA-256 or SHA-512 manifest digest.
+    :param strict: Validate the digest before HTTP by default. ``False`` sends
+        the supplied value verbatim for deliberate registry-conformance tests.
+    :raises ReferenceValidationError: On an invalid digest when strict is enabled.
     :raises AuthError: On authentication failure.
     :raises ManifestError: On a non-2xx registry response.
     :raises requests.exceptions.RequestException: On transport errors.
     """
+    if strict:
+        validate_manifest_digest(digest)
     path = f"/v2/{repo}/manifests/{digest}"
     response = client.delete(path)
     _raise_for_manifest_error(response, client.config.registry, repo, digest)
+
+
+def validate_manifest_digest(digest: str) -> str:
+    """Validate a manifest-delete target without transport or credential access.
+
+    :param digest: Parsed manifest digest; tags and invalid digests are rejected.
+    :returns: The complete, supported digest unchanged.
+    :raises ReferenceValidationError: If shared digest validation fails, with
+        the manifest-delete usage message retained for CLI compatibility.
+    """
+    try:
+        return validate_digest(digest)
+    except ReferenceValidationError as exc:
+        raise ReferenceValidationError(
+            "manifest delete requires a digest reference (@sha256:...); "
+            "tag references are not supported by the OCI spec for delete operations"
+        ) from exc
 
 
 # ===========================================================================

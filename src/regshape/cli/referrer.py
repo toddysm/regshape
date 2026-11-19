@@ -19,11 +19,16 @@ from regshape.cli.formatting import emit_error, emit_json, emit_table, emit_text
 from regshape.cli.options import artifact_option
 from regshape.cli.telemetry import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
-from regshape.libs.errors import AuthError, ManifestError, ReferrerError
+from regshape.libs.errors import (
+    AuthError,
+    ManifestError,
+    ReferenceValidationError,
+    ReferrerError,
+)
 from regshape.libs.manifests import head_manifest
 from regshape.libs.models.mediatype import ALL_MANIFEST_MEDIA_TYPES
 from regshape.libs.referrers import list_referrers, list_referrers_all
-from regshape.libs.refs import parse_artifact_ref
+from regshape.libs.refs import parse_artifact_ref, validate_digest
 from regshape.libs.transport import RegistryClient, TransportConfig
 
 # ===========================================================================
@@ -97,6 +102,8 @@ def referrer_list(
     digest references are used directly without a manifest lookup. References
     without a tag or digest resolve the ``latest`` tag. Resolution failures,
     including a missing digest response header, exit with code 1.
+    Explicit digests are validated by the shared library helper; unsupported
+    algorithms and malformed SHA-256/SHA-512 payloads exit with code 2.
 
     Use ``--artifact-type`` to filter by artifact type.  Use ``--all``
     to follow pagination and retrieve every referrer.  Use ``--json``
@@ -110,12 +117,11 @@ def referrer_list(
         emit_error(image_ref, str(exc))
 
     is_digest = "@" in image_ref
-    if is_digest and not reference.startswith(("sha256:", "sha512:")):
-        emit_error(
-            image_ref,
-            "digest references must use sha256 or sha512",
-            exit_code=2,
-        )
+    if is_digest:
+        try:
+            validate_digest(reference)
+        except ReferenceValidationError as exc:
+            emit_error(image_ref, str(exc), exit_code=2)
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
