@@ -17,7 +17,7 @@ import requests
 
 from regshape.cli.formatting import emit_error
 from regshape.libs.auth.credentials import erase_credentials, resolve_credentials, store_credentials
-from regshape.libs.decorators import telemetry_options
+from regshape.cli.telemetry import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.decorators.timing import track_time
 from regshape.libs.errors import AuthError

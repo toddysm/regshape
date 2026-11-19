@@ -17,7 +17,7 @@ import requests
 
 from regshape.cli.formatting import emit_error, emit_json, emit_list
 from regshape.libs.catalog import list_catalog, list_catalog_all
-from regshape.libs.decorators import telemetry_options
+from regshape.cli.telemetry import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import AuthError, CatalogError, CatalogNotSupportedError
 from regshape.libs.transport import RegistryClient, TransportConfig

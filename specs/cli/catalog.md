@@ -227,7 +227,7 @@ def catalog_list(ctx, registry, page_size, last, fetch_all, as_json, output):
 - `regshape.libs.catalog` — `list_catalog`, `list_catalog_all`
 - `regshape.libs.errors` — `AuthError`, `CatalogError`, `CatalogNotSupportedError`
 - `regshape.libs.transport` — `RegistryClient`, `TransportConfig`
-- `regshape.libs.decorators` — `telemetry_options`
+- `regshape.cli.telemetry` — `telemetry_options`
 - `regshape.libs.decorators.scenario` — `track_scenario`
 
 **External:**

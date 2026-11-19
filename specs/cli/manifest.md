@@ -473,7 +473,8 @@ authenticated registries.**
 - `regshape.libs.auth.registryauth` — `authenticate`
 - `regshape.libs.models.manifest` — `parse_manifest`, `ImageManifest`, `ImageIndex`
 - `regshape.libs.models.mediatype` — `ALL_MANIFEST_MEDIA_TYPES`
-- `regshape.libs.decorators` — `telemetry_options`, `track_scenario`, `track_time`
+- `regshape.cli.telemetry` — `telemetry_options`
+- `regshape.libs.decorators` — `track_scenario`, `track_time`
 - `regshape.libs.decorators.call_details` — `http_request`
 - `regshape.libs.errors` — `ManifestError`
 

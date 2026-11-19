@@ -267,9 +267,8 @@ def flush_telemetry() -> None:
     """Consume and print any accumulated method timings that were not yet
     consumed by a ``@track_scenario`` block.
 
-    Called automatically by the ``@telemetry_options`` wrapper after every
-    leaf command returns. Handles the ``--time-methods``-only case where no
-    ``@track_scenario`` decorator is present to trigger rendering.
+    Called automatically when a library telemetry session exits. Handles
+    method-only timing where no ``@track_scenario`` decorator triggers rendering.
 
     Also emits aggregate metrics if ``--metrics`` is enabled.
 
