@@ -476,11 +476,11 @@ integration [#137](https://github.com/toddysm/regshape/issues/137) are also merg
 These are library capabilities exposed by the CLI, not CLI-only schedulers.
 Existing callbacks remain synchronous on the invoking thread.
 
-[Validation #138](https://github.com/toddysm/regshape/issues/138) is merged;
+[Validation #138](https://github.com/toddysm/regshape/issues/138) is complete;
 the [evidence runbook](download-validation.md) distinguishes actual-registry
 checks from controlled Linux benchmark acceptance and the retained failed
 macOS ranged-performance gate. No universal speedup, registry certification,
-release or parent-feature close-out is implied. Final documentation is tracked
+release or parent-feature close-out is implied. Final documentation is delivered
 by [#139](https://github.com/toddysm/regshape/issues/139); the
 [capability inventory](../project-state.md) is reconciled separately before
 closing [#131](https://github.com/toddysm/regshape/issues/131).
