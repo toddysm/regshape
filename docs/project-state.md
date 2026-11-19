@@ -19,6 +19,15 @@ This inventory distinguishes implemented behavior from partial capabilities,
 unmerged proposals, and planned work. It is a dated snapshot, not an assertion
 that every registry or platform has been tested.
 
+CLI/library separation is **In progress** under
+[#163](https://github.com/toddysm/regshape/issues/163). The current authorization
+covers only the existing telemetry proposal in
+[#164](https://github.com/toddysm/regshape/issues/164), using its issue-backed
+design and GitHub-hosted continuous integration. Implementation awaits the
+reviewed inventory prerequisite; the Click dependency is still present in the
+library. The other 11 sub-issues remain open and are not authorized for this
+build. No separation capability is claimed as delivered by this inventory update.
+
 Artifact-oriented option naming is implemented under
 [#87](https://github.com/toddysm/regshape/issues/87). The approved
 [functional/engineering specification](../specs/cli/artifact-options.md),
@@ -104,6 +113,7 @@ the first version of every operation in that row.
 | Local Open Container Initiative (OCI) image-layout authoring, validation, and registry push | Implemented | - | - | [Design: layout creation](../specs/layout/oci-layout-create.md), [design/reference: layout push](../specs/cli/layout-push.md) | [How-to: create layouts](guides/create-oci-layout.md), [command reference: layouts](../specs/cli/layout.md) | - |
 | Docker daemon image listing, export/conversion, and registry push | Implemented | - | - | [Design: Docker integration](../specs/docker/docker-desktop-integration.md) | [How-to: Docker integration](guides/docker-desktop-integration.md) | - |
 | Opt-in request diagnostics, timing, metrics, and log output | Partial | Ordinary-transfer coverage gaps are not separately filed | - | [Design: telemetry](../specs/telemetry-enhancements.md) | [Option reference: current telemetry flags](#telemetry-options-current-baseline) | - |
+| Framework-independent Python library and thin CLI | In progress | [Feature #163](https://github.com/toddysm/regshape/issues/163); current scope [telemetry separation #164](https://github.com/toddysm/regshape/issues/164) | [Issue-backed design: #163, approved scope #164](https://github.com/toddysm/regshape/issues/163) | - | - | - |
 | Break Mode request mutation | Planned | [#29](https://github.com/toddysm/regshape/issues/29) | [Issue requirements: #29](https://github.com/toddysm/regshape/issues/29) | [Architecture: Break Mode](../specs/architecture.md) | - | - |
 | Break Mode telemetry integration | Planned | [#38](https://github.com/toddysm/regshape/issues/38); depends on #29 | [Issue requirements: #38](https://github.com/toddysm/regshape/issues/38) | [Design: telemetry enhancements](../specs/telemetry-enhancements.md) | - | - |
 | Python Package Index (PyPI) release publication | Implemented | [Closed #57](https://github.com/toddysm/regshape/issues/57), [v0.1.1 release](https://github.com/toddysm/regshape/releases/tag/v0.1.1) | - | [Developer guide: contributing](../CONTRIBUTING.md) | [Overview/install reference](../README.md) | - |
