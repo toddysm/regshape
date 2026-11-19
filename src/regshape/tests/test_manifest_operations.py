@@ -10,7 +10,7 @@ import pytest
 import requests
 
 from regshape.libs.errors import AuthError, ManifestError, ReferenceValidationError
-from regshape.libs.manifests import DEFAULT_MANIFEST_ACCEPT
+from regshape.libs.manifests import DEFAULT_MANIFEST_ACCEPT, resolve_digest
 from regshape.libs.manifests.operations import (
     _raise_for_manifest_error,
     delete_manifest,
@@ -90,6 +90,74 @@ def test_manifest_reads_preserve_explicit_accept(operation, accept):
     operation(client, REPO, TAG, accept=accept)
     request = client.get if operation is get_manifest else client.head
     assert request.call_args.kwargs["headers"] == {"Accept": accept}
+
+
+class TestResolveDigest:
+    """Resolve tags through real HEAD wiring while retaining permissive digest passthrough."""
+
+    @pytest.mark.parametrize("reference", [
+        DIGEST, "sha512:" + "b" * 128, "md5:abc", "sha256:short",
+    ])
+    def test_digest_shaped_tokens_pass_through_without_http(self, reference):
+        """Shape classification must not reinterpret unsupported/malformed digests as tags."""
+        client = _mock_client()
+        assert resolve_digest(client, REPO, reference) == reference
+        assert client.method_calls == []
+
+    @pytest.mark.parametrize("options,expected_accept", [
+        ({}, DEFAULT_MANIFEST_ACCEPT),
+        ({"accept": None}, DEFAULT_MANIFEST_ACCEPT),
+        ({"accept": "application/x.test"}, "application/x.test"),
+        ({"accept": ""}, ""),
+    ])
+    def test_tag_uses_one_head_and_preserves_negotiation(self, options, expected_accept):
+        """Default negotiation belongs to HEAD; explicit overrides are unchanged."""
+        client = _mock_client()
+        client.head.return_value = _make_response(200, digest=DIGEST)
+        assert resolve_digest(client, REPO, TAG, **options) == DIGEST
+        client.head.assert_called_once_with(
+            f"/v2/{REPO}/manifests/{TAG}", headers={"Accept": expected_accept},
+        )
+        client.get.assert_not_called()
+
+    @pytest.mark.parametrize("header", [None, "", " ", "\t \r\n"])
+    def test_missing_or_blank_digest_raises_existing_error(self, header):
+        """A successful HEAD without a usable identity must never become an empty subject."""
+        client = _mock_client()
+        response = _make_response(200)
+        if header is not None:
+            response.headers["Docker-Content-Digest"] = header
+        client.head.return_value = response
+        with pytest.raises(ManifestError) as caught:
+            resolve_digest(client, REPO, TAG)
+        assert str(caught.value) == str(ManifestError(
+            f"Cannot resolve tag {TAG!r}", "HEAD response is missing Docker-Content-Digest",
+        ))
+        client.get.assert_not_called()
+
+    def test_nonblank_response_header_is_not_normalized(self):
+        """Resolution reports the registry's value, without pretending to verify its digest."""
+        client = _mock_client()
+        header = f" {DIGEST} "
+        client.head.return_value = _make_response(200, digest=header)
+        assert resolve_digest(client, REPO, TAG) == header
+
+    @pytest.mark.parametrize("status,error", [(401, AuthError), (404, ManifestError), (500, ManifestError)])
+    def test_head_registry_errors_propagate(self, status, error):
+        """Keep the existing authentication/domain error mapping from HEAD."""
+        client = _mock_client()
+        client.head.return_value = _make_response(status)
+        with pytest.raises(error):
+            resolve_digest(client, REPO, TAG)
+
+    def test_transport_error_propagates_unchanged(self):
+        """Transport exceptions keep their identity instead of becoming a missing-header error."""
+        client = _mock_client()
+        error = requests.exceptions.Timeout("resolution timed out")
+        client.head.side_effect = error
+        with pytest.raises(requests.exceptions.Timeout) as caught:
+            resolve_digest(client, REPO, TAG)
+        assert caught.value is error
 
 
 class TestGetManifest:

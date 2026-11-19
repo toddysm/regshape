@@ -6,7 +6,7 @@
 
 .. module:: regshape.libs.manifests
    :platform: Unix, Windows
-   :synopsis: OCI manifest operations, protocol defaults, preflight and observations.
+   :synopsis: OCI manifest operations, digest resolution, defaults and observations.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
@@ -18,6 +18,7 @@ from regshape.libs.manifests.operations import (
     get_manifest,
     head_manifest,
     push_manifest,
+    resolve_digest,
     validate_manifest_digest,
 )
 from regshape.libs.progress import (
@@ -39,5 +40,6 @@ __all__ = [
     "get_manifest",
     "head_manifest",
     "push_manifest",
+    "resolve_digest",
     "validate_manifest_digest",
 ]

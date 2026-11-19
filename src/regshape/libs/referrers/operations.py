@@ -15,6 +15,9 @@ Each function accepts a :class:`~regshape.libs.transport.RegistryClient`
 instance that is already initialised with the target registry, credentials,
 and transport settings.  The functions are intentionally free of Click/CLI
 concerns — error reporting is the caller's responsibility.
+
+The public operations retain their digest-only contract. Resolve a parsed tag
+with :func:`regshape.libs.manifests.resolve_digest` before calling either one.
 """
 
 import re
@@ -28,7 +31,6 @@ from regshape.libs.errors import AuthError, ReferrerError
 from regshape.libs.models.error import OciErrorResponse
 from regshape.libs.models.referrer import ReferrerList
 from regshape.libs.transport import RegistryClient
-
 
 # ===========================================================================
 # Public domain operations
@@ -55,7 +57,8 @@ def list_referrers(
     :param client: Authenticated transport client for the target registry.
     :param repo: Repository name (e.g. ``myrepo/myimage``).
     :param digest: Manifest digest in ``algorithm:hex`` form
-        (e.g. ``sha256:abc123...``).
+        (e.g. ``sha256:abc123...``). For a tag, first call
+        :func:`regshape.libs.manifests.resolve_digest` with the same client/repo.
     :param artifact_type: Optional artifact type to filter on.
         ``None`` omits the parameter.
     :returns: A :class:`~regshape.libs.models.referrer.ReferrerList` instance.
@@ -112,7 +115,8 @@ def list_referrers_all(
 
     :param client: Authenticated transport client for the target registry.
     :param repo: Repository name (e.g. ``myrepo/myimage``).
-    :param digest: Manifest digest in ``algorithm:hex`` form.
+    :param digest: Manifest digest in ``algorithm:hex`` form. For a tag, first
+        call :func:`regshape.libs.manifests.resolve_digest` with the same client/repo.
     :param artifact_type: Optional artifact type to filter on.
     :returns: A single :class:`~regshape.libs.models.referrer.ReferrerList`
         containing all referrers.

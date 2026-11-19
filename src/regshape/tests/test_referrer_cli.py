@@ -190,11 +190,10 @@ class TestReferrerReferenceResolution:
     def test_tag_resolves_once_before_listing(
         self, client: MagicMock, image_ref: str, tag: str
     ) -> None:
-        """Resolve explicit and default tags with the existing manifest helper."""
+        """Forward explicit and default tags to the shared SDK resolver exactly once."""
         referrers = _referrer_list([_descriptor()])
         with (
-            patch("regshape.cli.referrer.head_manifest",
-                  return_value=(DIGEST, MANIFEST_MT, 123)) as head,
+            patch("regshape.cli.referrer.resolve_digest", return_value=DIGEST) as resolve,
             patch("regshape.cli.referrer.list_referrers",
                   return_value=referrers) as list_fn,
         ):
@@ -203,9 +202,8 @@ class TestReferrerReferenceResolution:
             ])
 
         assert result.exit_code == 0, result.output
-        head.assert_called_once_with(
+        resolve.assert_called_once_with(
             client=client, repo=REPO, reference=tag,
-            accept=",".join(sorted(ALL_MANIFEST_MEDIA_TYPES)),
         )
         list_fn.assert_called_once_with(
             client=client, repo=REPO, digest=DIGEST, artifact_type=None,
@@ -223,7 +221,7 @@ class TestReferrerReferenceResolution:
         if fetch_all:
             args.append("--all")
         with (
-            patch("regshape.cli.referrer.head_manifest") as head,
+            patch("regshape.libs.manifests.operations.head_manifest") as head,
             patch(f"regshape.cli.referrer.{operation}",
                   return_value=_referrer_list()) as list_fn,
         ):
@@ -237,13 +235,13 @@ class TestReferrerReferenceResolution:
 
     def test_unsupported_digest_is_not_resolved_as_a_tag(self, client: MagicMock) -> None:
         """Preserve usage errors for unsupported explicit digest references."""
-        with patch("regshape.cli.referrer.head_manifest") as head:
+        with patch("regshape.cli.referrer.resolve_digest") as resolve:
             result = _runner().invoke(regshape, [
                 "referrer", "list", "-i", f"{REGISTRY}/{REPO}@md5:abc",
             ])
         assert result.exit_code == 2
         assert "digest references must use sha256 or sha512" in result.stderr
-        head.assert_not_called()
+        resolve.assert_not_called()
         client.head.assert_not_called()
 
     @pytest.mark.parametrize("fetch_all", [False, True])
@@ -269,15 +267,14 @@ class TestReferrerReferenceResolution:
         if write_file:
             args.extend(["--output", str(outfile)])
         with (
-            patch("regshape.cli.referrer.head_manifest",
-                  return_value=(DIGEST, MANIFEST_MT, 123)) as head,
+            patch("regshape.cli.referrer.resolve_digest", return_value=DIGEST) as resolve,
             patch(f"regshape.cli.referrer.{operation}",
                   return_value=referrers) as list_fn,
         ):
             result = _runner().invoke(regshape, args)
 
         assert result.exit_code == 0, result.output
-        head.assert_called_once()
+        resolve.assert_called_once()
         list_fn.assert_called_once_with(
             client=client, repo=REPO, digest=DIGEST, artifact_type=SBOM_TYPE,
         )
@@ -303,7 +300,7 @@ class TestReferrerReferenceResolution:
         outfile = tmp_path / "referrers.json"
         outfile.write_text("unchanged\n")
         with (
-            patch("regshape.cli.referrer.head_manifest", side_effect=error),
+            patch("regshape.cli.referrer.resolve_digest", side_effect=error),
             patch("regshape.cli.referrer.list_referrers") as list_fn,
             patch("regshape.cli.referrer.list_referrers_all") as list_all,
         ):
@@ -326,7 +323,7 @@ class TestReferrerReferenceResolution:
     ) -> None:
         """Reject successful HEAD responses that cannot identify a subject digest."""
         with (
-            patch("regshape.cli.referrer.head_manifest",
+            patch("regshape.libs.manifests.operations.head_manifest",
                   return_value=(digest, MANIFEST_MT, 123)),
             patch("regshape.cli.referrer.list_referrers") as list_fn,
         ):

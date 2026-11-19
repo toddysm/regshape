@@ -75,3 +75,41 @@ applies its input/acknowledgement checks when `expected_digest` is supplied.
 
 See the [complete operations reference](../../specs/operations/manifests.md)
 and [transfer observations](transfer-progress.md).
+
+## Resolve a tag and list referrers
+
+`resolve_digest(client, repo, reference, *, accept=None) -> str` is the companion
+for the digest-only `list_referrers` and `list_referrers_all` APIs. Their existing
+`digest=` signatures remain unchanged. This SDK-only path accepts a full tagged
+artifact reference through the shared parser:
+
+```python
+from regshape.libs.manifests import resolve_digest
+from regshape.libs.referrers import list_referrers_all
+from regshape.libs.refs import parse_artifact_ref
+from regshape.libs.transport import RegistryClient, TransportConfig
+
+registry, repo, reference = parse_artifact_ref("registry.example.com/team/image:v1")
+client = RegistryClient(TransportConfig(registry=registry))
+digest = resolve_digest(client, repo, reference)
+referrers = list_referrers_all(
+    client, repo, digest, artifact_type="application/vnd.example.sbom.v1",
+)
+print(referrers.to_dict())
+```
+
+Authenticate separately and replace the synthetic reference before running.
+Use `list_referrers` instead for one page; omit `artifact_type` for all types.
+The caller owns the client.
+
+The resolver accepts the parsed final token, not the full artifact reference.
+Digest-shaped tokens pass through unchanged without a lookup or validation;
+use `regshape.libs.refs.validate_digest` separately for strict supported-digest
+syntax. Tags cause one HEAD request using `DEFAULT_MANIFEST_ACCEPT`, unless an
+explicit `accept` override (including `""`) is supplied.
+
+A missing, empty or whitespace-only `Docker-Content-Digest` raises
+`ManifestError` with the existing CLI resolution wording. A nonblank header is
+returned verbatim; this is not digest verification. HEAD authentication,
+registry and transport errors propagate unchanged. Referrer errors retain
+their existing `ReferrerError` mapping.

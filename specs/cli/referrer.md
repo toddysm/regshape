@@ -79,9 +79,10 @@ List referrers for the manifest identified by tag or digest in ARTIFACT.
    digest references must use `sha256` or `sha512`; unsupported digest algorithms
    are rejected with exit code 2.
 2. Resolve credentials from the Docker credential store for the extracted
-   registry. For a tag reference, call `head_manifest()` using the same registry
-   client and accepting all supported manifest and index media types. Use the
-   returned `Docker-Content-Digest` as the subject digest. A missing or blank
+   registry. Call the SDK's `resolve_digest()` with the parsed reference. The
+   SDK passes digest-shaped input through without HEAD; for a tag it performs
+   HEAD using the library's all-types negotiation default. Use the returned
+   `Docker-Content-Digest` as the subject digest. A missing or blank
    digest header, authentication failure, missing tag, or transport failure
    produces exit code 1 without querying referrers or writing the output file.
 3. If `--all` is set, call `list_referrers_all()` which follows `Link`

@@ -3,20 +3,21 @@
 """Tests for :mod:`regshape.libs.referrers.operations`."""
 
 import json
+from unittest.mock import MagicMock, PropertyMock
 
 import pytest
 import requests
-from unittest.mock import MagicMock, PropertyMock
 
 from regshape.libs.errors import AuthError, ReferrerError
+from regshape.libs.manifests import DEFAULT_MANIFEST_ACCEPT, resolve_digest
 from regshape.libs.referrers.operations import (
     _parse_next_url,
     _raise_for_list_error,
     list_referrers,
     list_referrers_all,
 )
+from regshape.libs.refs import parse_artifact_ref
 from regshape.libs.transport import RegistryClient, TransportConfig
-
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -71,6 +72,29 @@ def _make_response(
 # ===========================================================================
 # list_referrers
 # ===========================================================================
+
+@pytest.mark.parametrize("operation", [list_referrers, list_referrers_all])
+def test_documented_tag_resolution_composes_with_referrer_apis(operation):
+    """SDK-only callers can resolve a full tagged reference and retain referrer filtering."""
+    registry, repo, reference = parse_artifact_ref(f"{REGISTRY}/{REPO}:v1")
+    client = _mock_client()
+    client.config.registry = registry
+    client.head.return_value = _make_response(200, headers={"Docker-Content-Digest": DIGEST})
+    response = _make_response(200, body=_referrer_response_json([
+        _descriptor_dict(), _descriptor_dict("sha256:" + "b" * 64, SIG_TYPE),
+    ]))
+    client.get.return_value = response
+    client.last_response = response
+    digest = resolve_digest(client, repo, reference)
+    result = operation(client, repo, digest, artifact_type=SBOM_TYPE)
+    assert [manifest.digest for manifest in result.manifests] == [DIGEST]
+    client.head.assert_called_once_with(
+        f"/v2/{REPO}/manifests/v1", headers={"Accept": DEFAULT_MANIFEST_ACCEPT},
+    )
+    client.get.assert_called_once_with(
+        f"/v2/{REPO}/referrers/{DIGEST}", params={"artifactType": SBOM_TYPE},
+    )
+
 
 class TestListReferrers:
 
