@@ -70,6 +70,12 @@ discovery's source provenance, first roles and reused-reference counts.
 Pooled C=1 retains one-at-a-time graph acquisition.
 See [download policy and transport](../../docs/library/downloads.md)
 for range eligibility, bounded scratch and retry precedence.
+That C*R scratch allowance is additional to artifact staging/archive costs;
+memory-backed scratch consumes RAM and ranges add spool write/read I/O.
+Separate SDK invocations do not share a machine-wide scheduler. Chunked OCI
+uploads are a different, in-order protocol. For practical tuning and a concrete
+`pull_artifact` call, see the
+[parallel-download SDK examples](../../docs/guides/parallel-downloads.md#complete-artifact-receipt).
 
 `download_status_callback` adds immutable caller-thread per-blob observations
 and one aggregate summary after publication/cleanup, without changing
@@ -79,6 +85,14 @@ traffic. The original error remains authoritative, and observer exceptions
 retain their exact identity. Legacy and unsupported custom clients reject this
 new observer before effects; their old omitted-option calls remain compatible.
 See [status and statistics](../../docs/library/downloads.md#status-and-statistics).
+The `etag_changed` reason survives verified fallback completion. Recovery drains
+old jobs and identity-checks/resets the affected sink/hash before one fresh full
+GET, without replaying unrelated blobs. Original size/digest remain mandatory;
+discarded attempts increase received bytes, not `ArtifactPullResult`'s successful
+object-byte counters. The CLI, not this library, emits one deferred count-based
+warning even without animation. Failure never claims verified recovery.
+Requests timeouts bound inactivity rather than elapsed read time; cancellation
+can wait indefinitely for a trickling peer before safe worker/namespace cleanup.
 
 Command callers use `preflight_artifact_pull(registry, repo, reference, output_path,
 output_format=ArtifactFormat.OCI, limits=None)` **before constructing the client**

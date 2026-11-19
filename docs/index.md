@@ -24,6 +24,8 @@ to build your own tools. The CLI tool is built on top of the libraries and uses
 
 - [Install and get started](../README.md#installation)
 - [Download, verify, and republish a complete artifact](guides/artifact-pull.md)
+- [Tune parallel downloads, ranges and throttling recovery](guides/parallel-downloads.md)
+- [Download policy, batch API and typed status](library/downloads.md)
 - [Artifact pull command reference](../specs/cli/artifact.md)
 - [Complete-artifact library reference](../specs/operations/artifacts.md)
 - [Recursive layout push reference](../specs/cli/layout-push.md)

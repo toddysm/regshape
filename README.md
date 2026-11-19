@@ -106,6 +106,7 @@ a release announcement or the separate planned config/layer-position selector.
 ### Guides
 
 - [Complete Artifact Download and Round-trip](docs/guides/artifact-pull.md)
+- [Parallel Downloads, Ranges and Throttling Recovery](docs/guides/parallel-downloads.md)
 - [Creating OCI Layouts](docs/guides/create-oci-layout.md)
 - [Docker Desktop Integration](docs/guides/docker-desktop-integration.md)
 - [Live Transfer Progress](docs/guides/live-transfer-progress.md)
@@ -139,6 +140,7 @@ a release announcement or the separate planned config/layer-position selector.
 - [Models](specs/models/) — Blob, Catalog, Error, Manifest, Referrer, Tags
 - [Operations](specs/operations/) — Blobs, Catalog, Manifests, Referrers, Tags
 - [Complete Artifact Library](specs/operations/artifacts.md) — pull, observations, limits, and snapshots
+- [Download Policy, Batch API and Typed Status](docs/library/downloads.md) — pooled defaults, retries, rollback and statistics
 
 ## Contributing
 

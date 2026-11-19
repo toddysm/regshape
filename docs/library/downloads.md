@@ -2,12 +2,11 @@
 
 <!-- doc-type: reference -->
 
-This development-build reference covers the transport foundation from
-[#134](https://github.com/toddysm/regshape/issues/134) and internal coordination
-from [#135](https://github.com/toddysm/regshape/issues/135), and the public facade
-from [#144](https://github.com/toddysm/regshape/issues/144), and verified ranged
-blob receipt from [#136](https://github.com/toddysm/regshape/issues/136), targeting 0.2, not a
-published release. See the [approved design](../../specs/operations/parallel-downloads.md).
+This development-build reference covers pooled downloads, verified ranges,
+parallel artifact acquisition and public batch/status APIs, targeting **0.2**,
+not a published release. Start with the
+[tuning guide and singular/artifact/batch examples](../guides/parallel-downloads.md).
+See also the [approved design](../../specs/operations/parallel-downloads.md).
 The [blob API](../../specs/operations/blobs.md#get_blob) and
 [artifact API](../../specs/operations/artifacts.md#signatures-and-caller-ownership)
 accept keyword-only `download_options`; existing positional arguments, results,
@@ -35,6 +34,9 @@ Pass `download_options=DownloadOptions.legacy()` to either operation to retain
 the original client's retry, logging/middleware and `last_response` behavior.
 `DownloadOptions.sequential()` still uses pooled transport and is **not** a
 compatibility rollback. The legacy example below shows the explicit rollback.
+Legacy unbounded receipt also retains its original mismatch cleanup: it unlinks
+the output pathname without file-identity checks and only logs deletion errors.
+Do not assume the pooled worker's replacement-file protection applies to legacy.
 
 ## Policy
 
@@ -64,6 +66,10 @@ including one inherited from the client, must be a non-boolean integer in 0..10
 and is checked before auth/pool creation.
 `max_retries` explicitly overrides its budget, including zero to disable retries.
 Each request uses the original finite client timeout.
+The retry budget belongs to each request, shared across its authentication
+resends/probes; it is not a single artifact-wide budget or one independently
+nested budget per worker. Explicit retry configuration retains its status set:
+overriding only `max_retries` does not add 429 to a caller policy that excludes it.
 Pooled 429/503 retries honor a valid `Retry-After` delay or HTTP date, waiting at
 least the greater of that delay and configured exponential backoff after releasing
 the response slot. Malformed values emit a sanitized diagnostic and retain normal
@@ -131,6 +137,11 @@ blob. Full streams still hash/write on their owning workers.
 Standalone scratch defaults to the system temporary directory. Nested artifact
 receipts instead create handle-relative scratch in their trusted private staging
 namespace; an explicit `scratch_dir` overrides either default.
+The C*R bound excludes saved outputs, artifact staging/archives and metadata.
+Range spooling adds writes and ordered reads even for verify-only; tmpfs consumes
+memory and disk-backed scratch may consume page cache. There is no machine-wide
+or process-global resource cap across independent invocations. See
+[scratch budgeting](../guides/parallel-downloads.md#reserve-scratch-space-and-account-for-extra-io).
 
 Unknown size, absent/weak initial ETag, first-response HTTP coding, correctly
 declared limited ranges and ignored ranges select explicit one-time capability
@@ -164,10 +175,13 @@ The CLI exposes the same policy with `--concurrency`, `--ranges-per-blob`,
 `--range-size`, `--download-retries`, `--scratch-dir`, `--sequential` and
 `--legacy-transport`; see the [blob command reference](../../specs/cli/blob.md#blob-get)
 for conflicts and examples. Changed-ETag warnings are deferred until command
-cleanup/result reporting, independently of progress rendering. Artifact graph
-parallelization and its command controls remain tracked separately by
-[#137](https://github.com/toddysm/regshape/issues/137); this item does not complete
-the feature's final workflow documentation or registry/benchmark release gates.
+cleanup/result reporting, independently of progress rendering. They use stderr
+at normal verbosity, including with `--no-progress`, artifact `--json` and
+nonterminal stderr. One artifact warning counts unique affected blobs; success
+asserts verified fallback, while failure only reports attempted recovery. JSON
+is unchanged. See [exact warning wording and recovery](../guides/parallel-downloads.md#an-etag-changed-check-the-final-outcome).
+Artifact graph acquisition uses the same range engine and controls under one
+operation-wide cap.
 
 ## Scoped authentication and ownership
 
@@ -445,15 +459,28 @@ does not permit another call through a different adapter after it fails.
 Separate references to the same bound instance method share failure state;
 different receivers or different methods remain independent.
 
-## Remaining delivery boundary
+## Delivery boundaries and evidence
 
-Public batch downloads and artifact pulls overlap independent blobs; singular,
-batch and artifact downloads share eligible ranged receipt. Blob get and
-artifact pull expose the same scheduling/range/retry/scratch controls, with
-functional interleaved progress and deferred changed-ETag warnings.
-Combined benchmarks/real-registry validation and final feature-wide
-documentation remain tracked by [#138](https://github.com/toddysm/regshape/issues/138)
-and [#139](https://github.com/toddysm/regshape/issues/139); no performance or
-release claim is implied here.
-Existing callbacks run synchronously on the invoking thread, and standalone
-verify-only downloads still hash/discard the received bytes.
+The separately reviewed components have distinct ownership:
+
+| Delivery | Responsibility |
+| --- | --- |
+| [Core #135](https://github.com/toddysm/regshape/issues/135) | Internal coordinator, workers, bounded observations, caller-thread delivery and shutdown |
+| [Public API #144](https://github.com/toddysm/regshape/issues/144) | `get_blobs`, typed status/statistics and shared invocation cap |
+| [Functional renderer #145](https://github.com/toddysm/regshape/issues/145) | Interleaved identities/attempts, bounded visible rows and deferred CLI ETag warnings |
+| [Visual formatting #141](https://github.com/toddysm/regshape/issues/141) | Colors, aligned columns, 20-cell bars and width/encoding fallbacks, without changing lifecycle or stdout |
+
+Transport [#134](https://github.com/toddysm/regshape/issues/134), ranges
+[#136](https://github.com/toddysm/regshape/issues/136) and artifact graph
+integration [#137](https://github.com/toddysm/regshape/issues/137) are also merged.
+These are library capabilities exposed by the CLI, not CLI-only schedulers.
+Existing callbacks remain synchronous on the invoking thread.
+
+[Validation #138](https://github.com/toddysm/regshape/issues/138) is complete;
+the [evidence runbook](download-validation.md) distinguishes actual-registry
+checks from controlled Linux benchmark acceptance and the retained failed
+macOS ranged-performance gate. No universal speedup, registry certification,
+release or parent-feature close-out is implied. Final documentation is delivered
+by [#139](https://github.com/toddysm/regshape/issues/139); the
+[capability inventory](../project-state.md) is reconciled separately before
+closing [#131](https://github.com/toddysm/regshape/issues/131).
