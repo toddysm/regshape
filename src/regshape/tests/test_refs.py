@@ -213,6 +213,8 @@ def test_repository_ref_requires_registry_and_repository(value):
     "acr.io/pkg name", " acr.io/pkg", "acr.io/pkg\u00a0",
     "acr.io/pkg\t", "acr.io/pkg\n", "acr.io/pkg\r", "acr.io/pkg\x00",
     "acr.io/pkg\x1b", "acr.io/pkg\x7f", "acr.io/pkg\x80",
+    "acr.io/pkg\u202e:tag", "acr.io/pkg\u200b", "acr.io/pkg\ufeff",
+    "acr.io/pkg\u2066:tag", "acr.io/pkg\u2069", "acr.io/pkg:\u200btag",
     "acr.io/pkg\\other", "acr.io/pkg?query", "acr.io/pkg#fragment", "acr.io/pkg%2fother",
 ])
 def test_shared_reference_safety_precedes_parsing_and_never_echoes_input(parser, value):

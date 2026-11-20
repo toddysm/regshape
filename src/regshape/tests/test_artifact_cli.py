@@ -262,6 +262,8 @@ def test_existing_target_restrictions_remain(
     "synthetic-user:synthetic-secret@registry.example.invalid:5000/pkg:v1",
     "//synthetic-user:synthetic-secret@registry.example.invalid:5000",
     "https:/registry.example.invalid/pkg:v1",
+    "registry.example.invalid/pkg\u202e:tag",
+    "registry.example.invalid/pkg\u200b", "registry.example.invalid/pkg\ufeff:tag",
 ])
 def test_unsafe_reference_diagnostics_never_echo_cli_context(
     runner: CliRunner,

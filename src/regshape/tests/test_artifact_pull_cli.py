@@ -477,6 +477,8 @@ def test_limits_reject_bad_choices_before_credentials(
     "https://synthetic-user:synthetic-secret@registry.example/repo:tag",
     "//synthetic-user:synthetic-secret@registry.example:5000",
     "https:/registry.example/repo:tag",
+    "registry.example/repo\u202e:tag", "registry.example/repo\u200b",
+    "registry.example/repo\ufeff:tag",
     "synthetic-user@registry.example/repo:tag", "registry.example:badport/repo:tag",
 ])
 def test_source_preflight_rejects_before_credentials(

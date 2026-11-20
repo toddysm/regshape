@@ -14,6 +14,7 @@
 """
 
 import re
+import unicodedata
 
 from regshape.libs.errors import ReferenceValidationError, UnsafeReferenceError
 
@@ -54,7 +55,7 @@ def validate_digest(reference: str) -> str:
 
 
 def reject_unsafe_reference(value: str) -> None:
-    """Reject URL/userinfo syntax, whitespace and control characters without echoing input.
+    """Reject URL/userinfo syntax, whitespace and control/format characters without echoing input.
 
     An ``@`` is allowed only after the registry/repository path and before a
     colon-bearing digest token without slashes. This is a safety boundary, not
@@ -63,7 +64,8 @@ def reject_unsafe_reference(value: str) -> None:
 
     :param value: Unmodified registry/repository reference, optionally qualified.
     :raises UnsafeReferenceError: If empty/non-string, slash-prefixed, URL/userinfo-like, or
-        containing whitespace, C0/C1 controls, backslashes, ``?``, ``#`` or ``%``.
+        containing whitespace, Unicode control/format characters (including
+        C0/C1 and bidi overrides), backslashes, ``?``, ``#`` or ``%``.
         Diagnostics never include the supplied value.
     """
     if (
@@ -72,7 +74,7 @@ def reject_unsafe_reference(value: str) -> None:
         or ("@" in value and (
             ":" not in value.rsplit("@", 1)[1] or "/" in value.rsplit("@", 1)[1]
         ))
-        or any(char.isspace() or ord(char) < 32 or 127 <= ord(char) <= 159 for char in value)
+        or any(char.isspace() or unicodedata.category(char) in {"Cc", "Cf"} for char in value)
         or any(char in value for char in "\\?#%")
     ):
         raise UnsafeReferenceError("Use a registry/repository tag or digest, not a URL.")

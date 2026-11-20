@@ -24,7 +24,7 @@ import click
 import requests
 
 from regshape.cli.downloads import DownloadWarnings, download_options, download_policy
-from regshape.cli.formatting import emit_error, emit_json
+from regshape.cli.formatting import emit_error, emit_json, reference_error_context
 from regshape.cli.progress import ProgressDisplay
 from regshape.cli.telemetry import telemetry_options
 from regshape.libs.blobs import (
@@ -36,7 +36,7 @@ from regshape.libs.blobs import (
     upload_blob_stream,
 )
 from regshape.libs.decorators.scenario import track_scenario
-from regshape.libs.errors import AuthError, BlobError, UnsafeReferenceError
+from regshape.libs.errors import AuthError, BlobError
 from regshape.libs.models.blob import BlobInfo
 from regshape.libs.refs import parse_repository_ref
 from regshape.libs.transport import RegistryClient, TransportConfig
@@ -90,7 +90,7 @@ def blob_head(ctx, repo, digest):
     try:
         registry, repo_name = parse_repository_ref(repo)
     except ValueError as exc:
-        emit_error("--repo" if isinstance(exc, UnsafeReferenceError) else repo, str(exc))
+        emit_error(reference_error_context(repo, exc, option="--repo"), str(exc))
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
@@ -198,7 +198,7 @@ def blob_get(
     try:
         registry, repo_name = parse_repository_ref(repo)
     except ValueError as exc:
-        emit_error("--repo" if isinstance(exc, UnsafeReferenceError) else repo, str(exc))
+        emit_error(reference_error_context(repo, exc, option="--repo"), str(exc))
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
@@ -266,7 +266,7 @@ def blob_delete(ctx, repo, digest):
     try:
         registry, repo_name = parse_repository_ref(repo)
     except ValueError as exc:
-        emit_error("--repo" if isinstance(exc, UnsafeReferenceError) else repo, str(exc))
+        emit_error(reference_error_context(repo, exc, option="--repo"), str(exc))
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
@@ -347,7 +347,7 @@ def blob_upload(ctx, repo, source_file, digest, media_type, chunked, chunk_size,
     try:
         registry, repo_name = parse_repository_ref(repo)
     except ValueError as exc:
-        emit_error("--repo" if isinstance(exc, UnsafeReferenceError) else repo, str(exc))
+        emit_error(reference_error_context(repo, exc, option="--repo"), str(exc))
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
     try:
@@ -423,7 +423,7 @@ def blob_mount(ctx, repo, digest, from_repo):
     try:
         registry, repo_name = parse_repository_ref(repo)
     except ValueError as exc:
-        emit_error("--repo" if isinstance(exc, UnsafeReferenceError) else repo, str(exc))
+        emit_error(reference_error_context(repo, exc, option="--repo"), str(exc))
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
     try:

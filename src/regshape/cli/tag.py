@@ -15,7 +15,12 @@
 import click
 import requests
 
-from regshape.cli.formatting import emit_error, emit_json, emit_list
+from regshape.cli.formatting import (
+    emit_error,
+    emit_json,
+    emit_list,
+    reference_error_context,
+)
 from regshape.cli.options import artifact_option
 from regshape.cli.telemetry import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
@@ -23,7 +28,6 @@ from regshape.libs.errors import (
     AuthError,
     ReferenceValidationError,
     TagError,
-    UnsafeReferenceError,
 )
 from regshape.libs.refs import format_ref, parse_artifact_ref
 from regshape.libs.tags import (
@@ -128,7 +132,7 @@ def tag_list(
     try:
         registry, repo, _ = parse_artifact_ref(image_ref)
     except ValueError as exc:
-        emit_error("--artifact" if isinstance(exc, UnsafeReferenceError) else image_ref, str(exc))
+        emit_error(reference_error_context(image_ref, exc, option="--artifact"), str(exc))
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
@@ -182,7 +186,7 @@ def delete(ctx, image_ref):
     except ReferenceValidationError as exc:
         emit_error(image_ref, str(exc), exit_code=2)
     except ValueError as exc:
-        emit_error("--artifact" if isinstance(exc, UnsafeReferenceError) else image_ref, str(exc))
+        emit_error(reference_error_context(image_ref, exc, option="--artifact"), str(exc))
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 

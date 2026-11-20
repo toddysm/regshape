@@ -73,6 +73,7 @@ def test_blob_commands_share_plain_repository_errors(runner, tmp_path, command, 
     "synthetic-user:synthetic-secret@acr.io:5000/repo",
     "//synthetic-user:synthetic-secret@acr.io:5000",
     "https:/acr.io/repo",
+    "acr.io/repo\u202e:tag", "acr.io/repo\u200b", "acr.io/repo\ufeff:tag",
 ])
 def test_blob_commands_never_echo_unsafe_repository_input(runner, tmp_path, command, reference):
     """Unsafe SDK errors redact the CLI context too, before credential lookup."""
