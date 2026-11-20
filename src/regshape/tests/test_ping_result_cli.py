@@ -37,9 +37,9 @@ def test_real_ping_result_rendering(status_code, as_json):
         result = CliRunner().invoke(regshape, args)
 
     client.get.assert_called_once_with("/v2/")
-    assert result.exit_code == (1 if status_code == 503 else 0)
+    assert result.exit_code == (1 if status_code in (403, 503) else 0)
     if as_json:
-        if status_code in (401, 403):
+        if status_code == 401:
             expected = {
                 "registry": "ghcr.io",
                 "reachable": True,
@@ -60,10 +60,10 @@ def test_real_ping_result_rendering(status_code, as_json):
             expected = {
                 "registry": "ghcr.io",
                 "reachable": False,
-                "error": "HTTP 503",
+                "error": f"HTTP {status_code}",
             }
         assert json.loads(result.output) == expected
-    elif status_code in (401, 403):
+    elif status_code == 401:
         assert result.output == (
             "Registry ghcr.io is reachable\n"
             "  Note: Registry requires authentication. "
@@ -76,7 +76,9 @@ def test_real_ping_result_rendering(status_code, as_json):
             "  Latency:     125ms\n"
         )
     else:
-        assert result.output == "Error: Registry ghcr.io is not reachable: HTTP 503\n"
+        assert result.output == (
+            f"Error: Registry ghcr.io is not reachable: HTTP {status_code}\n"
+        )
 
 
 @pytest.mark.parametrize("as_json", [False, True])

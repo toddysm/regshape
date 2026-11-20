@@ -68,13 +68,14 @@ and [SDK example](library/transfer-progress.md#upload-and-mount-results).
 Legacy chunked uploads retain their no-probe behavior; trusted size inference
 belongs to the additive result API used by the CLI.
 The inventory prerequisite merged through
-[#176](https://github.com/toddysm/regshape/pull/176). Current authorized work is
-library-owned [ping authentication state #173](https://github.com/toddysm/regshape/issues/173),
-using hosted CI and one ready-for-review PR held for user merge approval.
+[#176](https://github.com/toddysm/regshape/pull/176). Library-owned
+[ping authentication state #173](https://github.com/toddysm/regshape/issues/173)
+is covered by [#188](https://github.com/toddysm/regshape/pull/188).
 The [SDK reference](library/ping.md) documents opt-in authentication results,
 preserved default behavior and library-owned error details; the
 [command reference](../specs/cli/ping.md) preserves CLI output contracts.
-Delivery is not yet asserted on main. Siblings #174 and #175 remain outside this
+Raw HTTP 403 retains the legacy CLI failure contract while remaining an
+authentication-required SDK result. Siblings #174 and #175 remain outside this
 build; the complete separation feature is not yet implemented.
 
 Artifact-oriented option naming is implemented under

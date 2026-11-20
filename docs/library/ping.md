@@ -86,3 +86,11 @@ The [ping command](../../specs/cli/ping.md) opts in to result-based authenticati
 handling. Existing CLI text, JSON keys and exit codes remain unchanged. Auth
 JSON deliberately omits `status_code` and `auth_required`, and renders API
 version and latency as null even when the SDK has response metadata.
+
+A raw HTTP 403 response retains the legacy CLI failure contract: exit code 1,
+`Error: Registry <host> is not reachable: HTTP 403` in text mode, or
+`{"registry": "<host>", "reachable": false, "error": "HTTP 403"}` in JSON mode.
+This CLI presentation does not change the SDK's opt-in 403 result, which still
+reports `reachable=True` and `auth_required=True`. In contrast, a transport
+`AuthError` (including one whose diagnostic mentions a token-server 403) has no
+known registry status and retains the login hint and exit code 0.

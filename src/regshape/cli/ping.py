@@ -54,7 +54,8 @@ def ping(ctx, registry, as_json):
     the registry is reachable, the API version it advertises, and the
     round-trip latency.  Credentials are resolved automatically from
     the credential store populated by ``auth login``. Authentication-required
-    results are rendered as reachable with a login hint and exit code 0.
+    results are rendered as reachable with a login hint and exit code 0,
+    except raw HTTP 403 responses retain the legacy error output and exit 1.
     """
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
@@ -69,6 +70,10 @@ def ping(ctx, registry, as_json):
         sys.exit(1)
     except requests.exceptions.RequestException as exc:
         _error(registry, str(exc), as_json)
+        sys.exit(1)
+
+    if not result.reachable or result.status_code == 403:
+        _error(registry, f"HTTP {result.status_code}", as_json)
         sys.exit(1)
 
     if result.auth_required:
@@ -86,10 +91,6 @@ def ping(ctx, registry, as_json):
             click.echo("  Note: Registry requires authentication. "
                        "Run 'regshape auth login' to configure credentials.")
         return
-
-    if not result.reachable:
-        _error(registry, f"HTTP {result.status_code}", as_json)
-        sys.exit(1)
 
     if as_json:
         emit_json({

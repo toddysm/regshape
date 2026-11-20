@@ -114,6 +114,9 @@ A **top-level command** (not a command group), registered directly on the `regsh
   A thin compatibility catch only forwards legacy `AuthError` to the SDK's
   `PingResult.from_auth_error`; the SDK owns the conversion.
 - Renders `PingError.detail` and maps transport failures to exit code 1
+- Preserves raw HTTP 403 as an error with exit code 1, even though the SDK's
+  opt-in result marks it reachable/auth-required. A transport `AuthError`
+  mentioning 403 instead keeps the legacy login hint and exit code 0.
 - Uses `@telemetry_options` and `@track_scenario("ping")` decorators
 
 ### Registration in `main.py`
@@ -160,11 +163,17 @@ Failure (connection error):
 Error: Registry ghcr.io is not reachable: Connection refused
 ```
 
-Authentication required (exit code 0):
+HTTP 401 or transport authentication error (exit code 0):
 
 ```
 Registry ghcr.io is reachable
   Note: Registry requires authentication. Run 'regshape auth login' to configure credentials.
+```
+
+Raw HTTP 403 response (exit code 1):
+
+```
+Error: Registry ghcr.io is not reachable: HTTP 403
 ```
 
 ### JSON (`--json`)
@@ -191,7 +200,7 @@ Failure:
 }
 ```
 
-Authentication required:
+HTTP 401 authentication required:
 
 ```json
 {
@@ -208,12 +217,17 @@ CLI JSON retains these legacy schemas; it does not expose the new SDK
 `auth_required` field. Auth JSON deliberately keeps API version and latency
 null and omits the HTTP status, even when the SDK knows them.
 
+A raw HTTP 403 response instead retains the failure schema with
+`"reachable": false` and `"error": "HTTP 403"` (exit code 1). A transport
+`AuthError` retains the auth schema and exit code 0 even if its diagnostic
+mentions a token-server 403; no registry status is guessed from that text.
+
 ## Exit Codes
 
 | Code | Meaning |
 |------|---------|
-| 0 | Registry is reachable (HTTP 200 or authentication required, e.g. HTTP 401/403) |
-| 1 | Registry is not reachable or error occurred |
+| 0 | HTTP 200, HTTP 401 or a transport `AuthError` with the login hint |
+| 1 | Raw HTTP 403, other unsuccessful HTTP response or transport error |
 
 ## Error Messages
 
@@ -222,7 +236,8 @@ null and omits the HTTP status, even when the SDK knows them.
 | Connection refused | `Error: Registry <host> is not reachable: Connection refused` |
 | DNS resolution failed | `Error: Registry <host> is not reachable: Name resolution failed` |
 | Timeout | `Error: Registry <host> is not reachable: <original transport diagnostic>` |
-| 401/403 authentication required | `Registry <host> is reachable` followed by the login hint above |
+| HTTP 401 or transport `AuthError` | `Registry <host> is reachable` followed by the login hint above |
+| Raw HTTP 403 | `Error: Registry <host> is not reachable: HTTP 403` |
 | Other non-200 HTTP status | `Error: Registry <host> is not reachable: HTTP <code>` |
 
 ## Files to Create/Modify
@@ -259,6 +274,9 @@ null and omits the HTTP status, even when the SDK knows them.
 - Successful ping with `--json` → exit code 0, valid JSON with expected keys
 - Unreachable registry → exit code 1, error message
 - Auth failure → exit code 0, message indicates registry is reachable but authentication failed
+- Raw HTTP 403 response → exit code 1, exact legacy error text/JSON; SDK result
+  still retains its reachable/auth-required state
+- Transport `AuthError` mentioning a token-server 403 → exit code 0 and login hint
 - `--registry` option is required → exit code 2 (Click usage error)
 
 The original CLI tests remain unchanged. Additional thin result-wiring tests
