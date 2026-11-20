@@ -477,6 +477,7 @@ def test_failed_upload_preserves_source_and_accepted_prefix(failure: str) -> Non
         client.patch.side_effect = [_response(status=202), _response(status=500)]
     elif failure == "read":
         source = MagicMock(spec=io.BytesIO)
+        source.seekable.return_value = False
         source.read.side_effect = [b"ab", OSError("source read failure")]
     elif failure == "commit":
         client.put.return_value = _response(status=500)

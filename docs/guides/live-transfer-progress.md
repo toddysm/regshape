@@ -418,14 +418,18 @@ Blob 1/1 sha256:ab12... Uploading 12.0 MiB (total unknown) 6.0 MiB/s
 ```
 
 Use `--chunked` for pipe-backed or virtual files. Their metadata can report zero
-or an allocation size rather than a payload length. The command checks
+or an allocation size rather than a payload length. The library checks
 regular-file size hints at their boundaries and otherwise uses an unknown
 total. Genuinely empty regular files retain a known zero total.
 
 Downloads use `Content-Length` only when it unambiguously describes the
 consumed payload. Content/transfer encoding can make the total unknown.
-Legacy JSON size metadata is unchanged; do not substitute it for actual
-progress observations when headers or file metadata are incomplete.
+Download JSON retains its existing metadata contract; do not substitute header
+metadata for progress when it is incomplete. Upload JSON `size` reports the
+logical payload bytes actually sent, not a later file stat or retry traffic.
+Upload/mount `location` honors the final registry Location header, falling back
+to the canonical blob path only when absent/empty. The existing JSON keys remain
+unchanged; see the [SDK result APIs](../library/transfer-progress.md#upload-and-mount-results).
 
 ### Retries
 

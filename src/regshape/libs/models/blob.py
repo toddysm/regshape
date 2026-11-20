@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 
 """
-:mod:`regshape.libs.models.blob` - OCI BlobInfo and BlobUploadSession data models
+:mod:`regshape.libs.models.blob` - OCI blob metadata, results and upload sessions
 ==================================================================================
 
 .. module:: regshape.libs.models.blob
    :platform: Unix, Windows
-   :synopsis: Dataclasses for OCI blob metadata (BlobInfo) and in-progress
-              blob upload state (BlobUploadSession).
+   :synopsis: Dataclasses for OCI blob metadata, completed upload/mount results
+              and in-progress upload state.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
@@ -73,6 +73,47 @@ class BlobInfo:
             "content_type": self.content_type,
             "size": self.size,
         }
+
+
+@dataclass(frozen=True)
+class BlobUploadResult:
+    """Completed upload metadata, available only after successful commit.
+
+    :param digest: Registry-confirmed digest, or requested digest if omitted.
+    :param size: Logical payload bytes sent in the successful attempt, excluding
+        replayed bytes, probes and upload-protocol overhead.
+    :param location: Final registry Location header verbatim, or canonical blob
+        path when that header is absent or empty.
+    """
+
+    digest: str
+    size: int
+    location: str
+
+    def to_dict(self) -> dict[str, str | int]:
+        """Return the existing upload JSON shape: digest, size and location."""
+        return {"digest": self.digest, "size": self.size, "location": self.location}
+
+
+@dataclass(frozen=True)
+class BlobMountResult:
+    """Successful cross-repository mount metadata; no payload size is inferred.
+
+    :param digest: Registry-confirmed digest, or requested digest if omitted.
+    :param location: Registry Location header verbatim, or canonical blob path
+        when that header is absent or empty.
+
+    ``status`` is always ``"mounted"``. A mount sends no payload and the registry
+    response does not establish the blob's content size.
+    """
+
+    digest: str
+    location: str
+    status: str = field(default="mounted", init=False)
+
+    def to_dict(self) -> dict[str, str]:
+        """Return the existing mount JSON shape without adding a size field."""
+        return {"digest": self.digest, "status": self.status, "location": self.location}
 
 
 @dataclass

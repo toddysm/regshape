@@ -40,7 +40,7 @@ linked below. New observer/total parameters are keyword-only.
 | --- | --- | --- |
 | `get_blob` | `progress_callback=None` | `total_size=None`; derives a usable response length when observing |
 | `upload_blob_stream` | `progress_callback=None` | `total_size=None`; seekable source length is inferred |
-| `upload_blob_chunked` | `progress_callback=None` | `total_size=None`; supply only a length you trust |
+| `upload_blob_chunked` | `progress_callback=None` | `total_size=None`; probes regular-file bounds, otherwise unknown |
 | `push_layout` | `transfer_callback=None` | Per-blob descriptor sizes |
 | `push_image` | `transfer_callback=None` | Forwarded unchanged to layout push |
 
@@ -48,6 +48,53 @@ The existing bytes-based `upload_blob(...)` API is unchanged and does not gain
 byte callbacks. Use `upload_blob_stream(...)` for a file-backed monolithic
 upload; this preserves the POST-plus-PUT protocol instead of silently choosing
 chunked uploads.
+
+### Upload and mount results
+
+Use the additive result APIs when the confirmed digest alone is insufficient:
+
+```python
+import hashlib
+
+from regshape.libs.blobs import upload_blob_stream_result, mount_blob_result
+from regshape.libs.transport import RegistryClient, TransportConfig
+
+client = RegistryClient(TransportConfig(registry="registry.example.com"))
+# Keep this local file stable and substitute repositories you can write to.
+with open("blob.bin", "rb") as source:
+    hasher = hashlib.sha256()
+    for chunk in iter(lambda: source.read(65536), b""):
+        hasher.update(chunk)
+    digest = "sha256:" + hasher.hexdigest()
+    source.seek(0)
+    result = upload_blob_stream_result(client, "team/example", source, digest)
+print(result.to_dict())  # digest, actual logical payload size, final location
+
+mounted = mount_blob_result(client, "team/other", result.digest, "team/example")
+print(mounted.to_dict())  # digest, status="mounted", location; no size field
+```
+
+`upload_blob_chunked_result` accepts the same arguments as `upload_blob_chunked`
+and returns the same `BlobUploadResult` shape as the monolithic result API.
+Both preserve progress/replay/error behavior and leave the borrowed source open.
+Without an explicit `total_size`, chunked uploads verify regular-file boundary
+hints without changing the source position. Empty files have known zero remaining
+bytes; nonseekable/virtual/unverified sources retain unknown totals. Keep source
+content stable. A trusted `total_size` bypasses this probe.
+
+The frozen result's `size` counts logical payload bytes once, excluding
+retransmissions, probe reads and protocol overhead. It is not a later file stat.
+Both upload and mount `location` values preserve the final registry `Location`
+header verbatim; absent/empty headers use the canonical blob path instead.
+Returned URLs are registry-supplied metadata, not an instruction to fetch them
+or forward credentials. A mount sends no payload and does not issue an extra
+HEAD to discover content size. An unsupported mount (HTTP 202) raises `BlobError`,
+as before.
+
+The older upload/mount APIs still return strings. The CLI uses these additive
+APIs without changing its flags or upload/mount JSON keys; its deliberate output
+change is honoring the registry's final Location rather than always synthesizing
+a path. See the [complete result contracts](../../specs/operations/blobs.md#additive-upload-and-mount-result-apis).
 
 See the complete [blob signatures](../../specs/operations/blobs.md),
 [layout push signature](../../specs/cli/layout-push.md), and

@@ -18,8 +18,12 @@ and transport settings.  The functions are intentionally free of Click/CLI
 concerns — error reporting is the caller's responsibility.
 """
 
+import errno
 import hashlib
+import io
 import logging
+import os
+import stat
 from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO, Optional
@@ -30,7 +34,10 @@ import requests
 from regshape.libs._http import ClosingResponse
 from regshape.libs._http import download_total as _download_total
 from regshape.libs.blobs.download import (
-    BlobDownload, DownloadOptions, DownloadStatus, resolve_download_options,
+    BlobDownload,
+    DownloadOptions,
+    DownloadStatus,
+    resolve_download_options,
 )
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.decorators.timing import track_time
@@ -38,7 +45,12 @@ from regshape.libs.errors import AuthError, BlobError
 from regshape.libs.manifests._stream import entity_chunks
 from regshape.libs.manifests.download import _DownloadFile
 from regshape.libs.manifests.operations import _BufferedManifestText
-from regshape.libs.models.blob import BlobInfo, BlobUploadSession
+from regshape.libs.models.blob import (
+    BlobInfo,
+    BlobMountResult,
+    BlobUploadResult,
+    BlobUploadSession,
+)
 from regshape.libs.models.error import OciErrorResponse
 from regshape.libs.progress import (
     ProgressCallback,
@@ -442,7 +454,6 @@ def upload_blob(
     return confirmed or digest
 
 
-@track_scenario("blob upload streamed")
 def upload_blob_stream(
     client: RegistryClient,
     repo: str,
@@ -453,6 +464,30 @@ def upload_blob_stream(
     progress_callback: ProgressCallback | None = None,
     total_size: int | None = None,
 ) -> str:
+    """Upload a borrowed binary source and return its confirmed digest.
+
+    This backward-compatible facade delegates to :func:`upload_blob_stream_result`
+    with the same arguments, replay/size checks, progress and exceptions. The
+    caller owns *source*; it is never closed. Use the result API for actual sent
+    payload size and the registry's final Location header.
+    """
+    return upload_blob_stream_result(
+        client, repo, source, digest, content_type,
+        progress_callback=progress_callback, total_size=total_size,
+    ).digest
+
+
+@track_scenario("blob upload streamed")
+def upload_blob_stream_result(
+    client: RegistryClient,
+    repo: str,
+    source: BinaryIO,
+    digest: str,
+    content_type: str = _DEFAULT_CONTENT_TYPE,
+    *,
+    progress_callback: ProgressCallback | None = None,
+    total_size: int | None = None,
+) -> BlobUploadResult:
     """Upload a monolithic body without buffering a file solely to report progress.
 
     The source is borrowed and never closed. Seekable sources are replayed from
@@ -469,10 +504,13 @@ def upload_blob_stream(
     :param progress_callback: Optional synchronous immutable-event observer.
     :param total_size: Trusted payload size, inferred by seeking when omitted.
         For a nonseekable source this frames the payload without waiting for EOF.
-    :returns: The registry-confirmed digest, or the supplied digest if absent.
+    :returns: Confirmed digest (requested if omitted), actual logical payload
+        bytes in the successful attempt, and final Location header verbatim
+        (canonical blob path if absent or empty). Replays are not double-counted.
     :raises BlobError: On size/replay/integrity or registry failures.
     :raises AuthError: On authentication failure.
     :raises requests.exceptions.RequestException: On transport failures.
+    :raises OSError: On source I/O errors or failed source positioning.
 
     Owns each POST/PUT response, closing before success is reported and preserving
     primary transfer/observer failures if response cleanup also fails.
@@ -500,11 +538,14 @@ def upload_blob_stream(
                 confirmed = response.headers.get("Docker-Content-Digest", "")
                 if confirmed and confirmed != digest:
                     raise BlobError("Registry confirmed a different digest for the streamed upload")
+                confirmed = confirmed or digest
+                result = BlobUploadResult(
+                    confirmed, body.position, _blob_location(response, repo, confirmed),
+                )
         progress.complete()
-        return confirmed or digest
+        return result
 
 
-@track_scenario("blob upload chunked")
 def upload_blob_chunked(
     client: RegistryClient,
     repo: str,
@@ -516,6 +557,31 @@ def upload_blob_chunked(
     progress_callback: ProgressCallback | None = None,
     total_size: int | None = None,
 ) -> str:
+    """Upload borrowed binary chunks and return the confirmed digest.
+
+    Delegates to :func:`upload_blob_chunked_result` with identical arguments,
+    progress, errors and source ownership. If *total_size* is omitted, verified
+    regular-file bounds determine the remaining size; unsupported probes leave
+    it unknown. The source must remain stable during probing and upload.
+    """
+    return upload_blob_chunked_result(
+        client, repo, source, digest, content_type, chunk_size,
+        progress_callback=progress_callback, total_size=total_size,
+    ).digest
+
+
+@track_scenario("blob upload chunked")
+def upload_blob_chunked_result(
+    client: RegistryClient,
+    repo: str,
+    source: BinaryIO,
+    digest: str,
+    content_type: str = _DEFAULT_CONTENT_TYPE,
+    chunk_size: int = _DEFAULT_CHUNK_SIZE,
+    *,
+    progress_callback: ProgressCallback | None = None,
+    total_size: int | None = None,
+) -> BlobUploadResult:
     """Upload a blob using the chunked (POST + N×PATCH + PUT) protocol.
 
     Three or more HTTP calls are made:
@@ -542,15 +608,21 @@ def upload_blob_chunked(
     :param progress_callback: Optional observer of accepted-byte/lifecycle events.
         Buffered-chunk transport retries are counted only once after success.
         Callback errors propagate unchanged; the caller retains ownership of source.
-    :param total_size: Optional trusted count of bytes remaining in source. No
-        seeking or pre-reading is performed to discover it; ``None`` is unknown.
-    :returns: The confirmed digest from ``Docker-Content-Digest``.
+    :param total_size: Trusted count of bytes remaining in source. When omitted,
+        regular-file bounds are probed without changing the source position;
+        unsupported/unverified bounds remain unknown. Keep source content stable.
+    :returns: Confirmed digest (requested if omitted), accepted payload bytes
+        counted once, and final Location header verbatim (canonical blob path
+        if absent or empty). Empty payloads have size zero.
     :raises AuthError: On authentication failure at any step.
     :raises BlobError: On a non-2xx response, an offset mismatch (416), or
         a confirmed digest mismatch.
     :raises requests.exceptions.RequestException: On transport errors.
+    :raises OSError: On source/probe I/O errors or inability to restore position.
     """
     _validate_chunk_size(chunk_size)
+    if total_size is None:
+        total_size = _trusted_file_size(source)
     with _TransferProgress(
         digest, TransferDirection.UPLOAD, progress_callback, total_size,
     ) as progress:
@@ -569,11 +641,12 @@ def _upload_blob_chunks(
     content_type: str,
     chunk_size: int,
     progress: _TransferProgress,
-) -> str:
+) -> BlobUploadResult:
     """Upload buffered chunks, advancing progress only after accepted responses.
 
     The caller owns source and the observer lifecycle. This helper preserves
-    upload-session query values and performs final digest confirmation. Each
+    upload-session query values and returns final digest, location and accepted
+    payload size after confirmation. Each
     response is closed before advancing success, without masking primary errors.
     """
     registry = client.config.registry
@@ -638,22 +711,40 @@ def _upload_blob_chunks(
                 f"Digest mismatch: expected {digest}, registry confirmed {confirmed}",
                 f"registry={registry} repo={repo}",
             )
-    return confirmed or digest
+        confirmed = confirmed or digest
+        result = BlobUploadResult(
+            confirmed, session.offset, _blob_location(put_response, repo, confirmed),
+        )
+    return result
 
 
-@track_time
 def mount_blob(
     client: RegistryClient,
     repo: str,
     digest: str,
     from_repo: str,
 ) -> str:
+    """Mount a blob and return its confirmed digest, preserving the legacy API.
+
+    Delegates to :func:`mount_blob_result` with the same arguments and registry,
+    authentication and transport errors. No upload fallback or size query is
+    performed; use the result API to access the registry's Location header.
+    """
+    return mount_blob_result(client, repo, digest, from_repo).digest
+
+
+@track_time
+def mount_blob_result(
+    client: RegistryClient,
+    repo: str,
+    digest: str,
+    from_repo: str,
+) -> BlobMountResult:
     """Attempt to cross-repository mount a blob without a data transfer.
 
     Issues ``POST /v2/{repo}/blobs/uploads/?from={from_repo}&mount={digest}``.
 
-    * ``201 Created`` — mount succeeded; returns the confirmed digest from
-      ``Docker-Content-Digest``.
+    * ``201 Created`` — mount succeeded; returns confirmed digest and location.
     * ``202 Accepted`` — the registry cannot perform the mount (unsupported
       feature or the source blob is inaccessible); raises :class:`BlobError`
       directing the caller to fall back to :func:`upload_blob` or
@@ -663,8 +754,9 @@ def mount_blob(
     :param repo: Destination repository name.
     :param digest: Blob digest to mount (``"sha256:..."``).
     :param from_repo: Source repository name (without registry prefix).
-    :returns: Confirmed digest string from the ``Docker-Content-Digest``
-        response header.
+    :returns: Confirmed digest (requested if omitted), mounted status and the
+        registry Location header verbatim (canonical blob path if absent/empty).
+        Does not issue a HEAD request or invent a content size.
     :raises AuthError: On authentication failure.
     :raises BlobError: If the registry returns ``202`` (mount not accepted)
         or any other non-2xx status.
@@ -672,22 +764,69 @@ def mount_blob(
     """
     registry = client.config.registry
     path = f"/v2/{repo}/blobs/uploads/"
-    response = client.post(path, params={"from": from_repo, "mount": digest})
+    with ClosingResponse(client.post(
+        path, params={"from": from_repo, "mount": digest},
+    )) as response:
+        if response.status_code == 202:
+            raise BlobError(
+                f"Blob mount not accepted for {registry}/{repo}@{digest}"
+                f": registry returned 202 — retry with upload_blob or upload_blob_chunked",
+                f"from_repo={from_repo}",
+            )
 
-    if response.status_code == 202:
-        raise BlobError(
-            f"Blob mount not accepted for {registry}/{repo}@{digest}"
-            f": registry returned 202 — retry with upload_blob or upload_blob_chunked",
-            f"from_repo={from_repo}",
-        )
-
-    _raise_for_blob_error(response, registry, repo, digest)
-    return response.headers.get("Docker-Content-Digest", digest)
+        _raise_for_blob_error(response, registry, repo, digest)
+        confirmed = response.headers.get("Docker-Content-Digest", digest)
+        return BlobMountResult(confirmed, _blob_location(response, repo, confirmed))
 
 
 # ===========================================================================
 # Private helpers
 # ===========================================================================
+
+
+def _blob_location(response: requests.Response, repo: str, digest: str) -> str:
+    """Prefer the final response Location verbatim, falling back only when empty."""
+    return response.headers.get("Location") or f"/v2/{repo}/blobs/{digest}"
+
+
+def _trusted_file_size(source: BinaryIO) -> int | None:
+    """Verify remaining regular-file bytes without changing the source position.
+
+    Unsupported descriptors/seeking and virtual-file size hints remain unknown;
+    genuine empty files return zero. The caller must keep content stable.
+
+    :raises OSError: On I/O errors or inability to restore the original position.
+    """
+    if not source.seekable():
+        return None
+    try:
+        descriptor = source.fileno()
+    except (AttributeError, io.UnsupportedOperation):
+        logger.debug("Upload source has no file descriptor; using an unknown total")
+        return None
+    info = os.fstat(descriptor)
+    if not stat.S_ISREG(info.st_mode):
+        return None
+    position = source.tell()
+    if position > info.st_size:
+        return None
+    try:
+        source.seek(info.st_size)
+        if source.read(1):
+            return None
+        if info.st_size:
+            source.seek(info.st_size - 1)
+            if not source.read(1):
+                return None
+        return info.st_size - position
+    except OSError as exc:
+        if exc.errno not in (errno.EINVAL, errno.ESPIPE, errno.ENOTSUP):
+            raise
+        logger.debug("File size probe unsupported (%s); using an unknown total", type(exc).__name__)
+        return None
+    finally:
+        if source.tell() != position:
+            source.seek(position)
 
 
 def _require_upload_commit(response: requests.Response, protocol: str) -> None:

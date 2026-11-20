@@ -9,7 +9,12 @@ from unittest.mock import patch
 import pytest
 import requests
 
-from regshape.libs.blobs import TransferPhase, TransferProgress, upload_blob_stream
+from regshape.libs.blobs import (
+    TransferPhase,
+    TransferProgress,
+    upload_blob_stream,
+    upload_blob_stream_result,
+)
 from regshape.libs.decorators import TelemetryConfig, configure_telemetry
 from regshape.libs.errors import BlobError
 from regshape.libs.transport import RegistryClient, TransportConfig
@@ -47,8 +52,9 @@ class _Nonseekable(io.BytesIO):
 @pytest.mark.parametrize("middleware,failure", [
     (mode, failure) for mode in (False, True) for failure in ("none", "auth", "probe", "redirect")
 ] + [(True, "timeout"), (True, "status")])
-def test_streamed_body_replays_identical_payload(middleware: bool, failure: str) -> None:
-    """Exercise dispatch/replay with body consumption before final responses."""
+@pytest.mark.parametrize("result_api", [False, True])
+def test_streamed_body_replays_identical_payload(middleware: bool, failure: str, result_api: bool) -> None:
+    """Replay identical bytes and report the logical payload size, not replay overhead."""
     source = io.BytesIO(b"prefix" + DATA)
     source.seek(6)
     events: list[TransferProgress] = []
@@ -94,7 +100,12 @@ def test_streamed_body_replays_identical_payload(middleware: bool, failure: str)
             enable_retries=failure in ("timeout", "status"),
             retry_config=RetryConfig(max_retries=1, backoff_factor=0),
         ))
-        assert upload_blob_stream(client, "repo", source, DIGEST, progress_callback=events.append) == DIGEST
+        if result_api:
+            result = upload_blob_stream_result(client, "repo", source, DIGEST, progress_callback=events.append)
+            assert result.digest == DIGEST and result.size == len(DATA)
+            assert result.location == f"/v2/repo/blobs/{DIGEST}"
+        else:
+            assert upload_blob_stream(client, "repo", source, DIGEST, progress_callback=events.append) == DIGEST
     assert bodies == ([DATA] if failure in ("none", "redirect") else [DATA, DATA])
     assert source.tell() == 12 and not source.closed
     assert events[-1].phase == TransferPhase.COMPLETED
