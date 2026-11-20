@@ -31,6 +31,11 @@ from regshape.libs.blobs.operations import (
     upload_blob,
     upload_blob_chunked,
 )
+from regshape.libs.decorators import (
+    TelemetryConfig,
+    configure_telemetry,
+    get_telemetry_config,
+)
 from regshape.libs.errors import BlobError
 from regshape.libs.models.blob import BlobInfo
 
@@ -496,6 +501,25 @@ def test_chunked_upload_infers_regular_file_total(tmp_path: Path, payload: bytes
     assert all(event.total_bytes == len(payload) for event in events)
 
 
+@pytest.mark.parametrize("total_size", [None, len(CONTENT)])
+def test_legacy_chunked_upload_does_not_probe_regular_files(tmp_path: Path, total_size):
+    """Legacy callers retain forward-only reads and unknown totals unless supplied."""
+    path = tmp_path / "source"
+    path.write_bytes(CONTENT)
+    events = []
+    with path.open("rb") as source, (
+        patch.object(source, "seek", side_effect=AssertionError("unexpected seek"))
+    ), patch.object(source, "fileno", side_effect=AssertionError("unexpected size probe")):
+        confirmed = upload_blob_chunked(
+            _result_client(None), REPO, source, DIGEST,
+            total_size=total_size, progress_callback=events.append,
+        )
+        assert not source.closed and source.tell() == len(CONTENT)
+    assert confirmed == DIGEST
+    assert events[-1].bytes_completed == len(CONTENT)
+    assert all(event.total_bytes == total_size for event in events)
+
+
 def test_chunked_nonseekable_result_counts_payload_without_total():
     """Unknown-length streams report accepted bytes without any seek or size guess."""
     source = _Nonseekable(CONTENT)
@@ -507,10 +531,14 @@ def test_chunked_nonseekable_result_counts_payload_without_total():
 
 
 @pytest.mark.parametrize("location", [None, "", "/content/blob", "https://storage.example.invalid/blob"])
-def test_mount_result_preserves_shape_and_registry_location(location):
-    """Mount metadata retains the legacy JSON keys and never queries a payload size."""
+@pytest.mark.parametrize("confirmed_digest", [None, "", DIGEST])
+def test_mount_result_preserves_shape_and_registry_location(location, confirmed_digest):
+    """Absent/empty digests fall back consistently without changing keys or size I/O."""
     client = _make_client()
     response = _make_put_response(DIGEST)
+    response.headers.pop("Docker-Content-Digest")
+    if confirmed_digest is not None:
+        response.headers["Docker-Content-Digest"] = confirmed_digest
     if location is not None:
         response.headers["Location"] = location
     client.post.return_value = response
@@ -523,6 +551,26 @@ def test_mount_result_preserves_shape_and_registry_location(location):
     assert mount_blob(client, REPO, DIGEST, "source/repo") == DIGEST
     client.head.assert_not_called()
     response.close.assert_called()
+
+
+@pytest.mark.parametrize("operation", [mount_blob, mount_blob_result])
+@pytest.mark.parametrize("status", [201, 202])
+def test_mount_timing_uses_selected_public_api_label(operation, status):
+    """Legacy/result calls record their own timing exactly once on success or error."""
+    client = _make_client()
+    client.post.return_value = _make_put_response(DIGEST, status_code=status)
+    previous = get_telemetry_config()
+    config = TelemetryConfig(time_methods_enabled=True)
+    configure_telemetry(config)
+    try:
+        if status == 202:
+            with pytest.raises(BlobError, match="Blob mount not accepted"):
+                operation(client, REPO, DIGEST, "source/repo")
+        else:
+            operation(client, REPO, DIGEST, "source/repo")
+        assert [name for name, elapsed in config.method_timings] == [operation.__name__]
+    finally:
+        configure_telemetry(previous)
 
 
 def test_mount_result_rejects_fallback_and_closes_response():

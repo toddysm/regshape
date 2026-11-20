@@ -546,6 +546,7 @@ def upload_blob_stream_result(
         return result
 
 
+@track_scenario("blob upload chunked")
 def upload_blob_chunked(
     client: RegistryClient,
     repo: str,
@@ -559,14 +560,14 @@ def upload_blob_chunked(
 ) -> str:
     """Upload borrowed binary chunks and return the confirmed digest.
 
-    Delegates to :func:`upload_blob_chunked_result` with identical arguments,
-    progress, errors and source ownership. If *total_size* is omitted, verified
-    regular-file bounds determine the remaining size; unsupported probes leave
-    it unknown. The source must remain stable during probing and upload.
+    Shares the protocol implementation with :func:`upload_blob_chunked_result`
+    but preserves the legacy no-probe contract: no seeking or pre-reading is
+    performed, and omitted *total_size* remains unknown. Explicit trusted totals
+    are still enforced. The source remains caller-owned and is never closed.
     """
-    return upload_blob_chunked_result(
+    return _upload_blob_chunked_result(
         client, repo, source, digest, content_type, chunk_size,
-        progress_callback=progress_callback, total_size=total_size,
+        progress_callback=progress_callback, total_size=total_size, infer_size=False,
     ).digest
 
 
@@ -620,8 +621,32 @@ def upload_blob_chunked_result(
     :raises requests.exceptions.RequestException: On transport errors.
     :raises OSError: On source/probe I/O errors or inability to restore position.
     """
+    return _upload_blob_chunked_result(
+        client, repo, source, digest, content_type, chunk_size,
+        progress_callback=progress_callback, total_size=total_size, infer_size=True,
+    )
+
+
+def _upload_blob_chunked_result(
+    client: RegistryClient,
+    repo: str,
+    source: BinaryIO,
+    digest: str,
+    content_type: str,
+    chunk_size: int,
+    *,
+    progress_callback: ProgressCallback | None,
+    total_size: int | None,
+    infer_size: bool,
+) -> BlobUploadResult:
+    """Own chunked progress/commit checks while preserving each facade's sizing policy.
+
+    Only the additive result facade opts into probing an omitted total. The
+    legacy facade never probes; both enforce supplied totals and borrow source.
+    Chunk-size, probe, transfer and observer failures propagate to the caller.
+    """
     _validate_chunk_size(chunk_size)
-    if total_size is None:
+    if infer_size and total_size is None:
         total_size = _trusted_file_size(source)
     with _TransferProgress(
         digest, TransferDirection.UPLOAD, progress_callback, total_size,
@@ -646,8 +671,8 @@ def _upload_blob_chunks(
 
     The caller owns source and the observer lifecycle. This helper preserves
     upload-session query values and returns final digest, location and accepted
-    payload size after confirmation. Each
-    response is closed before advancing success, without masking primary errors.
+    payload size after confirmation. Each response is closed before advancing
+    success, without masking primary errors.
     """
     registry = client.config.registry
 
@@ -718,6 +743,7 @@ def _upload_blob_chunks(
     return result
 
 
+@track_time
 def mount_blob(
     client: RegistryClient,
     repo: str,
@@ -726,11 +752,12 @@ def mount_blob(
 ) -> str:
     """Mount a blob and return its confirmed digest, preserving the legacy API.
 
-    Delegates to :func:`mount_blob_result` with the same arguments and registry,
-    authentication and transport errors. No upload fallback or size query is
-    performed; use the result API to access the registry's Location header.
+    Shares the protocol implementation with :func:`mount_blob_result` and keeps
+    the ``mount_blob`` method-timing label, without double-counting an inner
+    result API call. No upload fallback or size query is performed. Registry,
+    authentication and transport errors propagate unchanged.
     """
-    return mount_blob_result(client, repo, digest, from_repo).digest
+    return _mount_blob_result(client, repo, digest, from_repo).digest
 
 
 @track_time
@@ -754,13 +781,31 @@ def mount_blob_result(
     :param repo: Destination repository name.
     :param digest: Blob digest to mount (``"sha256:..."``).
     :param from_repo: Source repository name (without registry prefix).
-    :returns: Confirmed digest (requested if omitted), mounted status and the
+    :returns: Confirmed digest (requested if absent/empty), mounted status and the
         registry Location header verbatim (canonical blob path if absent/empty).
         Does not issue a HEAD request or invent a content size.
     :raises AuthError: On authentication failure.
     :raises BlobError: If the registry returns ``202`` (mount not accepted)
         or any other non-2xx status.
     :raises requests.exceptions.RequestException: On transport errors.
+
+    Method timings use ``mount_blob_result``, including CLI callers. The legacy
+    :func:`mount_blob` facade retains its original ``mount_blob`` timing label.
+    """
+    return _mount_blob_result(client, repo, digest, from_repo)
+
+
+def _mount_blob_result(
+    client: RegistryClient,
+    repo: str,
+    digest: str,
+    from_repo: str,
+) -> BlobMountResult:
+    """Perform one mount request, leaving timing to the selected public facade.
+
+    Return registry metadata after response cleanup, or propagate registry/auth/
+    transport/cleanup errors. Missing or empty digest/Location headers use the
+    requested digest/canonical blob path. No payload or size request is sent.
     """
     registry = client.config.registry
     path = f"/v2/{repo}/blobs/uploads/"
@@ -775,7 +820,7 @@ def mount_blob_result(
             )
 
         _raise_for_blob_error(response, registry, repo, digest)
-        confirmed = response.headers.get("Docker-Content-Digest", digest)
+        confirmed = response.headers.get("Docker-Content-Digest") or digest
         return BlobMountResult(confirmed, _blob_location(response, repo, confirmed))
 
 

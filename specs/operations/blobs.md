@@ -435,12 +435,15 @@ When observing a download without an explicit total, a valid decimal
 content encoding. Otherwise the total stays unknown; compressed wire sizes are
 not confused with decoded payload bytes. Negative or unusable metadata becomes
 zero in the legacy `BlobInfo.size` result, but never a known-zero progress total.
-With no `total_size`, chunked upload probes regular-file boundary hints and
+With no `total_size`, `upload_blob_chunked_result` probes regular-file boundary hints and
 restores the original position. A verified hint describes remaining bytes,
 including known zero; nonseekable sources, missing descriptors and unverified
 virtual-file hints retain an unknown total. Supply `total_size` to bypass the
 probe when a trusted remaining size is already available. Genuine probe/read
-errors propagate; keep file content stable throughout the operation.
+errors propagate; keep file content stable throughout the operation. Legacy
+`upload_blob_chunked` preserves its no-seek/no-pre-read behavior: an omitted
+total remains unknown, even for regular files. Both APIs enforce an explicitly
+supplied total.
 Monolithic streamed upload
 infers a seekable source's remaining length and rewinds for replay as described
 above. Neither API closes the caller-owned source.
@@ -558,7 +561,7 @@ mount_blob_result(client, repo, digest, from_repo) -> BlobMountResult
 | `BlobMountResult` | `digest: str`, `status: str` (always `"mounted"`), `location: str` |
 
 Both use the confirmed digest, falling back to the requested digest when the
-registry omits it. Uploads retain their digest-mismatch rejection. `location`
+registry omits it or returns an empty value. Uploads retain their digest-mismatch rejection. `location`
 uses the **final** response's `Location` header verbatim, including an absolute
 URL or query string. Only an absent/empty final header falls back to
 `/v2/{repo}/blobs/{confirmed_digest}`; the upload-session URL is never used as
@@ -578,6 +581,11 @@ not establish the existing blob's content size. No additional HEAD or automatic
 upload fallback is performed. HTTP 202 remains `BlobError` directing the caller
 to upload, with the existing error wording. Mount responses are closed on
 success and failure.
+
+Legacy `mount_blob` retains the method-timing label `mount_blob`. The additive
+`mount_blob_result` API, including its CLI callers, reports `mount_blob_result`
+when method timing is enabled. Each facade records one timing (also on failure),
+not nested legacy/result timings.
 
 The CLI delegates to these result APIs and renders `result.to_dict()`.
 Its existing upload/mount key sets and flags are unchanged; registry Location

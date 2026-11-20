@@ -40,7 +40,7 @@ linked below. New observer/total parameters are keyword-only.
 | --- | --- | --- |
 | `get_blob` | `progress_callback=None` | `total_size=None`; derives a usable response length when observing |
 | `upload_blob_stream` | `progress_callback=None` | `total_size=None`; seekable source length is inferred |
-| `upload_blob_chunked` | `progress_callback=None` | `total_size=None`; probes regular-file bounds, otherwise unknown |
+| `upload_blob_chunked` | `progress_callback=None` | `total_size=None`; remains unknown without probing |
 | `push_layout` | `transfer_callback=None` | Per-blob descriptor sizes |
 | `push_image` | `transfer_callback=None` | Forwarded unchanged to layout push |
 
@@ -77,10 +77,12 @@ print(mounted.to_dict())  # digest, status="mounted", location; no size field
 `upload_blob_chunked_result` accepts the same arguments as `upload_blob_chunked`
 and returns the same `BlobUploadResult` shape as the monolithic result API.
 Both preserve progress/replay/error behavior and leave the borrowed source open.
-Without an explicit `total_size`, chunked uploads verify regular-file boundary
+Without an explicit `total_size`, `upload_blob_chunked_result` verifies regular-file boundary
 hints without changing the source position. Empty files have known zero remaining
 bytes; nonseekable/virtual/unverified sources retain unknown totals. Keep source
-content stable. A trusted `total_size` bypasses this probe.
+content stable. A trusted `total_size` bypasses this probe. Legacy
+`upload_blob_chunked` never seeks or pre-reads to infer size and retains an
+unknown total when omitted; both APIs enforce supplied totals.
 
 The frozen result's `size` counts logical payload bytes once, excluding
 retransmissions, probe reads and protocol overhead. It is not a later file stat.
@@ -90,6 +92,10 @@ Returned URLs are registry-supplied metadata, not an instruction to fetch them
 or forward credentials. A mount sends no payload and does not issue an extra
 HEAD to discover content size. An unsupported mount (HTTP 202) raises `BlobError`,
 as before.
+
+With method timing enabled, legacy `mount_blob` retains its `mount_blob` label.
+The new `mount_blob_result` API and CLI mount command report `mount_blob_result`;
+each call is timed once, including failures.
 
 The older upload/mount APIs still return strings. The CLI uses these additive
 APIs without changing its flags or upload/mount JSON keys; its deliberate output
