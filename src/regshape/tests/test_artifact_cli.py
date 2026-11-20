@@ -256,6 +256,31 @@ def test_existing_target_restrictions_remain(
     http.assert_not_called()
 
 
+@pytest.mark.parametrize("command", COMMANDS)
+@pytest.mark.parametrize("reference", [
+    "https://synthetic-user:synthetic-secret@registry.example.invalid/pkg:v1",
+    "synthetic-user:synthetic-secret@registry.example.invalid:5000/pkg:v1",
+    "//synthetic-user:synthetic-secret@registry.example.invalid:5000",
+    "https:/registry.example.invalid/pkg:v1",
+    "registry.example.invalid/pkg\u202e:tag",
+    "registry.example.invalid/pkg\u200b", "registry.example.invalid/pkg\ufeff:tag",
+])
+def test_unsafe_reference_diagnostics_never_echo_cli_context(
+    runner: CliRunner,
+    network: tuple[MagicMock, MagicMock],
+    command: tuple[str, str],
+    reference: str,
+) -> None:
+    """Every parser consumer maps unsafe input without echoing URL/userinfo or making HTTP calls."""
+    credentials, http = network
+    result = runner.invoke(regshape, _arguments(command, "--artifact", reference))
+    assert result.exit_code == 1 and not result.stdout
+    assert result.stderr == "Error [--artifact]: Use a registry/repository tag or digest, not a URL.\n"
+    assert "synthetic-" not in result.output
+    credentials.assert_not_called()
+    http.assert_not_called()
+
+
 @pytest.mark.parametrize("reference", [BASE, BASE + ":v1", BASE + "@" + DIGEST])
 @pytest.mark.parametrize("all_pages", [False, True])
 def test_tag_list_still_ignores_target_suffix(

@@ -19,6 +19,7 @@ from typing import Optional
 import click
 
 from regshape.libs._http import report_secondary_failure
+from regshape.libs.errors import UnsafeReferenceError
 
 
 def emit_json(data: dict | list, output_path: Optional[str] = None, err: bool = False) -> None:
@@ -73,6 +74,18 @@ def emit_error(reference: str, reason: str, exit_code: int = 1) -> None:
     """
     click.echo(f"Error [{reference}]: {reason}", err=True)
     sys.exit(exit_code)
+
+
+def reference_error_context(reference: str, error: BaseException, *, option: str) -> str:
+    """Select diagnostic context without echoing a parser-rejected unsafe value.
+
+    :param reference: Raw reference whose parsing produced *error*.
+    :param error: Original parsing failure; pass the cause when a command wraps it.
+    :param option: Trusted option label to display instead of an unsafe reference.
+    :returns: The option label for ``UnsafeReferenceError``, otherwise the raw
+        reference so ordinary usage/operation errors retain their context.
+    """
+    return option if isinstance(error, UnsafeReferenceError) else reference
 
 
 def emit_table(rows: list[list[str]], headers: Optional[list[str]] = None) -> None:

@@ -15,7 +15,13 @@
 import click
 import requests
 
-from regshape.cli.formatting import emit_error, emit_json, emit_table, emit_text
+from regshape.cli.formatting import (
+    emit_error,
+    emit_json,
+    emit_table,
+    emit_text,
+    reference_error_context,
+)
 from regshape.cli.options import artifact_option
 from regshape.cli.telemetry import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
@@ -114,7 +120,7 @@ def referrer_list(
     try:
         registry, repo, reference = parse_artifact_ref(image_ref)
     except ValueError as exc:
-        emit_error(image_ref, str(exc))
+        emit_error(reference_error_context(image_ref, exc, option="--artifact"), str(exc))
 
     # Preserve explicit @ usage errors before client/credential construction.
     if "@" in image_ref:

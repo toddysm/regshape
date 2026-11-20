@@ -378,6 +378,16 @@ keyword, tuple values, defaults and `ValueError` behavior. `format_ref` stays
 unchanged. This is additive in the 0.2 package interface; no network API,
 persisted schema, cache key or data migration is introduced.
 
+Subsequent safety work in [#170](https://github.com/toddysm/regshape/issues/170)
+adds keyword-only `strict=True` to both parser names. Their tuple/default-tag
+behavior and alias equivalence remain intact, but unsafe raw input now raises
+`UnsafeReferenceError` (a `ValueError` subclass) before parsing. SDK conformance
+callers may explicitly bypass that guard with `strict=False`; the CLI cannot.
+The same work adds `parse_repository_ref` and the reusable
+`reject_unsafe_reference` guard. See the
+[current parsing contract](../../docs/guides/artifact-options.md#parse-plain-repositories-and-reject-unsafe-input).
+This does not implement #88's canonical-reference redesign.
+
 #### D3. Command integration
 
 Use the shared decorator and neutral parser entry point in the affected
