@@ -44,6 +44,7 @@ src/regshape/libs/layout/
 ```python
 __all__ = [
     # High-level staged workflow
+    'prepare_layer_content',
     'stage_layer',
     'generate_config',
     'generate_manifest',
@@ -209,6 +210,41 @@ Initialise a new OCI Image Layout directory at *path*.
 
 ---
 
+### `prepare_layer_content`
+
+```python
+def prepare_layer_content(
+    content: bytes,
+    *,
+    compression: Literal["gzip", "zstd"] | None = None,
+    media_type: str | None = None,
+) -> tuple[bytes, str]:
+```
+
+Prepare in-memory layer bytes for `stage_layer`, returning the bytes and their
+media type without writing files.
+
+- Detect gzip (`1f8b`) or zstd (`28b52ffd`) magic bytes. Preserve detected
+  compressed input unless another format is explicitly requested. Detection
+  does not validate compression-stream integrity or tar contents.
+- With no explicit `compression`, gzip unrecognised input using
+  `gzip.GzipFile(..., mtime=0)`. With an explicit `"gzip"` or `"zstd"`,
+  compress only if the input is not already in that format.
+- Forced compression operates on the original supplied bytes, without
+  decompressing or transcoding. Switching formats therefore nests compression.
+- If `media_type` is `None`, derive `application/vnd.oci.image.layer.v1.tar+gzip`
+  or `application/vnd.oci.image.layer.v1.tar+zstd` from the resulting format.
+  Preserve an explicit override verbatim; it does not affect compression.
+- Raise `LayoutError` for unsupported compression values or when zstd encoding
+  needs the optional `zstandard` package and it cannot be imported. Already-zstd
+  input needs no encoder. The CLI maps this library error through `emit_error`
+  (exit code 1), including the `pip install zstandard` hint.
+
+The caller reads the source bytes and passes the returned pair to `stage_layer`
+along with any annotations. The CLI uses this same SDK preparation path.
+
+---
+
 ### `stage_layer`
 
 ```python
@@ -241,8 +277,9 @@ the staging file.
    the staging file back atomically.
 5. Return the `Descriptor`.
 
-**Note:** Compression is the caller's responsibility. The CLI layer compresses
-the file in memory before calling this function. The library takes raw bytes.
+**Note:** This low-level function stores bytes verbatim. Call the library's
+`prepare_layer_content` first for automatic compression and media-type selection,
+as the CLI does.
 
 **Returns:** `Descriptor` appended to the staging file.
 
@@ -793,13 +830,14 @@ init_layout  →  add_blob (×N, any content)  →  add_manifest (pre-built JSON
 - **External / stdlib:**
   - `hashlib` — SHA-256 digest computation
   - `json` — JSON serialisation
-  - `gzip` — in-memory gzip compression (CLI layer only)
+  - `gzip` / `io` — deterministic in-memory layer compression in the library
   - `pathlib` — `Path` objects for filesystem operations
   - `os` / `tempfile` — atomic file writes via rename
-- **Optional third-party (CLI layer only):**
-  - `zstandard` — zstd compression; required only if `--compress-format zstd` is used
+- **Optional third-party:**
+  - `zstandard` — library zstd encoding when the input is not already zstd;
+    installed by the development extra so CI exercises real compression
 
-No new third-party dependencies are required for the library module itself.
+No new mandatory runtime dependencies are required for the library module.
 
 ---
 

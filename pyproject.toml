@@ -32,6 +32,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=9.0.3",
+    "zstandard>=0.22.0",
 ]
 
 [project.urls]

@@ -7,7 +7,8 @@
 .. module:: regshape.libs.layout
    :platform: Unix, Windows
    :synopsis: Library-level functions for creating and managing OCI Image
-              Layout directories on the local filesystem.
+              Layout directories on the local filesystem, including layer
+              compression preparation and media-type selection.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
@@ -18,6 +19,7 @@ from regshape.libs.layout.operations import (
     generate_config,
     generate_manifest,
     init_layout,
+    prepare_layer_content,
     push_layout,
     read_blob,
     read_index,
@@ -34,6 +36,7 @@ from regshape.libs.layout.operations import (
 
 __all__ = [
     # High-level staged workflow
+    "prepare_layer_content",
     "stage_layer",
     "generate_config",
     "generate_manifest",

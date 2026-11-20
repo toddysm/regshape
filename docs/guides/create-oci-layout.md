@@ -68,9 +68,11 @@ regshape layout add layer \
   --file ./layer.tar.gz
 ```
 
-**Compression handling:** if the file is not already a gzip- or
-zstd-compressed tar archive (detected by magic bytes), regshape automatically
-compresses it with gzip. You can override this with `--compress-format zstd`.
+**Compression handling:** the library detects gzip and zstd from magic bytes
+and preserves matching input unchanged. Other content is automatically
+compressed with gzip using `mtime=0` for deterministic output. Detection does
+not validate the compression stream or tar contents. You can override the
+format with `--compress-format gzip` or `--compress-format zstd`.
 
 ```bash
 # Force zstd compression for an uncompressed tar
@@ -79,6 +81,13 @@ regshape layout add layer \
   --file ./layer.tar \
   --compress-format zstd
 ```
+
+Creating zstd-compressed bytes requires the optional `zstandard` package
+(`python -m pip install zstandard`); staging already-zstd input does not.
+Forcing a different compression format wraps the supplied bytes as-is rather
+than decompressing or transcoding them. Use uncompressed input when switching
+formats to avoid nested compression. `--media-type` overrides the derived
+OCI layer media type without changing compression.
 
 **Layer annotations:** you can attach arbitrary key=value annotations to a
 layer at add time, or add/update them later with `layout annotate layer`.
@@ -93,6 +102,34 @@ regshape layout add layer \
 
 Repeat `layout add layer` for each additional layer. Layers are staged in the
 order they are added.
+
+### Prepare and stage a layer from Python
+
+The CLI delegates compression and media-type selection to the public
+[`prepare_layer_content`](../../specs/layout/oci-layout-create.md#prepare_layer_content)
+SDK function. For a new layout, use the same policy directly:
+
+```python
+from pathlib import Path
+
+from regshape.libs.layout import init_layout, prepare_layer_content, stage_layer
+
+layout_path = Path("./sdk-image")
+init_layout(layout_path)
+content, media_type = prepare_layer_content(Path("./layer.tar").read_bytes())
+descriptor = stage_layer(
+    layout_path, content, media_type, annotations={"com.example.layer.role": "base"},
+)
+print(descriptor.digest)
+```
+
+`prepare_layer_content(content, compression=None, media_type=None)` returns
+`(prepared_bytes, media_type)` without writing files. Its optional arguments
+are keyword-only: `compression="gzip"` or `"zstd"` forces a format, and
+`media_type="application/vnd.example.layer"` overrides descriptor metadata.
+Invalid compression choices and a missing required encoder raise `LayoutError`.
+`stage_layer` remains the lower-level API for storing caller-prepared bytes
+verbatim; it does not compress them.
 
 ---
 
