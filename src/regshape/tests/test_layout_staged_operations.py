@@ -2,24 +2,27 @@
 
 """Tests for the staged-workflow functions in :mod:`regshape.libs.layout`.
 
-Covers ``stage_layer``, ``generate_config``, ``generate_manifest``,
-``read_stage``, ``update_layer_annotations``, ``update_config``, and
-``update_manifest_annotations``.
+Covers layer preparation/staging, config/manifest generation, ``read_stage``,
+``update_layer_annotations``, ``update_config``, and ``update_manifest_annotations``.
 """
 
 import gzip
 import hashlib
 import io
 import json
+import sys
 from pathlib import Path
 
 import pytest
+import zstandard
 
 from regshape.libs.errors import LayoutError
 from regshape.libs.layout import (
     generate_config,
     generate_manifest,
     init_layout,
+    prepare_layer_content,
+    read_blob,
     read_stage,
     stage_layer,
     update_config,
@@ -32,7 +35,6 @@ from regshape.libs.models.mediatype import (
     OCI_IMAGE_LAYER_TAR_GZIP,
     OCI_IMAGE_LAYER_TAR_ZSTD,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -138,6 +140,92 @@ class TestStageLayer:
         layout.mkdir()
         with pytest.raises(LayoutError):
             stage_layer(layout, _make_gzip(b"data"), OCI_IMAGE_LAYER_TAR_GZIP)
+
+
+# ---------------------------------------------------------------------------
+# TestPrepareLayerContent
+# ---------------------------------------------------------------------------
+
+
+class TestPrepareLayerContent:
+    """Verify SDK preparation matches the CLI's existing byte-level policy."""
+
+    @pytest.mark.parametrize("source", ["raw", "gzip", "zstd"])
+    @pytest.mark.parametrize("compression", [None, "gzip", "zstd"])
+    def test_compression_policy(self, source, compression):
+        """Preserve matching streams or compress the exact supplied bytes."""
+        raw = b"layer content"
+        content = {
+            "raw": raw,
+            "gzip": _make_gzip(raw),
+            "zstd": zstandard.ZstdCompressor().compress(raw),
+        }[source]
+        selected = compression or ("gzip" if source == "raw" else source)
+        if selected == source:
+            expected = content
+        elif selected == "gzip":
+            expected = _make_gzip(content)
+        else:
+            expected = zstandard.ZstdCompressor().compress(content)
+
+        prepared, media_type = prepare_layer_content(content, compression=compression)
+
+        assert prepared == expected
+        assert media_type == (
+            OCI_IMAGE_LAYER_TAR_ZSTD if selected == "zstd"
+            else OCI_IMAGE_LAYER_TAR_GZIP
+        )
+        if selected == "gzip" and source != "gzip":
+            assert prepared[4:8] == b"\x00" * 4
+            assert gzip.decompress(prepared) == content
+        elif selected == "zstd" and source != "zstd":
+            assert zstandard.ZstdDecompressor().decompress(prepared) == content
+
+    @pytest.mark.parametrize("content", [b"", b"\x1f", b"\x28\xb5\x2f"])
+    def test_empty_and_partial_magic_defaults_to_gzip(self, content):
+        """Short input cannot be mistaken for a complete compression signature."""
+        prepared, media_type = prepare_layer_content(content)
+        assert prepared == _make_gzip(content)
+        assert media_type == OCI_IMAGE_LAYER_TAR_GZIP
+
+    def test_media_type_override_and_staging(self, tmp_path):
+        """Override only descriptor metadata while keeping prepared blob bytes."""
+        layout = _setup_layout(tmp_path)
+        media_type = "application/vnd.example.layer"
+        prepared, selected_type = prepare_layer_content(
+            b"custom layer", compression="zstd", media_type=media_type,
+        )
+        annotations = {"com.example.role": "base"}
+        desc = stage_layer(layout, prepared, selected_type, annotations=annotations)
+
+        assert selected_type == media_type
+        assert desc.media_type == media_type
+        assert desc.digest == _sha256(prepared)
+        assert desc.size == len(prepared)
+        assert desc.annotations == annotations
+        assert read_blob(layout, desc.digest) == prepared
+        assert read_stage(layout)["layers"][0]["media_type"] == media_type
+
+    def test_missing_zstandard_is_library_error(self, monkeypatch):
+        """A missing optional encoder yields an actionable library exception."""
+        monkeypatch.setitem(sys.modules, "zstandard", None)
+        with pytest.raises(LayoutError, match="pip install zstandard") as error:
+            prepare_layer_content(b"raw content", compression="zstd")
+        assert isinstance(error.value.__cause__, ImportError)
+
+    @pytest.mark.parametrize("compression", [None, "zstd"])
+    def test_detected_zstd_does_not_require_encoder(self, monkeypatch, compression):
+        """Magic-byte passthrough must not import or validate an encoder."""
+        monkeypatch.setitem(sys.modules, "zstandard", None)
+        content = b"\x28\xb5\x2f\xfdexisting content"
+        assert prepare_layer_content(content, compression=compression) == (
+            content, OCI_IMAGE_LAYER_TAR_ZSTD,
+        )
+
+    def test_rejects_unsupported_compression(self):
+        """Invalid SDK input fails explicitly instead of silently choosing gzip."""
+        with pytest.raises(LayoutError, match="Unsupported layer compression"):
+            prepare_layer_content(b"content", compression="brotli")
 
 
 # ---------------------------------------------------------------------------

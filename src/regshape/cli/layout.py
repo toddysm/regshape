@@ -16,10 +16,7 @@
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
-import gzip
-import io
 import json
-import sys
 
 import click
 import requests
@@ -40,6 +37,7 @@ from regshape.libs.layout import (
     generate_config,
     generate_manifest,
     init_layout,
+    prepare_layer_content,
     read_index,
     read_stage,
     stage_layer,
@@ -55,17 +53,10 @@ from regshape.libs.layout.operations import (
 )
 from regshape.libs.models.mediatype import (
     OCI_IMAGE_CONFIG,
-    OCI_IMAGE_LAYER_TAR_GZIP,
-    OCI_IMAGE_LAYER_TAR_ZSTD,
     OCI_IMAGE_MANIFEST,
 )
 from regshape.libs.transport import RegistryClient
 from regshape.libs.transport.client import TransportConfig
-
-# Compression magic bytes
-_GZIP_MAGIC = b"\x1f\x8b"
-_ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
-
 
 # ===========================================================================
 # Private helpers
@@ -83,41 +74,6 @@ def _parse_annotations(raw: tuple) -> dict:
         k, v = kv.split("=", 1)
         result[k] = v
     return result
-
-
-def _detect_compression(data: bytes) -> str:
-    """Return 'gzip', 'zstd', or 'none'."""
-    if data[:2] == _GZIP_MAGIC:
-        return "gzip"
-    if data[:4] == _ZSTD_MAGIC:
-        return "zstd"
-    return "none"
-
-
-def _compress_gzip(data: bytes) -> bytes:
-    buf = io.BytesIO()
-    with gzip.GzipFile(fileobj=buf, mode="wb", mtime=0) as fh:
-        fh.write(data)
-    return buf.getvalue()
-
-
-def _compress_zstd(data: bytes) -> bytes:
-    try:
-        import zstandard as zstd  # type: ignore[import]
-    except ImportError as exc:
-        raise click.ClickException(
-            "zstandard package required for zstd compression: pip install zstandard"
-        ) from exc
-    cctx = zstd.ZstdCompressor()
-    return cctx.compress(data)
-
-
-def _media_type_for_compression(compression: str) -> str:
-    if compression == "zstd":
-        return OCI_IMAGE_LAYER_TAR_ZSTD
-    return OCI_IMAGE_LAYER_TAR_GZIP
-
-
 
 
 # ===========================================================================
@@ -236,34 +192,17 @@ def init_cmd(ctx, layout_path, as_json):
 @click.pass_context
 @track_scenario("layout add layer")
 def add_layer(ctx, layout_path, layer_file, compress_format, media_type, raw_annotations, as_json):
-    """Stage a layer blob in the layout from FILE."""
+    """Read FILE, delegate layer preparation/staging, and render its descriptor."""
     try:
         with open(layer_file, "rb") as fh:
             data = fh.read()
     except OSError as exc:
         emit_error(layer_file, str(exc))
 
-    detected = _detect_compression(data)
-
-    if compress_format == "gzip" and detected != "gzip":
-        data = _compress_gzip(data)
-        detected = "gzip"
-    elif compress_format == "zstd" and detected != "zstd":
-        try:
-            data = _compress_zstd(data)
-        except click.ClickException as exc:
-            click.echo(str(exc), err=True)
-            sys.exit(1)
-        detected = "zstd"
-    elif compress_format is None and detected == "none":
-        # Default: auto-compress uncompressed content with gzip
-        data = _compress_gzip(data)
-        detected = "gzip"
-
-    if media_type is None:
-        media_type = _media_type_for_compression(detected)
-
     try:
+        data, media_type = prepare_layer_content(
+            data, compression=compress_format, media_type=media_type,
+        )
         annotations = _parse_annotations(raw_annotations) if raw_annotations else None
         descriptor = stage_layer(layout_path, data, media_type, annotations=annotations)
     except (LayoutError, OSError, click.BadParameter) as exc:

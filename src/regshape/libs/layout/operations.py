@@ -14,11 +14,15 @@
 
 Opt-in recursive validation delegates to the strict artifact graph layer;
 legacy shallow validation and staged authoring retain their existing behavior.
+Layer preparation detects compression, defaults to deterministic gzip and
+derives media types independently of the CLI.
 Push always snapshots the complete directory/archive graph before registry work;
 native Linux/Darwin storage requirements apply to that strict path.
 """
 
+import gzip
 import hashlib
+import io
 import json
 import os
 import tempfile
@@ -50,7 +54,11 @@ from regshape.libs.errors import BlobError, LayoutError, ManifestError
 from regshape.libs.manifests.download import _validate_inputs
 from regshape.libs.models.descriptor import Descriptor
 from regshape.libs.models.manifest import ImageIndex, ImageManifest, parse_manifest
-from regshape.libs.models.mediatype import OCI_IMAGE_INDEX
+from regshape.libs.models.mediatype import (
+    OCI_IMAGE_INDEX,
+    OCI_IMAGE_LAYER_TAR_GZIP,
+    OCI_IMAGE_LAYER_TAR_ZSTD,
+)
 from regshape.libs.progress import (
     ProgressCallback,
     TransferDirection,
@@ -499,6 +507,65 @@ def validate_layout(
 # ===========================================================================
 
 
+def prepare_layer_content(
+    content: bytes,
+    *,
+    compression: Literal["gzip", "zstd"] | None = None,
+    media_type: str | None = None,
+) -> tuple[bytes, str]:
+    """Prepare layer bytes and their media type without writing to a layout.
+
+    Gzip and zstd magic bytes identify already-compressed content, which is
+    preserved unless a different format is requested. Other content defaults
+    to gzip with ``mtime=0``. Forcing a different format compresses the supplied
+    bytes as-is; it does not decompress or transcode an existing stream.
+    Detection does not validate archive or compression-stream integrity.
+
+    :param content: Layer file contents, read fully into memory by the caller.
+    :param compression: Force gzip or zstd; ``None`` preserves detected
+        compression or selects gzip for unrecognised content.
+    :param media_type: Optional media type override, preserved verbatim.
+        ``None`` derives the OCI layer media type from the resulting compression.
+    :returns: Prepared bytes and their layer media type, suitable for
+        :func:`stage_layer`. No files are modified.
+    :raises LayoutError: If *compression* is unsupported or zstd compression
+        is needed but the optional ``zstandard`` package is unavailable.
+        Already-zstd input does not require the package.
+    """
+    if compression not in (None, "gzip", "zstd"):
+        raise LayoutError("Unsupported layer compression", repr(compression))
+
+    detected = None
+    if content.startswith(b"\x1f\x8b"):
+        detected = "gzip"
+    elif content.startswith(b"\x28\xb5\x2f\xfd"):
+        detected = "zstd"
+
+    selected = compression or detected or "gzip"
+    if selected != detected:
+        if selected == "gzip":
+            buf = io.BytesIO()
+            with gzip.GzipFile(fileobj=buf, mode="wb", mtime=0) as fh:
+                fh.write(content)
+            content = buf.getvalue()
+        else:
+            try:
+                import zstandard as zstd
+            except ImportError as exc:
+                raise LayoutError(
+                    "zstandard package required for zstd compression",
+                    "pip install zstandard",
+                ) from exc
+            content = zstd.ZstdCompressor().compress(content)
+
+    if media_type is None:
+        media_type = (
+            OCI_IMAGE_LAYER_TAR_ZSTD if selected == "zstd"
+            else OCI_IMAGE_LAYER_TAR_GZIP
+        )
+    return content, media_type
+
+
 def stage_layer(
     layout_path: Union[str, Path],
     content: bytes,
@@ -507,8 +574,9 @@ def stage_layer(
 ) -> Descriptor:
     """Write *content* as a layer blob and append its descriptor to the staging file.
 
-    Compression is the caller's responsibility — *content* must already be in
-    the form declared by *media_type*.
+    Content is stored verbatim and must already be in the form declared by
+    *media_type*. Use :func:`prepare_layer_content` first for compression
+    detection, automatic gzip compression and media-type selection.
 
     :param layout_path: Root of an initialised OCI Image Layout.
     :param content: Raw layer bytes (compressed or uncompressed, as needed).
