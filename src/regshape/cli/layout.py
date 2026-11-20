@@ -41,7 +41,7 @@ from regshape.libs.layout import (
     read_index,
     read_stage,
     stage_layer,
-    update_config,
+    update_config_with_result,
     update_layer_annotations,
     update_manifest_annotations,
     validate_layout,
@@ -509,10 +509,10 @@ def generate_manifest_cmd(
 def update_config_cmd(
     ctx, layout_path, architecture, os_name, raw_annotations, replace_annotations, as_json
 ):
-    """Update the stored config blob (architecture, OS, or annotations)."""
+    """Update config fields and render the library's manifest-staleness warning."""
     try:
         annotations = _parse_annotations(raw_annotations) if raw_annotations else None
-        descriptor = update_config(
+        result = update_config_with_result(
             layout_path,
             architecture=architecture,
             os_name=os_name,
@@ -522,16 +522,10 @@ def update_config_cmd(
     except (LayoutError, OSError, click.BadParameter) as exc:
         emit_error(layout_path, str(exc))
 
-    # Warn when a manifest already exists (it will reference the old config digest)
-    try:
-        stage = read_stage(layout_path)
-        manifest_stale = stage.get("manifest") is not None
-    except LayoutError:
-        manifest_stale = False
-
+    descriptor = result.descriptor
     if as_json:
         out: dict = {"digest": descriptor.digest, "size": descriptor.size}
-        if manifest_stale:
+        if result.manifest_stale:
             out["warning"] = (
                 "Manifest exists and references the old config digest; "
                 "regenerate or update it."
@@ -539,7 +533,7 @@ def update_config_cmd(
         emit_json(out)
     else:
         click.echo(f"Updated config {descriptor.digest} ({descriptor.size} bytes)")
-        if manifest_stale:
+        if result.manifest_stale:
             click.echo(
                 "Warning: manifest exists and references the old config digest.",
                 err=True,

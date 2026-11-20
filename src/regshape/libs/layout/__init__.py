@@ -8,7 +8,8 @@
    :platform: Unix, Windows
    :synopsis: Library-level functions for creating and managing OCI Image
               Layout directories on the local filesystem, including layer
-              compression preparation and media-type selection.
+              compression preparation, media-type selection and config-update
+              manifest staleness reporting.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
@@ -26,10 +27,12 @@ from regshape.libs.layout.operations import (
     read_stage,
     stage_layer,
     update_config,
+    update_config_with_result,
     update_layer_annotations,
     update_manifest_annotations,
     validate_layout,
     BlobPushReport,
+    ConfigUpdateResult,
     ManifestPushReport,
     PushResult,
 )
@@ -44,6 +47,8 @@ __all__ = [
     # Post-generation updates
     "update_layer_annotations",
     "update_config",
+    "update_config_with_result",
+    "ConfigUpdateResult",
     "update_manifest_annotations",
     # Initialisation
     "init_layout",

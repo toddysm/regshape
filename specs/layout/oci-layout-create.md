@@ -52,6 +52,8 @@ __all__ = [
     # Post-generation updates
     'update_layer_annotations',
     'update_config',
+    'update_config_with_result',
+    'ConfigUpdateResult',
     'update_manifest_annotations',
     # Initialisation
     'init_layout',
@@ -508,10 +510,52 @@ config descriptor.
 
 **Returns:** New `Descriptor` for the config blob.
 
+The descriptor-only return is unchanged. Use `update_config_with_result` when
+the caller needs to know whether this change invalidates the staged manifest.
+
 **Raises:**
 
 - `LayoutError` — if the config has not yet been generated, or the layout is
   not initialised.
+
+---
+
+### `update_config_with_result`
+
+```python
+@dataclass
+class ConfigUpdateResult:
+    descriptor: Descriptor
+    manifest_stale: bool
+
+def update_config_with_result(
+    layout_path: str | Path,
+    architecture: str | None = None,
+    os_name: str | None = None,
+    annotations: dict[str, str] | None = None,
+    replace_annotations: bool = False,
+) -> ConfigUpdateResult:
+```
+
+Accepts the same parameters and performs the same config rewrite as
+`update_config`, with opt-in staged-manifest inspection before mutation.
+Both the function and result type are exported from `regshape.libs.layout`.
+
+**Returns:** `ConfigUpdateResult` containing the resulting config `descriptor`
+and `manifest_stale`. The flag is true only if the config digest changed and
+the staged image manifest references the previous config digest. It is false
+when no manifest is staged, the manifest already references the resulting
+digest (or another digest), or the update is a no-op. It is not a general
+layout validation result and does not repair the manifest.
+
+**Raises:** The config-update errors above, plus `LayoutError` when the staged
+manifest is missing or not a valid image manifest. I/O failures may raise
+`OSError`. Inspection failures leave the config and staging state unchanged.
+Existing `update_config` callers do not opt into these extra reads or failure
+paths.
+
+The CLI uses this result to render its existing stderr warning or JSON
+`warning` key without making its own consistency decision.
 
 ---
 
