@@ -9,6 +9,7 @@ Library internals are not mocked — tests use real temporary directories.
 import gzip
 import io
 import json
+import sys
 
 import pytest
 from click.testing import CliRunner
@@ -18,6 +19,7 @@ from regshape.libs.layout.operations import (
     generate_config,
     generate_manifest,
     init_layout,
+    read_stage,
     stage_layer,
 )
 from regshape.libs.models.mediatype import OCI_IMAGE_LAYER_TAR_GZIP
@@ -159,6 +161,29 @@ class TestLayoutAddLayerCLI:
             "--media-type", OCI_IMAGE_LAYER_TAR_GZIP,
         ])
         assert result.exit_code != 0
+
+    def test_missing_zstd_encoder_reports_layout_error(self, tmp_path, monkeypatch):
+        """A missing encoder reports the SDK error on stderr without staging."""
+        layout_dir = tmp_path / "layout"
+        init_layout(layout_dir)
+        layer_file = tmp_path / "layer.tar"
+        layer_file.write_bytes(b"uncompressed layer")
+        monkeypatch.setitem(sys.modules, "zstandard", None)
+
+        result = _runner().invoke(regshape, [
+            "layout", "add", "layer",
+            "--path", str(layout_dir),
+            "--file", str(layer_file),
+            "--compress-format", "zstd",
+        ])
+
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert result.stderr == (
+            f"Error [{layout_dir}]: zstandard package required for zstd compression"
+            " : pip install zstandard\n"
+        )
+        assert read_stage(layout_dir)["layers"] == []
 
 
 # ---------------------------------------------------------------------------

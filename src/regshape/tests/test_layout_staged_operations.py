@@ -14,7 +14,6 @@ import sys
 from pathlib import Path
 
 import pytest
-import zstandard
 
 from regshape.libs.errors import LayoutError
 from regshape.libs.layout import (
@@ -153,14 +152,17 @@ class TestPrepareLayerContent:
     @pytest.mark.parametrize("source", ["raw", "gzip", "zstd"])
     @pytest.mark.parametrize("compression", [None, "gzip", "zstd"])
     def test_compression_policy(self, source, compression):
-        """Preserve matching streams or compress the exact supplied bytes."""
+        """Check exact bytes, skipping only cases needing an absent zstd encoder."""
         raw = b"layer content"
-        content = {
-            "raw": raw,
-            "gzip": _make_gzip(raw),
-            "zstd": zstandard.ZstdCompressor().compress(raw),
-        }[source]
         selected = compression or ("gzip" if source == "raw" else source)
+        if source == "zstd" or selected == "zstd":
+            zstandard = pytest.importorskip("zstandard")
+        if source == "gzip":
+            content = _make_gzip(raw)
+        elif source == "zstd":
+            content = zstandard.ZstdCompressor().compress(raw)
+        else:
+            content = raw
         if selected == source:
             expected = content
         elif selected == "gzip":
@@ -190,6 +192,7 @@ class TestPrepareLayerContent:
 
     def test_media_type_override_and_staging(self, tmp_path):
         """Override only descriptor metadata while keeping prepared blob bytes."""
+        pytest.importorskip("zstandard")
         layout = _setup_layout(tmp_path)
         media_type = "application/vnd.example.layer"
         prepared, selected_type = prepare_layer_content(

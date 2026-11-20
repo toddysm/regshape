@@ -41,13 +41,12 @@ The [manifest SDK reference](library/manifests.md) covers those defaults and the
 companion tag-to-digest resolver used with the digest-only referrer APIs.
 Referrer resolution belongs to the SDK; the CLI only validates explicit input,
 delegates resolution/listing, and renders results.
-The current authorized work is layer compression preparation
-[#167](https://github.com/toddysm/regshape/issues/167), using hosted continuous
-integration and one ready-for-review pull request, held for user merge approval.
+Layer compression preparation
+[#167](https://github.com/toddysm/regshape/issues/167) is delivered through
+[#184](https://github.com/toddysm/regshape/pull/184).
 The public library helper owns detection, deterministic compression and media-type
 selection; see the [layout API](../specs/layout/oci-layout-create.md#prepare_layer_content)
 and [Python example](guides/create-oci-layout.md#prepare-and-stage-a-layer-from-python).
-This issue's delivery is not yet asserted on main.
 The inventory prerequisite merged through
 [#176](https://github.com/toddysm/regshape/pull/176). Siblings #170 through
 #175 remain outside this build; the complete separation feature is not yet implemented.
