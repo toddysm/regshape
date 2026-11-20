@@ -7,6 +7,7 @@ Library internals are not mocked — tests use real temporary directories.
 """
 
 import gzip
+import inspect
 import io
 import json
 import sys
@@ -31,6 +32,9 @@ from regshape.libs.models.mediatype import OCI_IMAGE_LAYER_TAR_GZIP
 
 
 def _runner():
+    """Capture stderr separately on minimum Click 8.1 and current versions."""
+    if "mix_stderr" in inspect.signature(CliRunner).parameters:
+        return CliRunner(mix_stderr=False)
     return CliRunner()
 
 
