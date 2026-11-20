@@ -45,6 +45,50 @@ SIZE = 4_194_304
 _BLOB_INFO = BlobInfo(digest=DIGEST, content_type=CONTENT_TYPE, size=SIZE)
 
 
+@pytest.mark.parametrize("command", ["head", "get", "delete", "upload", "mount"])
+@pytest.mark.parametrize("suffix", [":latest", "@sha256:" + "a" * 64, "/"])
+def test_blob_commands_share_plain_repository_errors(runner, tmp_path, command, suffix):
+    """All five CLI adapters expose one SDK diagnostic before client/file side effects."""
+    source = tmp_path / "source"
+    source.write_bytes(b"synthetic upload")
+    reference = REPO + suffix
+    arguments = ["blob", command, "--repo", reference, "--digest", DIGEST]
+    if command == "upload":
+        arguments += ["--file", str(source)]
+    elif command == "mount":
+        arguments += ["--from-repo", "source/repo"]
+    with patch("regshape.cli.blob.RegistryClient") as client:
+        result = runner.invoke(regshape, arguments)
+    assert result.exit_code == 1 and not result.stdout
+    assert result.stderr == (
+        f"Error [{reference}]: Repository must be a plain 'registry/repository' "
+        "without a tag or digest\n"
+    )
+    client.assert_not_called()
+
+
+@pytest.mark.parametrize("command", ["head", "get", "delete", "upload", "mount"])
+@pytest.mark.parametrize("reference", [
+    "https://synthetic-user:synthetic-secret@acr.io/repo",
+    "synthetic-user:synthetic-secret@acr.io:5000/repo",
+])
+def test_blob_commands_never_echo_unsafe_repository_input(runner, tmp_path, command, reference):
+    """Unsafe SDK errors redact the CLI context too, before credential lookup."""
+    source = tmp_path / "source"
+    source.write_bytes(b"synthetic upload")
+    arguments = ["blob", command, "--repo", reference, "--digest", DIGEST]
+    if command == "upload":
+        arguments += ["--file", str(source)]
+    elif command == "mount":
+        arguments += ["--from-repo", "source/repo"]
+    with patch("regshape.cli.blob.RegistryClient") as client:
+        result = runner.invoke(regshape, arguments)
+    assert result.exit_code == 1 and not result.stdout
+    assert result.stderr == "Error [--repo]: Use a registry/repository tag or digest, not a URL.\n"
+    assert "synthetic-" not in result.output
+    client.assert_not_called()
+
+
 @pytest.mark.parametrize("arguments,expected", [
     ([], DownloadOptions()),
     (["--concurrency", "3", "--ranges-per-blob", "2", "--range-size", "65536",

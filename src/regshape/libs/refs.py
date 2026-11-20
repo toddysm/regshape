@@ -6,16 +6,16 @@
 
 .. module:: regshape.libs.refs
    :platform: Unix, Windows
-   :synopsis: Helpers for parsing, classifying and validating artifact references
+   :synopsis: Helpers for safely parsing, classifying and validating references
               of the form ``registry/repo:tag`` or ``registry/repo@digest``,
-              retaining the legacy image-named parser interface.
+              and plain repositories, retaining the image-named parser interface.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
 import re
 
-from regshape.libs.errors import ReferenceValidationError
+from regshape.libs.errors import ReferenceValidationError, UnsafeReferenceError
 
 _DIGEST = re.compile(r"(?:sha256:[0-9a-f]{64}|sha512:[0-9a-f]{128})")
 
@@ -40,7 +40,7 @@ def validate_digest(reference: str) -> str:
 
     Accept only lowercase SHA-256 with 64 hexadecimal characters or SHA-512
     with 128. No whitespace, case normalization or truncation is performed.
-    This does not change the permissive legacy reference parser.
+    Digest validation is separate from the parsers' unsafe-input guard.
 
     :param reference: Parsed ``algorithm:hex`` token.
     :returns: The original validated token.
@@ -53,7 +53,31 @@ def validate_digest(reference: str) -> str:
     return reference
 
 
-def parse_image_ref(image_ref: str) -> tuple[str, str, str]:
+def reject_unsafe_reference(value: str) -> None:
+    """Reject URL/userinfo syntax, whitespace and control characters without echoing input.
+
+    An ``@`` is allowed only after the registry/repository path and before a
+    colon-bearing digest token without slashes. This is a safety boundary, not
+    full registry, repository, tag or digest validation.
+
+    :param value: Unmodified registry/repository reference, optionally qualified.
+    :raises UnsafeReferenceError: If empty/non-string, URL/userinfo-like, or
+        containing whitespace, C0/C1 controls, backslashes, ``?``, ``#`` or ``%``.
+        Diagnostics never include the supplied value.
+    """
+    if (
+        not isinstance(value, str) or not value or "://" in value
+        or value.count("@") > 1 or "@" in value.split("/", 1)[0]
+        or ("@" in value and (
+            ":" not in value.rsplit("@", 1)[1] or "/" in value.rsplit("@", 1)[1]
+        ))
+        or any(char.isspace() or ord(char) < 32 or 127 <= ord(char) <= 159 for char in value)
+        or any(char in value for char in "\\?#%")
+    ):
+        raise UnsafeReferenceError("Use a registry/repository tag or digest, not a URL.")
+
+
+def parse_image_ref(image_ref: str, *, strict: bool = True) -> tuple[str, str, str]:
     """Parse an image reference into ``(registry, repository, reference)``.
 
     The registry must be embedded in the reference.  Supported formats::
@@ -69,10 +93,18 @@ def parse_image_ref(image_ref: str) -> tuple[str, str, str]:
     when it contains a dot (``.``), a colon (``:``), or equals ``localhost``.
 
     :param image_ref: The image reference string.
+    :param strict: Reject unsafe input by default. ``False`` bypasses only the
+        safety guard for intentional SDK conformance testing; it does not make
+        an invalid reference safe or validate the complete OCI grammar.
     :returns: A ``(registry, repo, reference)`` triple where *reference*
         is the tag or digest string (without the ``@`` prefix).
+    :raises UnsafeReferenceError: If strict parsing rejects unsafe input,
+        without echoing it.
     :raises ValueError: If the registry or repository cannot be determined.
     """
+    if strict:
+        reject_unsafe_reference(image_ref)
+
     # Separate digest (@) from tag (:) — digest takes priority
     if "@" in image_ref:
         path_part, digest_part = image_ref.rsplit("@", 1)
@@ -112,20 +144,45 @@ def parse_image_ref(image_ref: str) -> tuple[str, str, str]:
     return registry, repo, ref
 
 
-def parse_artifact_ref(artifact_ref: str) -> tuple[str, str, str]:
+def parse_artifact_ref(artifact_ref: str, *, strict: bool = True) -> tuple[str, str, str]:
     """Parse an artifact reference using the existing image-reference grammar.
 
-    This additive name delegates to :func:`parse_image_ref`; it does not add
-    digest validation or change default-tag, registry, or repository handling.
-    The legacy parser and its ``image_ref`` keyword remain supported.
+    Delegates to :func:`parse_image_ref`, including its default safety guard.
+    It does not add digest validation or change default-tag, registry, or
+    repository handling. The image-named parser and its keyword remain supported.
 
     :param artifact_ref: Reference with an embedded registry and repository.
+    :param strict: Reject unsafe input by default; ``False`` bypasses that
+        guard only, for intentional SDK conformance testing.
     :returns: ``(registry, repository, tag_or_digest)`` with the existing default
         of ``"latest"`` when no tag/digest is supplied.
-    :raises ValueError: If the existing parser cannot determine registry or
-        repository.
+    :raises UnsafeReferenceError: If strict parsing rejects unsafe input,
+        without echoing it.
+    :raises ValueError: If the parser cannot determine registry or repository.
     """
-    return parse_image_ref(artifact_ref)
+    return parse_image_ref(artifact_ref, strict=strict)
+
+
+def parse_repository_ref(value: str, *, strict: bool = True) -> tuple[str, str]:
+    """Parse a plain registry/repository without a tag or digest suffix.
+
+    Preserve registry ports and nested repository paths. Trailing slashes are
+    rejected, matching the existing blob CLI; no stripping or normalization is
+    performed. This helper does not validate the complete OCI repository grammar.
+
+    :param value: Registry and repository path, with no tag/digest qualifier.
+    :param strict: Reject unsafe input by default; ``False`` bypasses only that
+        safety guard, not the plain-repository check, for SDK conformance tests.
+    :returns: ``(registry, repository)`` without a default tag.
+    :raises UnsafeReferenceError: If strict parsing rejects unsafe input,
+        without echoing it.
+    :raises ValueError: If a tag/digest or trailing slash is present, or the
+        registry/repository cannot be determined.
+    """
+    registry, repository, _ = parse_image_ref(value, strict=strict)
+    if value.rstrip("/") != f"{registry}/{repository}":
+        raise ValueError("Repository must be a plain 'registry/repository' without a tag or digest")
+    return registry, repository
 
 
 def format_ref(registry: str, repo: str, reference: str) -> str:

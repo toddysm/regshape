@@ -27,7 +27,12 @@ from regshape.cli.progress import ProgressDisplay
 from regshape.cli.telemetry import telemetry_options
 from regshape.libs.decorators.output import flush_telemetry
 from regshape.libs.decorators.scenario import track_scenario
-from regshape.libs.errors import AuthError, ManifestError, ReferenceValidationError
+from regshape.libs.errors import (
+    AuthError,
+    ManifestError,
+    ReferenceValidationError,
+    UnsafeReferenceError,
+)
 from regshape.libs.manifests import (
     delete_manifest,
     get_manifest,
@@ -131,7 +136,8 @@ def get(
             flush_telemetry()
             progress.finish_manifest()
     except _ManifestCommandFailure as exc:
-        emit_error(image_ref, str(exc), exc.exit_code)
+        context = "--artifact" if isinstance(exc.__cause__, UnsafeReferenceError) else image_ref
+        emit_error(context, str(exc), exc.exit_code)
 
 
 @track_scenario("manifest get")
@@ -226,7 +232,7 @@ def info(ctx, image_ref, accept):
     try:
         registry, repo, reference = parse_artifact_ref(image_ref)
     except ValueError as exc:
-        emit_error(image_ref, str(exc))
+        emit_error("--artifact" if isinstance(exc, UnsafeReferenceError) else image_ref, str(exc))
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
@@ -279,7 +285,7 @@ def descriptor(ctx, image_ref, accept):
     try:
         registry, repo, reference = parse_artifact_ref(image_ref)
     except ValueError as exc:
-        emit_error(image_ref, str(exc))
+        emit_error("--artifact" if isinstance(exc, UnsafeReferenceError) else image_ref, str(exc))
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
@@ -355,7 +361,7 @@ def put(ctx, image_ref, manifest_file, from_stdin, content_type):
     try:
         registry, repo, reference = parse_artifact_ref(image_ref)
     except ValueError as exc:
-        emit_error(image_ref, str(exc))
+        emit_error("--artifact" if isinstance(exc, UnsafeReferenceError) else image_ref, str(exc))
 
     # Read manifest body
     if manifest_file:
@@ -407,7 +413,7 @@ def delete(ctx, image_ref):
     except ReferenceValidationError as exc:
         emit_error(image_ref, str(exc), exit_code=2)
     except ValueError as exc:
-        emit_error(image_ref, str(exc))
+        emit_error("--artifact" if isinstance(exc, UnsafeReferenceError) else image_ref, str(exc))
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 

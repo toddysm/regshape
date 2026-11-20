@@ -24,6 +24,7 @@ from regshape.libs.errors import (
     ManifestError,
     ReferenceValidationError,
     ReferrerError,
+    UnsafeReferenceError,
 )
 from regshape.libs.manifests import resolve_digest
 from regshape.libs.referrers import list_referrers, list_referrers_all
@@ -114,7 +115,7 @@ def referrer_list(
     try:
         registry, repo, reference = parse_artifact_ref(image_ref)
     except ValueError as exc:
-        emit_error(image_ref, str(exc))
+        emit_error("--artifact" if isinstance(exc, UnsafeReferenceError) else image_ref, str(exc))
 
     # Preserve explicit @ usage errors before client/credential construction.
     if "@" in image_ref:

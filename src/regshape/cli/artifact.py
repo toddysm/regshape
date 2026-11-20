@@ -30,7 +30,13 @@ from regshape.libs.artifacts import (
 from regshape.libs.blobs import DownloadOptions
 from regshape.libs.decorators.output import flush_telemetry
 from regshape.libs.decorators.scenario import track_scenario
-from regshape.libs.errors import ArtifactError, AuthError, BlobError, ManifestError
+from regshape.libs.errors import (
+    ArtifactError,
+    AuthError,
+    BlobError,
+    ManifestError,
+    UnsafeReferenceError,
+)
 from regshape.libs.refs import parse_artifact_ref
 from regshape.libs.transport import RegistryClient, TransportConfig
 
@@ -113,18 +119,13 @@ def _after_telemetry(func: Callable[..., ArtifactPullResult]) -> Callable[..., N
 def _source(value: str) -> tuple[str, str, str]:
     """Parse a shared selector without echoing URL/userinfo-like invalid inputs.
 
-    Full tag/digest/repository/authority validation belongs to library preflight.
-    This guard prevents the permissive shared parser from discarding URL syntax.
+    Shared parsing owns unsafe-input rejection; full tag/digest/repository/
+    authority validation belongs to library preflight.
     """
-    if (
-        not value or "://" in value or value.count("@") > 1
-        or ("@" in value and ":" not in value.rsplit("@", 1)[1])
-        or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in value)
-        or any(char in value for char in "\\?#%")
-    ):
-        raise click.BadParameter("Use a registry/repository tag or digest, not a URL.", param_hint="--artifact")
     try:
         return parse_artifact_ref(value)
+    except UnsafeReferenceError as error:
+        raise click.BadParameter(str(error), param_hint="--artifact") from error
     except ValueError as error:
         raise click.BadParameter(
             "Artifact must embed a registry and repository.", param_hint="--artifact",

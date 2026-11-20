@@ -60,6 +60,25 @@ registry.example.com:5000/myorg/myimage
 No tag suffix (`:<tag>`) and no digest suffix (`@sha256:...`) are accepted
 in `--repo`. The digest is always provided separately via `--digest`.
 
+All five commands delegate this check to the SDK's `parse_repository_ref`.
+Trailing slashes remain rejected; ports and nested repository paths are
+preserved. A suffix (including `:latest`) exits **1** with:
+
+```text
+Error [registry.example.com/myrepo:latest]: Repository must be a plain 'registry/repository' without a tag or digest
+```
+
+The shared parser rejects URL/userinfo syntax, whitespace/control characters,
+backslashes, `?`, `#` and `%` before credential lookup. Unsafe inputs exit **1**
+without echoing the supplied value:
+
+```text
+Error [--repo]: Use a registry/repository tag or digest, not a URL.
+```
+
+See the [SDK parsing contract](../../docs/guides/artifact-options.md#parse-plain-repositories-and-reject-unsafe-input)
+for direct library use and the explicit SDK-only conformance opt-out.
+
 ---
 
 ## Subcommands

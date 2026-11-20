@@ -169,9 +169,10 @@ assert parse_image_ref(reference) == parts
 assert parse_image_ref(image_ref=reference) == parts
 ```
 
-The new function delegates to the existing parser. It has the same
-`(registry, repository, tag_or_digest)` result and existing `ValueError`
-behavior; it does not add stricter digest validation or accept a new grammar.
+The artifact-named function delegates to the image-named parser. Both keep the
+`(registry, repository, tag_or_digest)` result and default `latest` tag.
+Both now reject unsafe input before parsing; neither validates digest payloads
+or the complete OCI reference grammar.
 The old Python function is retained; the CLI flag deprecation does not declare
 that Python interface deprecated. Downgrading to a package without the new entry point
 requires using `parse_image_ref` again.
@@ -201,7 +202,7 @@ assert validate_digest(digest) == digest
 Classification does not prove validity: digest-shaped tokens contain a colon,
 which OCI tag names cannot contain. Validation accepts only lowercase SHA-256
 with 64 hexadecimal characters or SHA-512 with 128, without rewriting the value.
-The existing parsers remain permissive and keep their return shape.
+The parsers keep their return shape and do not validate digest payloads.
 `format_ref` uses this classification without validating: unsupported/malformed
 digest-shaped tokens use `@`, rather than being formatted as tags.
 
@@ -218,6 +219,45 @@ invalid registry-conformance requests. That opt-out does not make an invalid
 request safe and is not exposed as a new CLI flag. See the
 [manifest API](../../specs/operations/manifests.md#delete_manifest) and
 [tag API](../../specs/operations/tags.md#delete_tag) for the mutating operations.
+
+### Parse plain repositories and reject unsafe input
+
+Use the SDK's `parse_repository_ref` when a separate digest identifies a blob:
+
+```python
+from regshape.libs.refs import parse_repository_ref, reject_unsafe_reference
+
+assert parse_repository_ref("localhost:5000/team/package") == (
+    "localhost:5000", "team/package",
+)
+reject_unsafe_reference("registry.example.com/team/package:v1")
+```
+
+Ports and nested repository paths are preserved. Tags (including `:latest`),
+digest suffixes and trailing slashes are rejected with `ValueError`; trailing
+slashes remain rejected as in the existing blob CLI, rather than being stripped.
+The five blob commands use this helper and report the same suffix error, with
+exit code **1**:
+
+```text
+Error [registry.example.com/team/package:latest]: Repository must be a plain 'registry/repository' without a tag or digest
+```
+
+`reject_unsafe_reference` is also available on its own. It returns `None` for
+safe syntax and raises `regshape.libs.errors.UnsafeReferenceError`, a `ValueError`
+subclass, for empty input, URLs, userinfo-like input, whitespace, C0/C1 control
+characters, backslashes, `?`, `#`, or `%`. Digest syntax requires a single `@`
+after the repository followed by a colon-bearing token without slashes; payload
+validation remains separate. Errors omit the input, and CLI adapters also omit
+unsafe values from their error context. Missing registry/repository errors keep
+their existing behavior for otherwise safe input.
+
+All three parsers apply this guard by default. SDK conformance tools can pass
+keyword-only `strict=False` to bypass **only** the safety guard; the plain-repo
+check still applies. This opt-out restores permissive parsing, not a safe
+request, and adds no CLI flag. Do not send untrusted values or log credentials
+when deliberately bypassing it. This additive helper does not implement the
+canonical-reference redesign in [#88](https://github.com/toddysm/regshape/issues/88).
 
 ## Output, validation and troubleshooting
 

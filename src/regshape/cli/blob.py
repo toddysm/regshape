@@ -36,9 +36,9 @@ from regshape.libs.blobs import (
     upload_blob_stream,
 )
 from regshape.libs.decorators.scenario import track_scenario
-from regshape.libs.errors import AuthError, BlobError
+from regshape.libs.errors import AuthError, BlobError, UnsafeReferenceError
 from regshape.libs.models.blob import BlobInfo
-from regshape.libs.refs import parse_image_ref
+from regshape.libs.refs import parse_repository_ref
 from regshape.libs.transport import RegistryClient, TransportConfig
 
 logger = logging.getLogger(__name__)
@@ -88,16 +88,9 @@ def blob_head(ctx, repo, digest):
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo_name, _ = parse_image_ref(repo)
+        registry, repo_name = parse_repository_ref(repo)
     except ValueError as exc:
-        emit_error(repo, str(exc))
-
-    if repo.rstrip("/") != f"{registry}/{repo_name}":
-        emit_error(
-            repo,
-            "--repo must be a plain 'registry/repository' without tag or digest "
-            "(e.g. ':tag' or '@sha256:...')",
-        )
+        emit_error("--repo" if isinstance(exc, UnsafeReferenceError) else repo, str(exc))
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
@@ -203,20 +196,9 @@ def blob_get(
     )
 
     try:
-        registry, repo_name, _ = parse_image_ref(repo)
-        # blob_get expects --repo to be a plain "registry/repository" without any tag
-        # (":tag") or digest ("@sha256:...") suffix. Reject non-plain refs explicitly
-        # so behavior matches the documented CLI contract.
-        # Compare the reconstructed plain form against the raw input: any qualifier
-        # (including ":latest") will cause a mismatch.
-        if repo.rstrip("/") != f"{registry}/{repo_name}":
-            emit_error(
-                repo,
-                "--repo must be a plain 'registry/repository' without tag or digest "
-                "(e.g. ':tag' or '@sha256:...')",
-            )
+        registry, repo_name = parse_repository_ref(repo)
     except ValueError as exc:
-        emit_error(repo, str(exc))
+        emit_error("--repo" if isinstance(exc, UnsafeReferenceError) else repo, str(exc))
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
@@ -282,13 +264,9 @@ def blob_delete(ctx, repo, digest):
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo_name, _ = parse_image_ref(repo)
+        registry, repo_name = parse_repository_ref(repo)
     except ValueError as exc:
-        emit_error(repo, str(exc))
-
-    if repo.rstrip("/") != f"{registry}/{repo_name}":
-        emit_error(repo, "--repo must be a plain 'registry/repository' without tag or digest "
-               "(e.g. ':tag' or '@sha256:...')")
+        emit_error("--repo" if isinstance(exc, UnsafeReferenceError) else repo, str(exc))
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
@@ -367,12 +345,9 @@ def blob_upload(ctx, repo, source_file, digest, media_type, chunked, chunk_size,
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo_name, _ = parse_image_ref(repo)
+        registry, repo_name = parse_repository_ref(repo)
     except ValueError as exc:
-        emit_error(repo, str(exc))
-
-    if repo.rstrip("/") != f"{registry}/{repo_name}":
-        emit_error(repo, "Repository must be a plain 'registry/repository' without a tag or digest")
+        emit_error("--repo" if isinstance(exc, UnsafeReferenceError) else repo, str(exc))
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
     try:
@@ -446,12 +421,9 @@ def blob_mount(ctx, repo, digest, from_repo):
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     try:
-        registry, repo_name, _ = parse_image_ref(repo)
+        registry, repo_name = parse_repository_ref(repo)
     except ValueError as exc:
-        emit_error(repo, str(exc))
-
-    if repo.rstrip("/") != f"{registry}/{repo_name}":
-        emit_error(repo, "repository must be a plain 'registry/repo' without tag or digest")
+        emit_error("--repo" if isinstance(exc, UnsafeReferenceError) else repo, str(exc))
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
     try:

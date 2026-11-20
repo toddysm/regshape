@@ -56,6 +56,14 @@ class ReferenceValidationError(ValueError):
     """
 
 
+class UnsafeReferenceError(ValueError):
+    """Reference parsing rejected URL/userinfo syntax or unsafe characters.
+
+    Messages omit the supplied value. Renderers must also omit the raw input
+    from their diagnostic context; this error does not prescribe an exit code.
+    """
+
+
 class TagError(RegShapeError):
     """
     Error caused by a malformed or unprocessable tag-list response.

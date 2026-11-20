@@ -4,12 +4,14 @@
 
 import pytest
 
-from regshape.libs.errors import ReferenceValidationError
+from regshape.libs.errors import ReferenceValidationError, UnsafeReferenceError
 from regshape.libs.refs import (
     format_ref,
     is_digest,
     parse_artifact_ref,
     parse_image_ref,
+    parse_repository_ref,
+    reject_unsafe_reference,
     validate_digest,
 )
 
@@ -129,7 +131,7 @@ class TestParseImageRef:
 # ===========================================================================
 
 class TestParseArtifactRef:
-    """Verify additive artifact naming without changing the existing parser contract."""
+    """Verify both parser names share safe inputs, results and error behavior."""
 
     @pytest.mark.parametrize("reference,expected", [
         ("registry.example.invalid/team/pkg:v1", ("registry.example.invalid", "team/pkg", "v1")),
@@ -140,12 +142,11 @@ class TestParseArtifactRef:
         ("registry.example.invalid/pkg@sha256:abc123", ("registry.example.invalid", "pkg", "sha256:abc123")),
         ("registry.example.invalid/pkg@sha512:abcd", ("registry.example.invalid", "pkg", "sha512:abcd")),
         ("registry.example.invalid/pkg:", ("registry.example.invalid", "pkg", "")),
-        ("registry.example.invalid/pkg@bad", ("registry.example.invalid", "pkg", "bad")),
     ])
     def test_artifact_and_legacy_call_forms_match(
         self, reference: str, expected: tuple[str, str, str],
     ) -> None:
-        """Keep exact results, including the old grammar's permissive digest/tag edges."""
+        """Keep exact results for safe inputs, including unvalidated digest/tag payloads."""
         assert parse_artifact_ref(reference) == expected
         assert parse_artifact_ref(artifact_ref=reference) == expected
         assert parse_image_ref(reference) == expected
@@ -153,12 +154,89 @@ class TestParseArtifactRef:
 
     @pytest.mark.parametrize("reference", ["", "pkg", "pkg:v1", "registry.example.invalid", "registry.example.invalid/"])
     def test_artifact_and_legacy_errors_match(self, reference: str) -> None:
-        """Retain the legacy ValueError type/message rather than introducing new validation."""
+        """Both parser names report the same safety and missing-registry errors."""
         with pytest.raises(ValueError) as old_error:
             parse_image_ref(image_ref=reference)
         with pytest.raises(ValueError) as new_error:
             parse_artifact_ref(artifact_ref=reference)
         assert str(new_error.value) == str(old_error.value)
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("acr.io/repo", ("acr.io", "repo")),
+    ("acr.io/team/nested/repo", ("acr.io", "team/nested/repo")),
+    ("acr.io:443/team/repo", ("acr.io:443", "team/repo")),
+    ("localhost/repo", ("localhost", "repo")),
+    ("localhost:5000/team/repo", ("localhost:5000", "team/repo")),
+    ("[::1]:5000/team/repo", ("[::1]:5000", "team/repo")),
+])
+def test_repository_ref_preserves_registry_and_nested_path(value, expected):
+    """Plain repository parsing keeps ports/nesting and does not invent a tag."""
+    assert parse_repository_ref(value) == expected
+
+
+@pytest.mark.parametrize("suffix", [
+    ":v1", ":latest", ":", "@sha256:" + "a" * 64, "@sha512:abcd", "/", "//",
+])
+def test_repository_ref_rejects_qualifiers_and_trailing_slashes(suffix):
+    """All qualifiers and the previously rejected trailing slash use one diagnostic."""
+    with pytest.raises(ValueError) as caught:
+        parse_repository_ref("localhost:5000/team/pkg" + suffix)
+    assert str(caught.value) == (
+        "Repository must be a plain 'registry/repository' without a tag or digest"
+    )
+
+
+@pytest.mark.parametrize("value", ["repo", "repo:v1", "acr.io", "acr.io/"])
+def test_repository_ref_requires_registry_and_repository(value):
+    """A plain-repository API must not guess a registry or accept an empty path."""
+    with pytest.raises(ValueError, match="Cannot determine"):
+        parse_repository_ref(value)
+
+
+@pytest.mark.parametrize("parser", [
+    reject_unsafe_reference, parse_image_ref, parse_artifact_ref, parse_repository_ref,
+])
+@pytest.mark.parametrize("value", [
+    "", None,
+    "https://synthetic-user:synthetic-secret@acr.io/team/pkg:v1",
+    "//synthetic-user:synthetic-secret@acr.io/team/pkg:v1",
+    "synthetic-user:synthetic-secret@acr.io:5000/team/pkg:v1",
+    "synthetic-user@acr.io/team/pkg:v1",
+    "acr.io/pkg@sha256:abc@sha256:def",
+    "acr.io/pkg@bad",
+    "acr.io/pkg@synthetic-user:synthetic-secret/other",
+    "acr.io/pkg name", " acr.io/pkg", "acr.io/pkg\u00a0",
+    "acr.io/pkg\t", "acr.io/pkg\n", "acr.io/pkg\r", "acr.io/pkg\x00",
+    "acr.io/pkg\x1b", "acr.io/pkg\x7f", "acr.io/pkg\x80",
+    "acr.io/pkg\\other", "acr.io/pkg?query", "acr.io/pkg#fragment", "acr.io/pkg%2fother",
+])
+def test_shared_reference_safety_precedes_parsing_and_never_echoes_input(parser, value):
+    """Every parser and direct SDK guard reject unsafe raw syntax with a safe error."""
+    with pytest.raises(UnsafeReferenceError) as caught:
+        parser(value)
+    assert str(caught.value) == "Use a registry/repository tag or digest, not a URL."
+    assert "synthetic-user" not in str(caught.value)
+    assert "synthetic-secret" not in str(caught.value)
+
+
+@pytest.mark.parametrize("parser", [parse_image_ref, parse_artifact_ref])
+@pytest.mark.parametrize("value,expected", [
+    ("acr.io/pkg@bad", ("acr.io", "pkg", "bad")),
+    ("acr.io/pkg:bad%2ftag", ("acr.io", "pkg", "bad%2ftag")),
+])
+def test_parser_safety_optout_is_explicit_and_preserves_legacy_tokens(parser, value, expected):
+    """Only explicit SDK strict=False restores unsafe legacy parsing for conformance tests."""
+    with pytest.raises(UnsafeReferenceError):
+        parser(value)
+    assert parser(value, strict=False) == expected
+
+
+def test_repository_safety_optout_does_not_disable_plain_repository_check():
+    """Conformance callers can bypass safety, but cannot turn qualifiers into repository names."""
+    assert parse_repository_ref("acr.io/pkg%2fchild", strict=False) == ("acr.io", "pkg%2fchild")
+    with pytest.raises(ValueError, match="plain"):
+        parse_repository_ref("acr.io/pkg:latest", strict=False)
 
 
 # ===========================================================================
