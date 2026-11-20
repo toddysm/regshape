@@ -34,6 +34,7 @@ to build your own tools. The CLI tool is built on top of the libraries and uses
 - [Monitor live transfer progress](guides/live-transfer-progress.md)
 - [Download a manifest or index with progress](guides/live-transfer-progress.md#download-a-manifest-or-index)
 - [Library transfer callbacks](library/transfer-progress.md)
+- [Registry ping SDK and authentication-required results](library/ping.md)
 - [Manifest receive observations](library/transfer-progress.md#manifest-receive-observations)
 - [Artifact options and legacy-flag migration](guides/artifact-options.md)
 - [Implemented capabilities and remaining work](project-state.md)

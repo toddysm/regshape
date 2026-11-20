@@ -21,7 +21,7 @@ from regshape.cli.formatting import emit_json
 from regshape.cli.telemetry import telemetry_options
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import AuthError, PingError
-from regshape.libs.ping import ping as ping_registry
+from regshape.libs.ping import PingResult, ping as ping_registry
 from regshape.libs.transport import RegistryClient, TransportConfig
 
 
@@ -53,47 +53,52 @@ def ping(ctx, registry, as_json):
     Issues ``GET /v2/`` against the target REGISTRY and reports whether
     the registry is reachable, the API version it advertises, and the
     round-trip latency.  Credentials are resolved automatically from
-    the credential store populated by ``auth login``.
+    the credential store populated by ``auth login``. Authentication-required
+    results are rendered as reachable with a login hint and exit code 0.
     """
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
     try:
-        result = ping_registry(client)
+        result = ping_registry(client, raise_on_auth=False)
     except AuthError as exc:
-        # A 401/403 during token negotiation means the registry *is*
-        # reachable but requires credentials.  Report success with a hint.
+        result = PingResult.from_auth_error(exc)
+    except PingError as exc:
+        _error(registry, exc.detail, as_json)
+        sys.exit(1)
+    except requests.exceptions.RequestException as exc:
+        _error(registry, str(exc), as_json)
+        sys.exit(1)
+
+    if result.auth_required:
         if as_json:
             emit_json({
                 "registry": registry,
-                "reachable": True,
+                "reachable": result.reachable,
                 "api_version": None,
                 "latency_ms": None,
                 "note": "Registry requires authentication",
-                "error": str(exc),
+                "error": result.error,
             })
         else:
             click.echo(f"Registry {registry} is reachable")
             click.echo("  Note: Registry requires authentication. "
                        "Run 'regshape auth login' to configure credentials.")
         return
-    except PingError as exc:
-        detail = str(exc.__cause__) if getattr(exc, "__cause__", None) is not None else str(exc)
-        _error(registry, detail, as_json)
-        sys.exit(1)
-    except requests.exceptions.RequestException as exc:
-        _error(registry, str(exc), as_json)
-        sys.exit(1)
 
     if not result.reachable:
         _error(registry, f"HTTP {result.status_code}", as_json)
         sys.exit(1)
 
     if as_json:
-        output = result.to_dict()
-        output["registry"] = registry
-        emit_json(output)
+        emit_json({
+            "reachable": result.reachable,
+            "status_code": result.status_code,
+            "api_version": result.api_version,
+            "latency_ms": result.latency_ms,
+            "registry": registry,
+        })
     else:
         click.echo(f"Registry {registry} is reachable")
         if result.api_version:
