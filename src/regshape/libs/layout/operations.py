@@ -16,6 +16,8 @@ Opt-in recursive validation delegates to the strict artifact graph layer;
 legacy shallow validation and staged authoring retain their existing behavior.
 Layer preparation detects compression, defaults to deterministic gzip and
 derives media types independently of the CLI.
+Config updates can report whether the staged manifest references the replaced
+config, while the original descriptor-only API remains available.
 Push always snapshots the complete directory/archive graph before registry work;
 native Linux/Darwin storage requirements apply to that strict path.
 """
@@ -800,7 +802,8 @@ def update_config(
 
     Reads the existing config blob, applies the requested changes, writes the
     new blob, deletes the old blob to prevent orphaned files, and updates the
-    staging file.
+    staging file. The manifest is not inspected or repaired; use
+    :func:`update_config_with_result` to also receive a staleness signal.
 
     :param layout_path: Root of an initialised OCI layout.
     :param architecture: New CPU architecture; ``None`` keeps the existing value.
@@ -851,6 +854,74 @@ def update_config(
     stage["config"] = {"digest": new_digest, "size": new_size, "media_type": cfg_media_type}
     _write_stage(layout, stage)
     return Descriptor(media_type=cfg_media_type, digest=new_digest, size=new_size)
+
+
+@dataclass
+class ConfigUpdateResult:
+    """Config descriptor and manifest consistency signal for one update.
+
+    :param descriptor: Descriptor of the resulting config blob.
+    :param manifest_stale: Whether this update changed the config digest and
+        the staged manifest still references the previous digest. This is
+        not a general layout-validity check.
+    """
+
+    descriptor: Descriptor
+    manifest_stale: bool
+
+
+def update_config_with_result(
+    layout_path: str | Path,
+    architecture: str | None = None,
+    os_name: str | None = None,
+    annotations: dict[str, str] | None = None,
+    replace_annotations: bool = False,
+) -> ConfigUpdateResult:
+    """Update the config and report whether it invalidates the staged manifest.
+
+    Inspect the staged manifest before delegating the config rewrite to
+    :func:`update_config`. The manifest itself is not changed. A no-op update,
+    no staged manifest, or a manifest referencing a different config digest
+    does not set ``manifest_stale``.
+
+    :param layout_path: Root of an initialised OCI layout.
+    :param architecture: New CPU architecture; ``None`` keeps the existing value.
+    :param os_name: New OS; ``None`` keeps the existing value.
+    :param annotations: Labels to merge into ``config.Labels``; ``None`` keeps
+        all existing labels unchanged.
+    :param replace_annotations: If ``True``, replace all existing
+        ``config.Labels`` with *annotations*.
+    :returns: The config descriptor and a per-update staleness signal.
+    :raises LayoutError: If staging/config data is missing, or a staged manifest
+        is missing or not a valid image manifest. Manifest inspection
+        failures occur before the config is changed.
+    :raises OSError: On I/O errors during manifest inspection or config rewriting.
+    """
+    layout = _lp(layout_path)
+    stage = _read_stage_raw(layout)
+    manifest_config_digest = None
+    if stage["manifest"] is not None:
+        manifest_bytes = read_blob(layout, stage["manifest"]["digest"])
+        try:
+            manifest = ImageManifest.from_json(manifest_bytes.decode("utf-8"))
+        except (ManifestError, UnicodeDecodeError) as exc:
+            raise LayoutError("Invalid staged manifest", str(exc)) from exc
+        manifest_config_digest = manifest.config.digest
+
+    descriptor = update_config(
+        layout,
+        architecture=architecture,
+        os_name=os_name,
+        annotations=annotations,
+        replace_annotations=replace_annotations,
+    )
+    old_digest = stage["config"]["digest"]
+    return ConfigUpdateResult(
+        descriptor=descriptor,
+        manifest_stale=(
+            descriptor.digest != old_digest and manifest_config_digest == old_digest
+        ),
+    )
 
 
 def update_manifest_annotations(

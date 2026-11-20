@@ -250,10 +250,19 @@ regshape layout update config \
   --architecture arm64
 ```
 
-> **Warning:** If you have already generated a manifest, updating the config
-> produces a new config digest that the existing manifest no longer references.
-> You must re-run `layout generate manifest` (or `layout annotate manifest`)
-> after updating the config.
+> **Warning:** When the config digest changes and the staged manifest references
+> the previous digest, the command warns that the manifest is stale. No warning
+> is emitted for a no-op update or a manifest already referencing the resulting
+> config digest. This warning does not repair the layout.
+
+To recover, record the stale manifest digest shown by `layout status`, then
+re-run `layout generate manifest` with the desired reference name. Generation
+**appends** an entry to `index.json`; it does not replace the old one. Remove
+the superseded manifest descriptor, identified by that recorded digest, from
+the `manifests` array in `index.json`, preserving other entries. Otherwise the
+old manifest still references the deleted config blob and validation fails.
+Run `layout validate` before pushing. Changing manifest annotations alone does
+not replace its config reference or perform this cleanup.
 
 ### Update manifest annotations
 
@@ -363,7 +372,7 @@ validate_layout(layout)
 
 ```python
 from regshape.libs.layout import (
-    update_config,
+    update_config_with_result,
     update_layer_annotations,
     update_manifest_annotations,
     read_stage,
@@ -376,11 +385,23 @@ print(read_stage(layout))
 update_layer_annotations(layout, 0, {"com.example.role": "base"})
 
 # Re-generate config for a different architecture
-update_config(layout, architecture="arm64")
+result = update_config_with_result(layout, architecture="arm64")
+if result.manifest_stale:
+    print("Regenerate the manifest and remove its superseded index.json entry.")
 
-# Add a version annotation to the manifest
+# Annotation-only changes do not repair stale config references
 update_manifest_annotations(layout, {"org.opencontainers.image.version": "1.0.0"})
 ```
+
+`result.descriptor` describes the resulting config blob. The library computes
+`manifest_stale`; SDK callers do not need to infer it from staging metadata.
+The existing `update_config(...) -> Descriptor` API is unchanged and remains
+available when no manifest inspection is wanted. The result-returning API
+raises `LayoutError` for a missing or invalid staged manifest and propagates
+other I/O errors, before changing the config. Its flag is not a full
+layout-validity check. If it is true, follow the regeneration and index-entry
+cleanup procedure above before validating or pushing; the example only reports
+the condition.
 
 ---
 

@@ -3,7 +3,8 @@
 """Tests for the staged-workflow functions in :mod:`regshape.libs.layout`.
 
 Covers layer preparation/staging, config/manifest generation, ``read_stage``,
-``update_layer_annotations``, ``update_config``, and ``update_manifest_annotations``.
+``update_layer_annotations``, config updates with optional manifest-staleness
+reporting, and ``update_manifest_annotations``.
 """
 
 import gzip
@@ -17,6 +18,7 @@ import pytest
 
 from regshape.libs.errors import LayoutError
 from regshape.libs.layout import (
+    add_blob,
     generate_config,
     generate_manifest,
     init_layout,
@@ -25,6 +27,7 @@ from regshape.libs.layout import (
     read_stage,
     stage_layer,
     update_config,
+    update_config_with_result,
     update_layer_annotations,
     update_manifest_annotations,
     validate_layout,
@@ -523,6 +526,129 @@ class TestUpdateConfig:
         _stage_one_layer(layout)
         with pytest.raises(LayoutError):
             update_config(layout, architecture="arm64")
+
+
+class TestUpdateConfigWithResult:
+    """Verify per-update consistency without changing the descriptor-only API."""
+
+    @pytest.mark.parametrize("manifest_config", [None, "old", "new", "other"])
+    def test_manifest_staleness(self, tmp_path, manifest_config):
+        """Only a manifest referencing the replaced config needs this warning."""
+        layout = _setup_layout(tmp_path)
+        _stage_one_layer(layout)
+        old = generate_config(layout, architecture="amd64", os_name="linux")
+        if manifest_config is not None:
+            generate_manifest(layout, ref_name="latest")
+            stage = read_stage(layout)
+            manifest = json.loads(read_blob(layout, stage["manifest"]["digest"]))
+            if manifest_config != "old":
+                config = json.loads(read_blob(layout, old.digest))
+                config["architecture"] = (
+                    "arm64" if manifest_config == "new" else "s390x"
+                )
+                config_bytes = json.dumps(
+                    config,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8")
+                digest, size = add_blob(layout, config_bytes)
+                manifest["config"]["digest"] = digest
+                manifest["config"]["size"] = size
+                manifest_bytes = json.dumps(manifest).encode("utf-8")
+                digest, size = add_blob(layout, manifest_bytes)
+                stage["manifest"]["digest"] = digest
+                stage["manifest"]["size"] = size
+                (layout / _STAGE_FILE).write_text(json.dumps(stage))
+            manifest_before = read_blob(
+                layout, read_stage(layout)["manifest"]["digest"]
+            )
+
+        result = update_config_with_result(layout, architecture="arm64")
+
+        assert result.manifest_stale is (manifest_config == "old")
+        assert result.descriptor.digest != old.digest
+        assert result.descriptor.digest == read_stage(layout)["config"]["digest"]
+        assert (
+            json.loads(read_blob(layout, result.descriptor.digest))["architecture"]
+            == "arm64"
+        )
+        if manifest_config is not None:
+            assert (
+                read_blob(layout, read_stage(layout)["manifest"]["digest"])
+                == manifest_before
+            )
+
+    def test_noop_does_not_invalidate_manifest(self, tmp_path):
+        """Keeping identical config content must not warn about a current manifest."""
+        layout = _setup_layout(tmp_path)
+        _stage_one_layer(layout)
+        old = generate_config(layout, architecture="amd64")
+        generate_manifest(layout, ref_name="latest")
+
+        result = update_config_with_result(layout, architecture="amd64")
+
+        assert result.descriptor == old
+        assert result.manifest_stale is False
+        assert read_blob(layout, old.digest)
+
+    def test_annotation_options_forwarded(self, tmp_path):
+        """The result API keeps OS and label replacement semantics."""
+        layout = _setup_layout(tmp_path)
+        _stage_one_layer(layout)
+        generate_config(layout, annotations={"old": "label"})
+        generate_manifest(layout, ref_name="latest")
+
+        result = update_config_with_result(
+            layout,
+            os_name="windows",
+            annotations={"new": "label"},
+            replace_annotations=True,
+        )
+
+        config = json.loads(read_blob(layout, result.descriptor.digest))
+        assert config["os"] == "windows"
+        assert config["config"]["Labels"] == {"new": "label"}
+        assert result.manifest_stale is True
+
+    @pytest.mark.parametrize("content", [None, b"not-json", b"\xff", b"{}"])
+    def test_manifest_inspection_failure_preserves_config(self, tmp_path, content):
+        """Missing or invalid staged manifests fail before any config mutation."""
+        layout = _setup_layout(tmp_path)
+        _stage_one_layer(layout)
+        old = generate_config(layout, architecture="amd64")
+        generate_manifest(layout, ref_name="latest")
+        stage_before = read_stage(layout)
+        manifest_path = (
+            layout
+            / "blobs"
+            / "sha256"
+            / stage_before["manifest"]["digest"].split(":", 1)[1]
+        )
+        if content is None:
+            manifest_path.unlink()
+        else:
+            digest, size = add_blob(layout, content)
+            stage_before["manifest"]["digest"] = digest
+            stage_before["manifest"]["size"] = size
+            (layout / _STAGE_FILE).write_text(json.dumps(stage_before))
+        config_before = read_blob(layout, old.digest)
+
+        with pytest.raises(LayoutError) as exc_info:
+            update_config_with_result(layout, architecture="arm64")
+
+        if content is not None:
+            assert "Invalid staged manifest" in str(exc_info.value)
+        assert read_stage(layout) == stage_before
+        assert read_blob(layout, old.digest) == config_before
+        # Existing callers do not opt into manifest inspection.
+        assert update_config(layout, architecture="arm64").digest != old.digest
+
+    def test_missing_config(self, tmp_path):
+        """The new API preserves the existing missing-config domain error."""
+        layout = _setup_layout(tmp_path)
+
+        with pytest.raises(LayoutError, match="Config not yet generated"):
+            update_config_with_result(layout, architecture="arm64")
 
 
 # ---------------------------------------------------------------------------
