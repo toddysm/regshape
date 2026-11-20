@@ -23,21 +23,30 @@ from regshape.libs.blobs.operations import (
     get_blob,
     head_blob,
     mount_blob,
+    mount_blob_result,
     upload_blob,
     upload_blob_chunked,
+    upload_blob_chunked_result,
     upload_blob_stream,
+    upload_blob_stream_result,
 )
+from regshape.libs.models.blob import BlobMountResult, BlobUploadResult
 from regshape.libs.progress import (
     ProgressCallback,
     TransferDirection,
     TransferPhase,
     TransferProgress,
 )
+
+# isort: split
+# Batch imports artifact operations, which require the exports above.
 from regshape.libs.blobs.batch import get_blobs
 
 __all__ = [
     "BlobBatchResult",
     "BlobDownload",
+    "BlobMountResult",
+    "BlobUploadResult",
     "DownloadOptions",
     "DownloadStats",
     "DownloadStatus",
@@ -50,7 +59,10 @@ __all__ = [
     "get_blobs",
     "head_blob",
     "mount_blob",
+    "mount_blob_result",
     "upload_blob",
     "upload_blob_chunked",
+    "upload_blob_chunked_result",
     "upload_blob_stream",
+    "upload_blob_stream_result",
 ]

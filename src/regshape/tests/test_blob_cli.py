@@ -27,7 +27,7 @@ from regshape.cli.main import regshape
 from regshape.cli.progress import ProgressDisplay
 from regshape.libs.blobs import DownloadOptions, DownloadStats, DownloadStatus
 from regshape.libs.errors import AuthError, BlobError
-from regshape.libs.models.blob import BlobInfo
+from regshape.libs.models.blob import BlobInfo, BlobMountResult, BlobUploadResult
 from regshape.tests.test_artifact_options import runner as runner  # noqa: PLC0414 - minimum Click fixture
 from regshape.tests.test_artifact_pull_cli import ArtifactConsole, _console_streams
 
@@ -43,6 +43,9 @@ CONTENT_TYPE = "application/vnd.oci.image.layer.v1.tar+gzip"
 SIZE = 4_194_304
 
 _BLOB_INFO = BlobInfo(digest=DIGEST, content_type=CONTENT_TYPE, size=SIZE)
+_RESULT_LOCATION = f"https://{REGISTRY}/content/{DIGEST}?download=1"
+_UPLOAD_RESULT = BlobUploadResult(DIGEST, SIZE, _RESULT_LOCATION)
+_MOUNT_RESULT = BlobMountResult(DIGEST, _RESULT_LOCATION)
 
 
 @pytest.mark.parametrize("command", ["head", "get", "delete", "upload", "mount"])
@@ -895,10 +898,11 @@ class TestBlobDelete:
 class TestBlobUpload:
 
     def test_upload_monolithic_success(self, tmp_path):
+        """Render SDK upload metadata without deriving size or location in the CLI."""
         test_file = tmp_path / "layer.tar.gz"
         test_file.write_bytes(b"test blob content")
 
-        with patch("regshape.cli.blob.upload_blob_stream", return_value=DIGEST):
+        with patch("regshape.cli.blob.upload_blob_stream_result", return_value=_UPLOAD_RESULT):
             result = _runner().invoke(
                 regshape,
                 [
@@ -910,26 +914,27 @@ class TestBlobUpload:
             )
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
-        assert data["digest"] == DIGEST
-        assert "location" in data
+        assert data == {"digest": DIGEST, "size": SIZE, "location": _RESULT_LOCATION}
 
     def test_upload_monolithic_location_format(self, tmp_path):
+        """Preserve the library's registry Location instead of constructing a path."""
         test_file = tmp_path / "layer.tar.gz"
         test_file.write_bytes(b"content")
 
-        with patch("regshape.cli.blob.upload_blob_stream", return_value=DIGEST):
+        with patch("regshape.cli.blob.upload_blob_stream_result", return_value=_UPLOAD_RESULT):
             result = _runner().invoke(
                 regshape,
                 ["blob", "upload", "--repo", REPO, "--file", str(test_file), "--digest", DIGEST],
             )
         data = json.loads(result.output)
-        assert data["location"].startswith(f"/v2/{NAMESPACE}/blobs/")
+        assert data["location"] == _RESULT_LOCATION
 
     def test_upload_chunked_success(self, tmp_path):
+        """Select the chunked result API and retain the upload JSON key set."""
         test_file = tmp_path / "layer.tar.gz"
         test_file.write_bytes(b"chunked test content")
 
-        with patch("regshape.cli.blob.upload_blob_chunked", return_value=DIGEST):
+        with patch("regshape.cli.blob.upload_blob_chunked_result", return_value=_UPLOAD_RESULT):
             result = _runner().invoke(
                 regshape,
                 [
@@ -942,14 +947,15 @@ class TestBlobUpload:
             )
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
-        assert data["digest"] == DIGEST
+        assert data == {"digest": DIGEST, "size": SIZE, "location": _RESULT_LOCATION}
 
     def test_upload_chunked_does_not_call_monolithic(self, tmp_path):
+        """The chunked flag never invokes the monolithic result API."""
         test_file = tmp_path / "layer.tar.gz"
         test_file.write_bytes(b"content")
 
-        with patch("regshape.cli.blob.upload_blob_stream") as mock_mono, \
-             patch("regshape.cli.blob.upload_blob_chunked", return_value=DIGEST):
+        with patch("regshape.cli.blob.upload_blob_stream_result") as mock_mono, \
+             patch("regshape.cli.blob.upload_blob_chunked_result", return_value=_UPLOAD_RESULT):
             _runner().invoke(
                 regshape,
                 ["blob", "upload", "--repo", REPO, "--file", str(test_file),
@@ -958,11 +964,12 @@ class TestBlobUpload:
         mock_mono.assert_not_called()
 
     def test_upload_monolithic_does_not_call_chunked(self, tmp_path):
+        """The default protocol never invokes the chunked result API."""
         test_file = tmp_path / "layer.tar.gz"
         test_file.write_bytes(b"content")
 
-        with patch("regshape.cli.blob.upload_blob_stream", return_value=DIGEST), \
-             patch("regshape.cli.blob.upload_blob_chunked") as mock_chunked:
+        with patch("regshape.cli.blob.upload_blob_stream_result", return_value=_UPLOAD_RESULT), \
+             patch("regshape.cli.blob.upload_blob_chunked_result") as mock_chunked:
             _runner().invoke(
                 regshape,
                 ["blob", "upload", "--repo", REPO, "--file", str(test_file), "--digest", DIGEST],
@@ -979,11 +986,12 @@ class TestBlobUpload:
         assert result.exit_code == 2
 
     def test_upload_error_exits_1(self, tmp_path):
+        """Map SDK upload failures to the existing command failure exit."""
         test_file = tmp_path / "layer.tar.gz"
         test_file.write_bytes(b"content")
 
         with patch(
-            "regshape.cli.blob.upload_blob_stream",
+            "regshape.cli.blob.upload_blob_stream_result",
             side_effect=BlobError("Upload session not found: abc", "HTTP 404"),
         ):
             result = _runner().invoke(
@@ -993,11 +1001,12 @@ class TestBlobUpload:
         assert result.exit_code == 1
 
     def test_upload_auth_error_exits_1(self, tmp_path):
+        """Keep authentication failure mapping unchanged with the result API."""
         test_file = tmp_path / "layer.tar.gz"
         test_file.write_bytes(b"content")
 
         with patch(
-            "regshape.cli.blob.upload_blob_stream",
+            "regshape.cli.blob.upload_blob_stream_result",
             side_effect=AuthError(f"Authentication failed for {REGISTRY}", "HTTP 401"),
         ):
             result = _runner().invoke(
@@ -1007,11 +1016,12 @@ class TestBlobUpload:
         assert result.exit_code == 1
 
     def test_upload_media_type_passed_to_domain(self, tmp_path):
+        """Pass the requested payload media type unchanged to the SDK."""
         test_file = tmp_path / "layer.tar.gz"
         test_file.write_bytes(b"content")
         custom_type = "application/vnd.oci.image.layer.v1.tar+gzip"
 
-        with patch("regshape.cli.blob.upload_blob_stream", return_value=DIGEST) as mock_upload:
+        with patch("regshape.cli.blob.upload_blob_stream_result", return_value=_UPLOAD_RESULT) as mock_upload:
             _runner().invoke(
                 regshape,
                 [
@@ -1036,7 +1046,8 @@ class TestBlobMount:
     FROM_REPO = "sourcerepo/myimage"
 
     def test_mount_success(self):
-        with patch("regshape.cli.blob.mount_blob", return_value=DIGEST):
+        """Render the SDK's mounted status/location without adding a size key."""
+        with patch("regshape.cli.blob.mount_blob_result", return_value=_MOUNT_RESULT):
             result = _runner().invoke(
                 regshape,
                 [
@@ -1048,13 +1059,12 @@ class TestBlobMount:
             )
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
-        assert data["digest"] == DIGEST
-        assert data["status"] == "mounted"
-        assert f"/v2/{NAMESPACE}/blobs/" in data["location"]
+        assert data == {"digest": DIGEST, "status": "mounted", "location": _RESULT_LOCATION}
 
     def test_mount_not_accepted_exits_1(self):
+        """An unsupported mount remains a failure directing callers to upload."""
         with patch(
-            "regshape.cli.blob.mount_blob",
+            "regshape.cli.blob.mount_blob_result",
             side_effect=BlobError(
                 f"Blob mount not accepted for {REGISTRY}/{NAMESPACE}@{DIGEST}"
                 ": registry returned 202 — retry with upload_blob or upload_blob_chunked",
@@ -1073,8 +1083,9 @@ class TestBlobMount:
         assert result.exit_code == 1
 
     def test_mount_auth_error_exits_1(self):
+        """Preserve mount authentication failure mapping."""
         with patch(
-            "regshape.cli.blob.mount_blob",
+            "regshape.cli.blob.mount_blob_result",
             side_effect=AuthError(f"Authentication failed for {REGISTRY}", "HTTP 401"),
         ):
             result = _runner().invoke(
@@ -1089,8 +1100,9 @@ class TestBlobMount:
         assert result.exit_code == 1
 
     def test_mount_connection_error_exits_1(self):
+        """Preserve mount transport failure mapping."""
         with patch(
-            "regshape.cli.blob.mount_blob",
+            "regshape.cli.blob.mount_blob_result",
             side_effect=requests.exceptions.ConnectionError("refused"),
         ):
             result = _runner().invoke(
@@ -1105,7 +1117,8 @@ class TestBlobMount:
         assert result.exit_code == 1
 
     def test_mount_output_is_json(self):
-        with patch("regshape.cli.blob.mount_blob", return_value=DIGEST):
+        """The command emits only valid JSON on success."""
+        with patch("regshape.cli.blob.mount_blob_result", return_value=_MOUNT_RESULT):
             result = _runner().invoke(
                 regshape,
                 [

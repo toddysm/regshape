@@ -20,12 +20,12 @@ import pytest
 import requests
 from click.testing import CliRunner
 
-from regshape.cli.blob import _trusted_file_size
 from regshape.cli.downloads import DownloadWarnings
 from regshape.cli.main import regshape
 from regshape.cli.progress import ProgressDisplay
 from regshape.libs.artifacts.models import ArtifactProgress
 from regshape.libs.blobs import BlobDownload, DownloadOptions, get_blob, get_blobs
+from regshape.libs.blobs.operations import _trusted_file_size
 from regshape.libs.decorators import (
     TelemetryConfig,
     configure_telemetry,
@@ -34,6 +34,7 @@ from regshape.libs.decorators import (
 from regshape.libs.decorators.output import telemetry_write
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import BlobError
+from regshape.libs.models.blob import BlobUploadResult
 from regshape.libs.progress import (
     ProgressCallback,
     TransferDirection,
@@ -1288,14 +1289,16 @@ def test_blob_upload_real_library_consumption(
     with (
         patch("regshape.cli.blob.ProgressDisplay", side_effect=display),
         patch.object(ProgressDisplay, "observe", record),
-        patch("regshape.cli.blob.os.fstat", side_effect=stat_source),
+        patch("regshape.libs.blobs.operations.os.fstat", side_effect=stat_source),
         patch("regshape.libs.transport.client.resolve_credentials", return_value=(None, None)),
         patch("regshape.libs.decorators.call_details.requests.request", side_effect=respond),
     ):
         result = runner.invoke(regshape, args)
     assert result.exit_code == 0, result.output
     assert b"".join(payloads) == data
-    assert json.loads(result.stdout)["digest"] == digest
+    assert json.loads(result.stdout) == {
+        "digest": digest, "size": len(data), "location": "/v2/repo/blobs/uploads/session",
+    }
     assert methods == (["POST"] + ["PATCH"] * ((len(data) + 1) // 2) + ["PUT"] if chunked else ["POST", "PUT"])
     if data:
         assert any(e.phase == TransferPhase.TRANSFERRING and 0 < e.bytes_completed < 6 for e in observations)
@@ -1324,20 +1327,22 @@ def test_blob_upload_stream_wiring_preserves_json(
     path.write_bytes(b"abcdef")
     seen: list[TransferProgress] = []
 
-    def upload(*, source: BinaryIO, progress_callback: ProgressCallback, **kwargs: object) -> str:
+    def upload(
+        *, source: BinaryIO, progress_callback: ProgressCallback, **kwargs: object,
+    ) -> BlobUploadResult:
         """Consume the borrowed file and emit the same lifecycle as the library."""
         assert source.read() == b"abcdef"
         for event in (_event(TransferPhase.TRANSFERRING, 0, 6), _event(TransferPhase.COMPLETED, 6, 6)):
             progress_callback(event)
             seen.append(event)
-        return DIGEST
+        return BlobUploadResult(DIGEST, 6, f"/v2/repo/blobs/{DIGEST}")
 
     args = ["blob", "upload", "--repo", "registry.example.invalid/repo", "--file", str(path), "--digest", DIGEST]
     if chunked:
         args.append("--chunked")
     if disabled:
         args.append("--no-progress")
-    name = "upload_blob_chunked" if chunked else "upload_blob_stream"
+    name = "upload_blob_chunked_result" if chunked else "upload_blob_stream_result"
     with (
         patch("regshape.cli.blob.RegistryClient"),
         patch("regshape.cli.blob." + name, side_effect=upload),
@@ -1356,7 +1361,7 @@ def test_size_probe_unsupported_seek_and_io_errors(
     path = tmp_path / "source"
     path.write_bytes(b"abcdef")
     error = OSError(error_number, "synthetic probe error")
-    caplog.set_level(logging.DEBUG, logger="regshape.cli.blob")
+    caplog.set_level(logging.DEBUG, logger="regshape.libs.blobs.operations")
     with path.open("rb") as source:
         original_seek = source.seek
 

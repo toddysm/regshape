@@ -12,13 +12,9 @@
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
-import errno
-import logging
-import os
-import stat
 from collections.abc import Callable
 from functools import wraps
-from typing import Any, BinaryIO
+from typing import Any
 
 import click
 import requests
@@ -31,18 +27,15 @@ from regshape.libs.blobs import (
     delete_blob,
     get_blob,
     head_blob,
-    mount_blob,
-    upload_blob_chunked,
-    upload_blob_stream,
+    mount_blob_result,
+    upload_blob_chunked_result,
+    upload_blob_stream_result,
 )
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import AuthError, BlobError
 from regshape.libs.models.blob import BlobInfo
 from regshape.libs.refs import parse_repository_ref
 from regshape.libs.transport import RegistryClient, TransportConfig
-
-logger = logging.getLogger(__name__)
-
 
 # ===========================================================================
 # Public Click group
@@ -353,14 +346,13 @@ def blob_upload(ctx, repo, source_file, digest, media_type, chunked, chunk_size,
     try:
         with ProgressDisplay(disabled=no_progress) as progress, open(source_file, "rb") as fh:
             if chunked:
-                confirmed = upload_blob_chunked(
+                result = upload_blob_chunked_result(
                     client=client, repo=repo_name, source=fh, digest=digest,
                     content_type=media_type, chunk_size=chunk_size,
-                    total_size=_trusted_file_size(fh),
                     progress_callback=progress.observe,
                 )
             else:
-                confirmed = upload_blob_stream(
+                result = upload_blob_stream_result(
                     client=client, repo=repo_name, source=fh, digest=digest,
                     content_type=media_type, progress_callback=progress.observe,
                 )
@@ -369,16 +361,7 @@ def blob_upload(ctx, repo, source_file, digest, media_type, chunked, chunk_size,
     except (AuthError, BlobError, requests.exceptions.RequestException) as exc:
         emit_error(f"{repo}@{digest}", str(exc))
 
-    # Derive a canonical blob location from the confirmed digest.
-    location = f"/v2/{repo_name}/blobs/{confirmed}"
-    try:
-        size = _file_size(source_file)
-    except OSError:
-        size = 0
-
-    emit_json(
-        {"digest": confirmed, "size": size, "location": location}
-    )
+    emit_json(result.to_dict())
 
 
 # ===========================================================================
@@ -427,7 +410,7 @@ def blob_mount(ctx, repo, digest, from_repo):
     client = RegistryClient(TransportConfig(registry=registry, insecure=insecure))
 
     try:
-        confirmed = mount_blob(
+        result = mount_blob_result(
             client=client,
             repo=repo_name,
             digest=digest,
@@ -436,51 +419,4 @@ def blob_mount(ctx, repo, digest, from_repo):
     except (AuthError, BlobError, requests.exceptions.RequestException) as exc:
         emit_error(f"{repo}@{digest}", str(exc))
 
-    location = f"/v2/{repo_name}/blobs/{confirmed}"
-    emit_json(
-        {"digest": confirmed, "status": "mounted", "location": location}
-    )
-
-
-# ===========================================================================
-# Internal helpers
-# ===========================================================================
-
-
-
-def _trusted_file_size(source: BinaryIO) -> int | None:
-    """Verify a regular file's hinted bounds without consuming its upload bytes.
-
-    Virtual files can report zero or an allocation size instead of their content
-    length. Return ``None`` for unverified bounds or unsupported seeking; retain
-    known zero for genuinely empty files. The caller must keep content stable.
-
-    :raises OSError: On read errors or inability to restore the original position.
-    """
-    info = os.fstat(source.fileno())
-    if not stat.S_ISREG(info.st_mode) or not source.seekable():
-        return None
-    position = source.tell()
-    try:
-        source.seek(info.st_size)
-        if source.read(1):
-            return None
-        if info.st_size:
-            source.seek(info.st_size - 1)
-            if not source.read(1):
-                return None
-        return info.st_size
-    except OSError as exc:
-        if exc.errno not in (errno.EINVAL, errno.ESPIPE, errno.ENOTSUP):
-            raise
-        logger.debug("File size probe unsupported (%s); using an unknown total", type(exc).__name__)
-        return None
-    finally:
-        if source.tell() != position:
-            source.seek(position)
-
-
-def _file_size(path: str) -> int:
-    """Return the byte size of *path*."""
-    import os
-    return os.path.getsize(path)
+    emit_json(result.to_dict())

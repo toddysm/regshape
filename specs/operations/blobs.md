@@ -435,8 +435,16 @@ When observing a download without an explicit total, a valid decimal
 content encoding. Otherwise the total stays unknown; compressed wire sizes are
 not confused with decoded payload bytes. Negative or unusable metadata becomes
 zero in the legacy `BlobInfo.size` result, but never a known-zero progress total.
-Chunked upload does not probe or seek its source: supply `total_size` when
-known, measured from the current source offset. Monolithic streamed upload
+With no `total_size`, `upload_blob_chunked_result` probes regular-file boundary hints and
+restores the original position. A verified hint describes remaining bytes,
+including known zero; nonseekable sources, missing descriptors and unverified
+virtual-file hints retain an unknown total. Supply `total_size` to bypass the
+probe when a trusted remaining size is already available. Genuine probe/read
+errors propagate; keep file content stable throughout the operation. Legacy
+`upload_blob_chunked` preserves its no-seek/no-pre-read behavior: an omitted
+total remains unknown, even for regular files. Both APIs enforce an explicitly
+supplied total.
+Monolithic streamed upload
 infers a seekable source's remaining length and rewinds for replay as described
 above. Neither API closes the caller-owned source.
 
@@ -520,6 +528,69 @@ Attempts a cross-repository blob mount without a data transfer.
 4. Return `Docker-Content-Digest` header (falls back to supplied `digest`).
 
 **Decorator:** `@track_time`
+
+---
+
+### Additive upload and mount result APIs
+
+The existing `upload_blob`, `upload_blob_stream`, `upload_blob_chunked` and
+`mount_blob` functions still return digest strings. No versioned return-type
+change is required. The stream/chunked/mount facades share their protocol
+implementation with these additive APIs exported by `regshape.libs.blobs`:
+
+```python
+upload_blob_stream_result(
+    client, repo, source, digest, content_type="application/octet-stream",
+    *, progress_callback=None, total_size=None,
+) -> BlobUploadResult
+
+upload_blob_chunked_result(
+    client, repo, source, digest, content_type="application/octet-stream",
+    chunk_size=65536, *, progress_callback=None, total_size=None,
+) -> BlobUploadResult
+
+mount_blob_result(client, repo, digest, from_repo) -> BlobMountResult
+```
+
+`BlobUploadResult` and `BlobMountResult` are frozen dataclasses exported by
+`regshape.libs.blobs` and `regshape.libs.models`.
+
+| Result | Fields and `to_dict()` keys |
+| --- | --- |
+| `BlobUploadResult` | `digest: str`, `size: int`, `location: str` |
+| `BlobMountResult` | `digest: str`, `status: str` (always `"mounted"`), `location: str` |
+
+Both use the confirmed digest, falling back to the requested digest when the
+registry omits it or returns an empty value. Uploads retain their digest-mismatch rejection. `location`
+uses the **final** response's `Location` header verbatim, including an absolute
+URL or query string. Only an absent/empty final header falls back to
+`/v2/{repo}/blobs/{confirmed_digest}`; the upload-session URL is never used as
+a fallback. Treat a returned URL as registry-supplied metadata, not permission
+to forward credentials or fetch another origin.
+
+Upload `size` is the actual logical payload consumed by the successful
+monolithic attempt or accepted across chunked PATCHes, not a file stat,
+response Content-Length, probe byte count or cumulative retransmission count.
+Empty uploads return zero. Borrowed sources remain open and are consumed from
+their original offset. Probing and progress follow the contracts above.
+The result is returned only after final commit checks and response cleanup;
+no result is returned on source, transport, digest, cleanup or observer failure.
+
+Mount results intentionally have no `size`: a no-payload mount response does
+not establish the existing blob's content size. No additional HEAD or automatic
+upload fallback is performed. HTTP 202 remains `BlobError` directing the caller
+to upload, with the existing error wording. Mount responses are closed on
+success and failure.
+
+Legacy `mount_blob` retains the method-timing label `mount_blob`. The additive
+`mount_blob_result` API, including its CLI callers, reports `mount_blob_result`
+when method timing is enabled. Each facade records one timing (also on failure),
+not nested legacy/result timings.
+
+The CLI delegates to these result APIs and renders `result.to_dict()`.
+Its existing upload/mount key sets and flags are unchanged; registry Location
+reporting deliberately replaces the former always-canonical CLI value.
+See the [SDK usage example](../../docs/library/transfer-progress.md#upload-and-mount-results).
 
 ---
 

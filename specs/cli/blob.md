@@ -373,6 +373,8 @@ Use `--chunked` for pipe-backed or virtual files. Regular-file size hints are
 checked at their boundaries without consuming upload bytes; unverified hints
 remain unknown rather than being treated as trusted zero or allocation sizes.
 Genuinely empty regular files retain a known zero total.
+Probing, counting payload bytes and deriving result locations are library
+responsibilities; the CLI renders the completed SDK result.
 
 #### Options
 
@@ -449,6 +451,12 @@ regshape blob upload \
 
 #### Output Format
 
+`size` is the logical payload bytes actually uploaded, excluding retry traffic,
+not a post-upload file stat. `location` now preserves the registry's final
+`Location` header verbatim, including absolute URLs and query strings; only an
+absent/empty header uses the canonical path shown below. The JSON keys are
+unchanged.
+
 ```json
 {
   "digest": "sha256:abc123...",
@@ -518,6 +526,10 @@ regshape blob mount \
 ```
 
 #### Output Format
+
+`location` now preserves the mount response's `Location` header verbatim, with
+the canonical path below only as an absent/empty-header fallback. Mount JSON
+retains `digest`, `status` and `location`; no content size is invented or queried.
 
 ```json
 {

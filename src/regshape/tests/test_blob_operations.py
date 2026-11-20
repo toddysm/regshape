@@ -9,14 +9,35 @@ replaced with lightweight mocks so no network I/O is performed.
 """
 
 import hashlib
+import io
+from pathlib import Path
+from typing import BinaryIO
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from regshape.libs.blobs.operations import get_blob, upload_blob, upload_blob_chunked
+from regshape.libs.blobs import (
+    BlobMountResult,
+    BlobUploadResult,
+    mount_blob,
+    mount_blob_result,
+    upload_blob_chunked_result,
+    upload_blob_stream,
+    upload_blob_stream_result,
+)
+from regshape.libs.blobs.operations import (
+    _trusted_file_size,
+    get_blob,
+    upload_blob,
+    upload_blob_chunked,
+)
+from regshape.libs.decorators import (
+    TelemetryConfig,
+    configure_telemetry,
+    get_telemetry_config,
+)
 from regshape.libs.errors import BlobError
 from regshape.libs.models.blob import BlobInfo
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -374,3 +395,189 @@ class TestUploadBlobChunkedPutParams:
         params = put_kwargs.get("params", [])
         assert ("_state", "rotated99") in params
         assert any(k == "digest" for k, v in params)
+
+
+class _Nonseekable(io.BytesIO):
+    """Provide payload bytes while rejecting size probes and rewinds."""
+
+    def seekable(self) -> bool:
+        """Advertise that only forward reads are supported."""
+        return False
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        """Fail if a supposedly streaming upload tries to rewind."""
+        raise io.UnsupportedOperation("not seekable")
+
+
+def _result_client(location: str | None) -> MagicMock:
+    """Consume streamed PUT bodies and accept chunked payloads without network I/O."""
+    client = _make_client()
+    client.post.return_value = _make_post_response(f"/v2/{REPO}/blobs/uploads/session")
+    client.patch.return_value = _make_patch_response()
+
+    def put(path: str, *, data: bytes | BinaryIO, **kwargs: object) -> MagicMock:
+        """Read a monolithic payload before returning final registry metadata."""
+        if not isinstance(data, bytes):
+            while data.read(3):
+                pass
+        response = _make_put_response(DIGEST)
+        if location is not None:
+            response.headers["Location"] = location
+        return response
+
+    client.put.side_effect = put
+    return client
+
+
+@pytest.mark.parametrize("operation", [upload_blob_stream_result, upload_blob_chunked_result])
+@pytest.mark.parametrize("location", [
+    None, "", "/registry/content/blob?download=1",
+    "https://storage.example.invalid/content/blob?download=1",
+])
+def test_upload_result_reports_sent_bytes_and_final_location(operation, location):
+    """Use final metadata verbatim, falling back only when Location is absent/empty."""
+    client = _result_client(location)
+    source = io.BytesIO(b"prefix" + CONTENT)
+    source.seek(6)
+
+    result = operation(client, REPO, source, DIGEST)
+
+    assert isinstance(result, BlobUploadResult)
+    assert result.to_dict() == {
+        "digest": DIGEST, "size": len(CONTENT),
+        "location": location or f"/v2/{REPO}/blobs/{DIGEST}",
+    }
+    assert source.tell() == 6 + len(CONTENT) and not source.closed
+
+
+@pytest.mark.parametrize("operation", [upload_blob_stream_result, upload_blob_chunked_result])
+def test_empty_upload_result_uses_zero_actual_bytes(operation):
+    """An empty upload commits successfully without inventing size or PATCH data."""
+    client = _result_client(None)
+    result = operation(client, REPO, io.BytesIO(), DIGEST)
+    assert result.size == 0
+    client.patch.assert_not_called()
+
+
+@pytest.mark.parametrize("operation", [upload_blob_stream, upload_blob_chunked])
+def test_legacy_upload_api_still_returns_digest_string(operation):
+    """Additive result APIs do not change the existing string-returning contract."""
+    assert operation(_result_client(None), REPO, io.BytesIO(CONTENT), DIGEST) == DIGEST
+
+
+@pytest.mark.parametrize("payload,offset", [(b"", 0), (CONTENT, 0), (CONTENT, 3)])
+def test_trusted_file_size_preserves_position(tmp_path: Path, payload: bytes, offset: int):
+    """Probe real remaining file bytes, retaining known zero and the original offset."""
+    path = tmp_path / "source"
+    path.write_bytes(payload)
+    with path.open("rb") as source:
+        source.seek(offset)
+        assert _trusted_file_size(source) == len(payload) - offset
+        assert source.tell() == offset
+        assert source.read() == payload[offset:]
+
+
+@pytest.mark.parametrize("source_type", [io.BytesIO, _Nonseekable])
+def test_unsupported_size_probe_does_not_consume_payload(source_type):
+    """Missing descriptors and nonseekable sources stay unknown without reading."""
+    source = source_type(CONTENT)
+    assert _trusted_file_size(source) is None
+    assert source.tell() == 0 and source.read() == CONTENT
+
+
+@pytest.mark.parametrize("payload", [b"", CONTENT])
+def test_chunked_upload_infers_regular_file_total(tmp_path: Path, payload: bytes):
+    """The library, not the CLI, supplies trusted file totals to progress."""
+    path = tmp_path / "source"
+    path.write_bytes(b"prefix" + payload)
+    events = []
+    with path.open("rb") as source:
+        source.seek(6)
+        result = upload_blob_chunked_result(
+            _result_client(None), REPO, source, DIGEST, progress_callback=events.append,
+        )
+        assert not source.closed
+    assert result.size == len(payload)
+    assert all(event.total_bytes == len(payload) for event in events)
+
+
+@pytest.mark.parametrize("total_size", [None, len(CONTENT)])
+def test_legacy_chunked_upload_does_not_probe_regular_files(tmp_path: Path, total_size):
+    """Legacy callers retain forward-only reads and unknown totals unless supplied."""
+    path = tmp_path / "source"
+    path.write_bytes(CONTENT)
+    events = []
+    with path.open("rb") as source, (
+        patch.object(source, "seek", side_effect=AssertionError("unexpected seek"))
+    ), patch.object(source, "fileno", side_effect=AssertionError("unexpected size probe")):
+        confirmed = upload_blob_chunked(
+            _result_client(None), REPO, source, DIGEST,
+            total_size=total_size, progress_callback=events.append,
+        )
+        assert not source.closed and source.tell() == len(CONTENT)
+    assert confirmed == DIGEST
+    assert events[-1].bytes_completed == len(CONTENT)
+    assert all(event.total_bytes == total_size for event in events)
+
+
+def test_chunked_nonseekable_result_counts_payload_without_total():
+    """Unknown-length streams report accepted bytes without any seek or size guess."""
+    source = _Nonseekable(CONTENT)
+    client = _result_client(None)
+    result = upload_blob_chunked_result(client, REPO, source, DIGEST, chunk_size=3)
+    assert result.size == len(CONTENT)
+    assert b"".join(call.kwargs["data"] for call in client.patch.call_args_list) == CONTENT
+    assert not source.closed
+
+
+@pytest.mark.parametrize("location", [None, "", "/content/blob", "https://storage.example.invalid/blob"])
+@pytest.mark.parametrize("confirmed_digest", [None, "", DIGEST])
+def test_mount_result_preserves_shape_and_registry_location(location, confirmed_digest):
+    """Absent/empty digests fall back consistently without changing keys or size I/O."""
+    client = _make_client()
+    response = _make_put_response(DIGEST)
+    response.headers.pop("Docker-Content-Digest")
+    if confirmed_digest is not None:
+        response.headers["Docker-Content-Digest"] = confirmed_digest
+    if location is not None:
+        response.headers["Location"] = location
+    client.post.return_value = response
+    result = mount_blob_result(client, REPO, DIGEST, "source/repo")
+    assert isinstance(result, BlobMountResult)
+    assert result.to_dict() == {
+        "digest": DIGEST, "status": "mounted",
+        "location": location or f"/v2/{REPO}/blobs/{DIGEST}",
+    }
+    assert mount_blob(client, REPO, DIGEST, "source/repo") == DIGEST
+    client.head.assert_not_called()
+    response.close.assert_called()
+
+
+@pytest.mark.parametrize("operation", [mount_blob, mount_blob_result])
+@pytest.mark.parametrize("status", [201, 202])
+def test_mount_timing_uses_selected_public_api_label(operation, status):
+    """Legacy/result calls record their own timing exactly once on success or error."""
+    client = _make_client()
+    client.post.return_value = _make_put_response(DIGEST, status_code=status)
+    previous = get_telemetry_config()
+    config = TelemetryConfig(time_methods_enabled=True)
+    configure_telemetry(config)
+    try:
+        if status == 202:
+            with pytest.raises(BlobError, match="Blob mount not accepted"):
+                operation(client, REPO, DIGEST, "source/repo")
+        else:
+            operation(client, REPO, DIGEST, "source/repo")
+        assert [name for name, elapsed in config.method_timings] == [operation.__name__]
+    finally:
+        configure_telemetry(previous)
+
+
+def test_mount_result_rejects_fallback_and_closes_response():
+    """A 202 mount response remains an error rather than a successful result."""
+    client = _make_client()
+    response = _make_post_response("/uploads/session")
+    client.post.return_value = response
+    with pytest.raises(BlobError, match="Blob mount not accepted"):
+        mount_blob_result(client, REPO, DIGEST, "source/repo")
+    response.close.assert_called_once()
