@@ -58,15 +58,16 @@ def reject_unsafe_reference(value: str) -> None:
 
     An ``@`` is allowed only after the registry/repository path and before a
     colon-bearing digest token without slashes. This is a safety boundary, not
-    full registry, repository, tag or digest validation.
+    full registry, repository, tag or digest validation. Reject leading slashes
+    and single-slash URL schemes as well as ordinary ``scheme://`` URLs.
 
     :param value: Unmodified registry/repository reference, optionally qualified.
-    :raises UnsafeReferenceError: If empty/non-string, URL/userinfo-like, or
+    :raises UnsafeReferenceError: If empty/non-string, slash-prefixed, URL/userinfo-like, or
         containing whitespace, C0/C1 controls, backslashes, ``?``, ``#`` or ``%``.
         Diagnostics never include the supplied value.
     """
     if (
-        not isinstance(value, str) or not value or "://" in value
+        not isinstance(value, str) or not value or value.startswith("/") or ":/" in value
         or value.count("@") > 1 or "@" in value.split("/", 1)[0]
         or ("@" in value and (
             ":" not in value.rsplit("@", 1)[1] or "/" in value.rsplit("@", 1)[1]

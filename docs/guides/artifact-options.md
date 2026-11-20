@@ -245,7 +245,8 @@ Error [registry.example.com/team/package:latest]: Repository must be a plain 're
 
 `reject_unsafe_reference` is also available on its own. It returns `None` for
 safe syntax and raises `regshape.libs.errors.UnsafeReferenceError`, a `ValueError`
-subclass, for empty input, URLs, userinfo-like input, whitespace, C0/C1 control
+subclass, for empty input, URLs (including single-slash and protocol-relative
+forms), leading slashes, userinfo-like input, whitespace, C0/C1 control
 characters, backslashes, `?`, `#`, or `%`. Digest syntax requires a single `@`
 after the repository followed by a colon-bearing token without slashes; payload
 validation remains separate. Errors omit the input, and CLI adapters also omit

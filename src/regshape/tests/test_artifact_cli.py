@@ -260,6 +260,8 @@ def test_existing_target_restrictions_remain(
 @pytest.mark.parametrize("reference", [
     "https://synthetic-user:synthetic-secret@registry.example.invalid/pkg:v1",
     "synthetic-user:synthetic-secret@registry.example.invalid:5000/pkg:v1",
+    "//synthetic-user:synthetic-secret@registry.example.invalid:5000",
+    "https:/registry.example.invalid/pkg:v1",
 ])
 def test_unsafe_reference_diagnostics_never_echo_cli_context(
     runner: CliRunner,
