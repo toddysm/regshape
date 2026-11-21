@@ -127,7 +127,13 @@ class DockerError(RegShapeError):
 
 
 class PingError(RegShapeError):
+    """A failed registry ping, with a caller-ready transport diagnostic.
+
+    The inherited message and exception chain remain unchanged; ``detail``
+    selects the direct cause's text when present.
     """
-    Error caused by a failed registry ping (connection, DNS, timeout).
-    """
-    pass
+
+    @property
+    def detail(self) -> str:
+        """Return the chained cause's text, or this error's text if unchained."""
+        return str(self.__cause__) if self.__cause__ is not None else str(self)

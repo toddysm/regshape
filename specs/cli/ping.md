@@ -25,28 +25,36 @@ None.
 
 ### Module: `src/regshape/libs/ping/`
 
-#### `ping(client: RegistryClient) -> PingResult`
+#### `ping(client: RegistryClient, *, raise_on_auth: bool = True) -> PingResult`
 
 Issues `GET /v2/` via the provided `RegistryClient` and returns a `PingResult` describing the outcome.
 
 **Parameters:**
 - `client` — A configured `RegistryClient` instance targeting the registry.
+- `raise_on_auth` — Defaults to `True` to preserve SDK authentication exceptions.
+  Pass `False` to receive HTTP 401/403 and transport `AuthError` outcomes as
+  reachable, authentication-required results.
 
 **Returns:** `PingResult` dataclass.
 
 **Raises:**
-- `AuthError` — When the registry returns `401 Unauthorized`.
+- `AuthError` — HTTP 401 or transport authentication failure in the default mode.
 - `PingError` — When the registry is unreachable (DNS failure, connection refused, timeout).
+
+The [SDK reference](../../docs/library/ping.md) covers both modes, unknown
+response metadata and the additive dictionary fields.
 
 #### `PingResult` dataclass
 
 ```python
 @dataclasses.dataclass
 class PingResult:
-    reachable: bool          # True if HTTP 200
-    status_code: int         # HTTP status code returned
+    reachable: bool          # HTTP 200 or authentication-required outcome
+    status_code: int | None  # Unknown if auth negotiation returned no response
     api_version: str | None  # Docker-Distribution-API-Version header value
-    latency_ms: float        # Round-trip time in milliseconds
+    latency_ms: float | None # Unknown if auth negotiation returned no response
+    auth_required: bool = False
+    error: str | None = None
 
     def to_dict(self) -> dict: ...
 ```
@@ -58,8 +66,13 @@ Added to `src/regshape/libs/errors.py`:
 ```python
 class PingError(RegShapeError):
     """Error caused by a failed registry ping (connection, DNS, timeout)."""
-    pass
+
+    @property
+    def detail(self) -> str: ...
 ```
+
+`detail` returns the direct chained cause's text when present, otherwise the
+existing formatted error text. Callers need not unwrap `__cause__` themselves.
 
 ## Protocol Flow
 
@@ -77,13 +90,16 @@ The `GET /v2/` endpoint is the OCI Distribution Spec API version check. A `200 O
 | Status | Interpretation | Result |
 |--------|---------------|--------|
 | `200` | Registry reachable and authenticated | `PingResult(reachable=True, ...)` |
-| `401` | Authentication required or failed | Raises `AuthError` |
+| `401` | Authentication required or failed | Default: raises `AuthError`; result mode: reachable/auth-required |
+| `403` | Authentication required or denied | Default: not reachable; result mode: reachable/auth-required |
 | Other 4xx/5xx | Registry responded but endpoint unsupported | `PingResult(reachable=False, ...)` |
 | Connection error / timeout | Registry unreachable | Raises `PingError` |
 
 ### Latency Measurement
 
 Round-trip latency is measured using `time.monotonic()` around the `client.get()` call and reported in milliseconds.
+Transport `AuthError` outcomes expose no response metadata: status, API version
+and latency are `None`; exception text is not parsed to guess a status code.
 
 ## CLI Layer
 
@@ -93,8 +109,14 @@ A **top-level command** (not a command group), registered directly on the `regsh
 
 **Implementation pattern** (follows `tag.py`):
 - Creates `RegistryClient(TransportConfig(registry=registry, insecure=insecure))`
-- Calls `ping(client)` from the operations module
-- Catches `(AuthError, PingError, requests.exceptions.RequestException)`
+- Calls `ping(client, raise_on_auth=False)` from the operations module
+- Renders `PingResult` state without interpreting authentication exceptions.
+  A thin compatibility catch only forwards legacy `AuthError` to the SDK's
+  `PingResult.from_auth_error`; the SDK owns the conversion.
+- Renders `PingError.detail` and maps transport failures to exit code 1
+- Preserves raw HTTP 403 as an error with exit code 1, even though the SDK's
+  opt-in result marks it reachable/auth-required. A transport `AuthError`
+  mentioning 403 instead keeps the legacy login hint and exit code 0.
 - Uses `@telemetry_options` and `@track_scenario("ping")` decorators
 
 ### Registration in `main.py`
@@ -132,7 +154,7 @@ Registry ghcr.io is reachable
 Failure (non-200 response):
 
 ```
-Error: Registry ghcr.io is not reachable (HTTP 503)
+Error: Registry ghcr.io is not reachable: HTTP 503
 ```
 
 Failure (connection error):
@@ -141,10 +163,17 @@ Failure (connection error):
 Error: Registry ghcr.io is not reachable: Connection refused
 ```
 
-Failure (auth error):
+HTTP 401 or transport authentication error (exit code 0):
 
 ```
-Error: Registry ghcr.io requires authentication: 401 Unauthorized
+Registry ghcr.io is reachable
+  Note: Registry requires authentication. Run 'regshape auth login' to configure credentials.
+```
+
+Raw HTTP 403 response (exit code 1):
+
+```
+Error: Registry ghcr.io is not reachable: HTTP 403
 ```
 
 ### JSON (`--json`)
@@ -167,16 +196,38 @@ Failure:
 {
   "registry": "ghcr.io",
   "reachable": false,
-  "error": "503 Service Unavailable"
+  "error": "HTTP 503"
 }
 ```
+
+HTTP 401 authentication required:
+
+```json
+{
+  "registry": "ghcr.io",
+  "reachable": true,
+  "api_version": null,
+  "latency_ms": null,
+  "note": "Registry requires authentication",
+  "error": "Registry ghcr.io requires authentication : HTTP 401"
+}
+```
+
+CLI JSON retains these legacy schemas; it does not expose the new SDK
+`auth_required` field. Auth JSON deliberately keeps API version and latency
+null and omits the HTTP status, even when the SDK knows them.
+
+A raw HTTP 403 response instead retains the failure schema with
+`"reachable": false` and `"error": "HTTP 403"` (exit code 1). A transport
+`AuthError` retains the auth schema and exit code 0 even if its diagnostic
+mentions a token-server 403; no registry status is guessed from that text.
 
 ## Exit Codes
 
 | Code | Meaning |
 |------|---------|
-| 0 | Registry is reachable (HTTP 200 or authentication required, e.g. HTTP 401/403) |
-| 1 | Registry is not reachable or error occurred |
+| 0 | HTTP 200, HTTP 401 or a transport `AuthError` with the login hint |
+| 1 | Raw HTTP 403, other unsuccessful HTTP response or transport error |
 
 ## Error Messages
 
@@ -184,9 +235,10 @@ Failure:
 |----------|---------|
 | Connection refused | `Error: Registry <host> is not reachable: Connection refused` |
 | DNS resolution failed | `Error: Registry <host> is not reachable: Name resolution failed` |
-| Timeout | `Error: Registry <host> is not reachable: Connection timed out` |
-| 401 Unauthorized | `Error: Registry <host> requires authentication: 401 Unauthorized` |
-| Non-200 HTTP status | `Error: Registry <host> is not reachable (HTTP <code>)` |
+| Timeout | `Error: Registry <host> is not reachable: <original transport diagnostic>` |
+| HTTP 401 or transport `AuthError` | `Registry <host> is reachable` followed by the login hint above |
+| Raw HTTP 403 | `Error: Registry <host> is not reachable: HTTP 403` |
+| Other non-200 HTTP status | `Error: Registry <host> is not reachable: HTTP <code>` |
 
 ## Files to Create/Modify
 
@@ -211,6 +263,10 @@ Failure:
 - Mock raising `ConnectionError` → `PingError`
 - Mock raising `Timeout` → `PingError`
 - Verify latency is measured (non-negative value)
+- Result mode: raw 401/403 retains response metadata; transport `AuthError`
+  retains its diagnostic without guessing metadata
+- Default mode: preserve raw 401 exceptions and raw 403 not-reachable behavior
+- Both modes: transport failures raise `PingError` with caller-ready `detail`
 
 ### CLI tests (`test_ping_cli.py`)
 
@@ -218,7 +274,14 @@ Failure:
 - Successful ping with `--json` → exit code 0, valid JSON with expected keys
 - Unreachable registry → exit code 1, error message
 - Auth failure → exit code 0, message indicates registry is reachable but authentication failed
+- Raw HTTP 403 response → exit code 1, exact legacy error text/JSON; SDK result
+  still retains its reachable/auth-required state
+- Transport `AuthError` mentioning a token-server 403 → exit code 0 and login hint
 - `--registry` option is required → exit code 2 (Click usage error)
+
+The original CLI tests remain unchanged. Additional thin result-wiring tests
+in `test_ping_result_cli.py` exercise the real SDK path and assert exact JSON
+shapes, text and exit codes.
 
 ## Dependencies
 
