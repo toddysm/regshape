@@ -20,12 +20,13 @@ unmerged proposals, and planned work. It is a dated snapshot, not an assertion
 that every registry or platform has been tested.
 
 CLI/library separation is **Implemented** under
-[#163](https://github.com/toddysm/regshape/issues/163), with all twelve
-implementation items delivered. Libraries own every capability and are usable
-directly from Python without importing Click or `regshape.cli`; the CLI only
-parses and validates arguments, prompts, renders text/JSON/progress and maps
-library exceptions to exit codes. Fresh-process tests check root and telemetry
-import isolation. Additive SDK APIs preserve existing callers; see the
+[#163](https://github.com/toddysm/regshape/issues/163), captured on **2026-11-21 (UTC)** at
+[main at ad24f24](https://github.com/toddysm/regshape/commit/ad24f249953b9dee91cb98c61bba7a805e3874a7).
+All twelve implementation items are delivered. Libraries own every capability
+and are usable directly from Python without importing Click or `regshape.cli`.
+The CLI only parses/validates arguments, prompts, renders text/JSON/progress
+and maps library exceptions to exit codes. Fresh-process tests check root and
+telemetry import isolation. Additive SDK APIs preserve existing callers; see the
 [SDK overview](library/README.md) for entry points and compatibility contracts,
 and the [capability inventory](#capability-inventory) for delivery evidence.
 

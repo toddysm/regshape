@@ -27,7 +27,8 @@ but importing the library does not import Click or `regshape.cli`.
   `regshape.libs.layout` prepares bytes and media types for
   [staging layers](../guides/create-oci-layout.md#prepare-and-stage-a-layer-from-python);
   `update_config_with_result` reports
-  [stale-manifest state](../guides/create-oci-layout.md#post-generation-update-helpers).
+  [whether this update made the manifest stale](../guides/create-oci-layout.md#post-generation-update-helpers),
+  not its overall validity or pre-existing staleness.
 - **Blob results:** `upload_blob_stream_result`, `upload_blob_chunked_result`
   and `mount_blob_result` in `regshape.libs.blobs` return library-owned
   [upload/mount result metadata](transfer-progress.md#upload-and-mount-results).
