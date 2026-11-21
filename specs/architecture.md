@@ -7,6 +7,7 @@ This document defines the overall architecture for RegShape, a Python CLI tool a
 ## Table of Contents
 
 - [1. Layered Architecture](#1-layered-architecture)
+  - [Library/CLI boundary](#librarycli-boundary)
 - [2. HTTP Transport Layer](#2-http-transport-layer)
 - [3. Module Dependency Graph](#3-module-dependency-graph)
 - [4. Data Model Overview](#4-data-model-overview)
@@ -64,6 +65,21 @@ RegShape is organized into three layers. Each layer depends only on the layers b
 **Domain Operations Layer** -- Implements the business logic for each OCI endpoint group. Each module accepts typed parameters (models, strings, streams) and returns typed results. These modules use the transport layer to make HTTP requests and the models layer for data structures. Each module is independently importable.
 
 **Foundation Layer** -- Provides cross-cutting infrastructure: the HTTP transport client with its middleware pipeline (auth, break mode, logging), data models, error types, and constants. The transport layer is the single point through which all HTTP traffic flows.
+
+### Library/CLI boundary
+
+Every capability must be implemented and usable from `regshape.libs`.
+The CLI only parses and validates flags/arguments, prompts for input, renders
+text/JSON/progress and maps library exceptions to exit codes. Protocol decisions,
+reference rules, preparation and result metadata belong to the library.
+
+`regshape.libs` never imports `click` or `regshape.cli`. The
+[import-isolation test](../src/regshape/tests/test_telemetry_log_file.py)
+added in [#164](https://github.com/toddysm/regshape/issues/164) enforces this
+boundary in a fresh Python process. Reusable presentation-only helpers live in
+[`cli/formatting.py`](../src/regshape/cli/formatting.py); command-specific layout
+dry-run rendering remains in the CLI to preserve its existing styles.
+See the [SDK overview](../docs/library/README.md) for direct Python entry points.
 
 ### Key Design Constraint
 
@@ -813,7 +829,7 @@ regshape
 ```
 src/regshape/cli/
 ├── __init__.py          # Empty or exports main group
-├── main.py              # Top-level Click group, global options, client setup
+├── main.py              # Top-level Click group and global option values
 ├── manifest.py          # manifest command group
 ├── blob.py              # blob command group
 ├── tag.py               # tag command group
@@ -824,7 +840,12 @@ src/regshape/cli/
 
 ### CLI-to-Library Wiring
 
-The CLI `main.py` constructs a `RegistryClient` from global options and stores it in the Click context. Subcommands retrieve the client from context and call domain operation functions.
+The CLI `main.py` stores only global option values in the Click context; it does
+not construct or store a `RegistryClient`. Commands that need registry access
+construct clients on their own execution path after argument and applicable local
+validation, then call library operations. Docker push can instead delegate client
+construction to the library after local verification. Clients are not retrieved
+from the root Click context.
 
 ```python
 @click.group()
@@ -837,7 +858,6 @@ The CLI `main.py` constructs a `RegistryClient` from global options and stores i
 def regshape(ctx, insecure, verbose, break_mode, break_rules, log_file):
     """RegShape - OCI registry manipulation tool."""
     ctx.ensure_object(dict)
-    # ... construct TransportConfig and RegistryClient ...
     ctx.obj["insecure"] = insecure
     ctx.obj["verbose"] = verbose
     ctx.obj["break_mode"] = break_mode
