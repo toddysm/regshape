@@ -289,7 +289,7 @@ Arrows indicate "depends on" (imports from).
 
 ### Dependency Rules
 
-1. **CLI modules** depend on domain operations modules and `libs/models/`. They never import from `libs/transport/` directly (the `RegistryClient` is constructed in CLI setup and passed down).
+1. **CLI modules** depend on domain operations modules and `libs/models/`, and may import `RegistryClient` and `TransportConfig` from `libs/transport/` for command-local client construction. Registry and protocol behavior remains in the library.
 2. **Domain operations modules** (manifests, blobs, tags, referrers, catalog) depend on `libs/transport/` and `libs/models/`. They do not depend on each other (except blobs may be referenced by manifests via model types).
 3. **Transport** depends on `libs/models/` (for `RegistryRequest` / `RegistryResponse` types), `libs/auth/`, `libs/breakmode/`, `libs/errors.py`, and `libs/decorators/`.
 4. **Models** (including `RegistryRequest` / `RegistryResponse` types) depend only on `libs/constants.py` and the standard library.
@@ -844,10 +844,15 @@ src/regshape/cli/
 
 The CLI `main.py` stores only global option values in the Click context; it does
 not construct or store a `RegistryClient`. Commands that need registry access
-construct clients on their own execution path after argument and applicable local
-validation, then call library operations. Docker push can instead delegate client
-construction to the library after local verification. Clients are not retrieved
-from the root Click context.
+configure clients on their own execution path, not through root-context setup.
+For example, manifest delete parses its reference and runs the SDK's preflight
+digest guard before constructing a client. Validation order is command-specific:
+blob upload constructs its client before opening the source file and before the
+library validates chunk size. There is no universal guarantee that all local
+validation precedes client construction or credential resolution. Auth login and
+Docker push delegate client construction to their library operations; Docker push
+does so after local verification. Clients are not retrieved from the root Click
+context.
 
 ```python
 @click.group()
@@ -1120,8 +1125,8 @@ The recommended order for implementing RegShape, based on dependencies.
 
 ### Phase 3: CLI
 
-10. **`cli/main.py`** -- Top-level group, global options (including `--time-methods`, `--time-scenarios`, and `--debug-calls`), client construction, `TelemetryConfig` setup via `configure_telemetry()`.
-11. **`cli/manifest.py`** through **`cli/catalog.py`** -- Command groups wired to domain operations.
+10. **`cli/main.py`** -- Top-level group and global option values stored in the Click context; no client construction.
+11. **`cli/manifest.py`** through **`cli/catalog.py`** -- Command groups wired to domain operations, with command-specific client setup. Leaf-command telemetry flags are mapped by `cli/telemetry.py` into library configuration and sessions.
 12. **`cli/formatting.py`** -- Plain text and JSON output helpers.
 
 ### Phase 4: Break Mode
