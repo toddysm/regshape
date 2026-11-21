@@ -521,13 +521,15 @@ def push_image(
         before these observations; no image size is substituted as a byte total.
         Observer exceptions propagate unchanged.
     :param client: Optional caller-owned registry client, whose configured registry
-        must exactly match the hostname and optional port in *dest*. When omitted,
-        credentials are resolved by a new client after local verification.
+        must match the hostname case-insensitively and preserve the optional port
+        in *dest*. When omitted, credentials are resolved by a new client after
+        local verification.
     :returns: :class:`~regshape.libs.layout.operations.PushResult`.
-    :raises DockerError: On daemon errors or a client/destination registry mismatch.
+    :raises DockerError: On daemon errors.
     :raises LayoutError: On layout errors.
     :raises regshape.libs.errors.ArtifactError: On strict graph/native storage errors.
     :raises ValueError: On invalid destination or chunk size before daemon/client work.
+        Also on a client/destination registry mismatch after local verification.
     :raises TypeError: If the transfer observer is not callable.
     """
     from regshape.libs.transport.client import RegistryClient, TransportConfig
@@ -549,10 +551,10 @@ def push_image(
             if client is None:
                 config = TransportConfig(registry=registry, insecure=insecure)
                 client = RegistryClient(config)
-            elif client.config.registry != registry:
-                raise DockerError(
-                    "Registry client does not match push destination",
-                    f"expected registry {registry!r}, got {client.config.registry!r}",
+            elif client.config.registry.lower() != registry.lower():
+                raise ValueError(
+                    "Registry client does not match push destination: "
+                    f"expected registry {registry!r}, got {client.config.registry!r}"
                 )
             return execute_layout_push(
                 plan=plan, client=client, repo=repo, force=force, chunked=chunked,

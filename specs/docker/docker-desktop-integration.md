@@ -148,8 +148,9 @@ Exports a Docker image and pushes it to a remote registry.
    and verify the complete local graph.
 3. Only after verification, use the supplied `client` unchanged or construct
    a `RegistryClient` with `TransportConfig(registry=registry, insecure=insecure)`.
-   An injected client's `config.registry` must exactly match the destination
-   hostname and optional port; otherwise raise `DockerError` before publishing.
+   An injected client's `config.registry` must match the destination hostname
+   case-insensitively, preserving its optional port; otherwise raise `ValueError`
+   before publishing. The client configuration itself is not normalized or changed.
    `insecure` is ignored for injected clients. No supplied client is accessed
    on export/verification failure, and it remains caller-owned and is not closed.
    A client constructed by the caller may already have resolved credentials;

@@ -482,11 +482,16 @@ def _export_for_push(image_ref, output_path, *, platform=None):
 class TestPushImage:
     """Docker export is mocked; real local planning precedes the mocked publisher."""
 
-    @pytest.mark.parametrize("registry", ["registry.io", "registry.io:5000"])
-    def test_push_uses_injected_client(self, registry):
-        """Borrow the configured client unchanged, ignoring insecure and forwarding observers."""
+    @pytest.mark.parametrize("registry,client_registry", [
+        ("registry.io", "registry.io"),
+        ("registry.io:5000", "registry.io:5000"),
+        ("registry.io", "Registry.io"),
+        ("Registry.io:5000", "registry.IO:5000"),
+    ])
+    def test_push_uses_injected_client(self, registry, client_registry):
+        """Borrow matching authorities case-insensitively without changing the client's config."""
         client = MagicMock(spec=RegistryClient)
-        client.config = TransportConfig(registry=registry, enable_retries=True)
+        client.config = TransportConfig(registry=client_registry, enable_retries=True)
         observer = MagicMock()
         with (
             patch("regshape.libs.docker.operations.export_image", side_effect=_export_for_push),
@@ -504,20 +509,21 @@ class TestPushImage:
         assert execute.call_args.kwargs["transfer_callback"] is observer
         assert client.config.insecure is False
         assert client.config.enable_retries is True
+        assert client.config.registry == client_registry
         assert not client.mock_calls
         construct.assert_not_called()
         credentials.assert_not_called()
 
     @pytest.mark.parametrize("client_registry", ["other.io", "registry.io:5000"])
     def test_push_rejects_mismatched_client(self, client_registry):
-        """A different hostname or port must never receive the verified image."""
+        """A different hostname or port is a caller ValueError and must never receive the image."""
         client = MagicMock(spec=RegistryClient)
         client.config = TransportConfig(registry=client_registry)
         with (
             patch("regshape.libs.docker.operations.export_image", side_effect=_export_for_push),
             patch("regshape.libs.docker.operations.execute_layout_push") as execute,
             patch("regshape.libs.transport.client.resolve_credentials") as credentials,
-            pytest.raises(DockerError, match="does not match"),
+            pytest.raises(ValueError, match="does not match"),
         ):
             push_image("nginx:latest", "registry.io/myrepo/nginx:v1", client=client)
 

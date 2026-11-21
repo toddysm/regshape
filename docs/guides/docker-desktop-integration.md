@@ -249,10 +249,11 @@ result = push_image("nginx:latest", "registry.io/myrepo/nginx:v1", client=client
 print(result.manifests_pushed, result.blobs_uploaded, result.blobs_skipped)
 ```
 
-The client's configured registry must exactly match the destination hostname and
-optional port; a mismatch raises `DockerError` without publishing. Its existing
-transport settings take precedence, so `insecure` is ignored when `client` is
-supplied. The library does not close or replace the supplied client.
+The client's configured registry must match the destination hostname
+case-insensitively and preserve its optional port; a mismatch raises `ValueError`
+without publishing. The client configuration is not normalized or changed.
+Its existing transport settings take precedence, so `insecure` is ignored when
+`client` is supplied. The library does not close or replace the supplied client.
 
 Export and strict local graph verification finish before `push_image` accesses
 the supplied client. Constructing that client yourself may already resolve
