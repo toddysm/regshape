@@ -37,6 +37,11 @@ nginx                          latest          a8758716bb6a   187MB      2025-12
 python                         3.12            b5d5cef26b2a   1.02GB     2025-11-15T08:00:00Z
 ```
 
+The table shows the first 12 hexadecimal characters of SHA-256 image IDs.
+Sizes use powers of 1024 with compact `B`, `KB`, `MB`, and `GB` labels:
+KB and MB round to whole numbers, while GB shows two decimal places.
+JSON output preserves complete image IDs and sizes as integer byte counts.
+
 ### Filtering by name
 
 Use `--filter` to show only images whose name contains a substring:

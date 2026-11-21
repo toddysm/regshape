@@ -673,19 +673,6 @@ def validate(
 # ===========================================================================
 
 
-def _has_explicit_ref(dest: str) -> bool:
-    """Return True if *dest* contains an explicit tag or digest.
-
-    A digest is indicated by ``@``.  An explicit tag is a ``:`` that
-    appears after the last ``/`` (so registry port colons like
-    ``localhost:5000/repo`` are not mistaken for tags).
-    """
-    if "@" in dest:
-        return True
-    last_slash = dest.rfind("/")
-    return ":" in dest[last_slash + 1:]
-
-
 def _short_digest(digest: str) -> str:
     """Return a truncated digest for display."""
     if ":" in digest:

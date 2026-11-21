@@ -58,12 +58,27 @@ def _sample_images():
 class TestDockerListCLI:
     @patch("regshape.cli.docker.list_images")
     def test_list_plain_output(self, mock_list):
-        mock_list.return_value = _sample_images()
+        """Preserve exact spacing, IDs and sizes for tagged and untagged rows."""
+        mock_list.return_value = _sample_images() + [
+            DockerImageInfo(
+                id="sha256:0123456789abcdef",
+                repo_tags=[],
+                repo_digests=[],
+                size=1024,
+                created="2025-11-01T00:00:00Z",
+                architecture="amd64",
+                os="linux",
+            ),
+        ]
         result = _runner().invoke(regshape, ["docker", "list"])
         assert result.exit_code == 0, result.output
-        assert "nginx" in result.output
-        assert "python" in result.output
-        assert "REPOSITORY" in result.output
+        assert result.output == (
+            "REPOSITORY                     TAG             IMAGE ID       SIZE       CREATED\n"
+            "nginx                          latest          a8758716bb6a   187MB      2025-12-01T10:30:00Z\n"
+            "nginx                          1.25            a8758716bb6a   187MB      2025-12-01T10:30:00Z\n"
+            "python                         3.12            b5d5cef26b2a   1.00GB     2025-11-15T08:00:00Z\n"
+            "<none>                         <none>          0123456789ab   1KB        2025-11-01T00:00:00Z\n"
+        )
 
     @patch("regshape.cli.docker.list_images")
     def test_list_json_output(self, mock_list):

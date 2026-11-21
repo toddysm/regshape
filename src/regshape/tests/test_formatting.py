@@ -13,7 +13,9 @@ from regshape.cli.formatting import (
     emit_table,
     emit_text,
     format_key_value,
+    format_size,
     progress_status,
+    short_digest,
 )
 
 
@@ -161,6 +163,50 @@ class TestEmitList:
         out_file = str(tmp_path / "tags.txt")
         emit_list(["a", "b"], output_path=out_file)
         assert open(out_file).read() == "a\nb\n"
+
+
+# ===========================================================================
+# Docker table formatting
+# ===========================================================================
+
+
+class TestFormatSize:
+    """Preserve Docker's compact binary size units and rounding."""
+
+    @pytest.mark.parametrize(("size_bytes", "expected"), [
+        (0, "0B"),
+        (1023, "1023B"),
+        (1024, "1KB"),
+        (1536, "2KB"),
+        (2560, "2KB"),
+        (1_048_575, "1024KB"),
+        (1_048_576, "1MB"),
+        (1_572_864, "2MB"),
+        (1_073_741_823, "1024MB"),
+        (1_073_741_824, "1.00GB"),
+        (1_342_177_280, "1.25GB"),
+        (1_099_511_627_776, "1024.00GB"),
+    ])
+    def test_compact_size(self, size_bytes: int, expected: str) -> None:
+        """Keep unit transitions, ties-to-even rounding and GB precision."""
+        assert format_size(size_bytes) == expected
+
+
+class TestShortDigest:
+    """Preserve Docker image ID abbreviation without validating digests."""
+
+    @pytest.mark.parametrize(("digest", "expected"), [
+        ("sha256:0123456789abcdef", "0123456789ab"),
+        ("sha256:abc", "abc"),
+        ("sha256:", ""),
+        ("", ""),
+        ("abc", "abc"),
+        ("0123456789abcdef0123456789", "0123456789abcdef012"),
+        ("sha512:0123456789abcdef", "sha512:0123456789ab"),
+    ])
+    def test_image_id(self, digest: str, expected: str) -> None:
+        """Strip only SHA-256's prefix after the legacy 19-character limit."""
+        assert short_digest(digest) == expected
 
 
 # ===========================================================================

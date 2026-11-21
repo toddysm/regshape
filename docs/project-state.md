@@ -83,8 +83,12 @@ see the [API contract](../specs/docker/docker-desktop-integration.md#push_image)
 and [Python usage](guides/docker-desktop-integration.md#supplying-a-registry-client-from-python).
 Hostname matching is case-insensitive and port-sensitive; a mismatch raises
 `ValueError` after local verification, before any publication.
-Sibling #175 remains open; the complete separation feature is not yet
-implemented and #163 must remain open/In progress.
+Formatting cleanup [#175](https://github.com/toddysm/regshape/issues/175) is the
+current scoped build: remove the unused layout reference helper and centralize
+Docker table size/digest formatting without changing output. The two live
+layout dry-run formatters remain separate to preserve their existing style.
+Delivery of #175 is not yet asserted on main; the complete separation feature
+is not yet implemented and #163 must remain open/In progress.
 
 Artifact-oriented option naming is implemented under
 [#87](https://github.com/toddysm/regshape/issues/87). The approved
