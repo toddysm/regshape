@@ -24,8 +24,8 @@ CLI/library separation is **Implemented** under
 implementation items delivered. Libraries own every capability and are usable
 directly from Python without importing Click or `regshape.cli`; the CLI only
 parses and validates arguments, prompts, renders text/JSON/progress and maps
-library exceptions to exit codes. The import-isolation test enforces this
-boundary. Additive SDK APIs preserve existing callers; see the
+library exceptions to exit codes. Fresh-process tests check root and telemetry
+import isolation. Additive SDK APIs preserve existing callers; see the
 [SDK overview](library/README.md) for entry points and compatibility contracts,
 and the [capability inventory](#capability-inventory) for delivery evidence.
 

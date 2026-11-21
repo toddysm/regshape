@@ -75,8 +75,10 @@ reference rules, preparation and result metadata belong to the library.
 
 `regshape.libs` never imports `click` or `regshape.cli`. The
 [import-isolation test](../src/regshape/tests/test_telemetry_log_file.py)
-added in [#164](https://github.com/toddysm/regshape/issues/164) enforces this
-boundary in a fresh Python process. Reusable presentation-only helpers live in
+added in [#164](https://github.com/toddysm/regshape/issues/164) checks imports of
+`regshape.libs` and `regshape.libs.decorators` in fresh Python processes. It is a
+regression guard for those imports, not exhaustive coverage of descendant
+modules. Reusable presentation-only helpers live in
 [`cli/formatting.py`](../src/regshape/cli/formatting.py); command-specific layout
 dry-run rendering remains in the CLI to preserve its existing styles.
 See the [SDK overview](../docs/library/README.md) for direct Python entry points.
