@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 from regshape.cli.main import regshape
 from regshape.libs.docker.operations import DockerImageInfo
 from regshape.libs.errors import DockerError
+from regshape.libs.layout.operations import PushResult
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +169,7 @@ class TestDockerExportCLI:
 class TestDockerPushCLI:
     @patch("regshape.cli.docker.push_image")
     def test_push_plain_output(self, mock_push):
+        """Render SDK totals, not potentially different per-manifest report counts."""
         mock_result = MagicMock()
         mock_result.manifests = [
             MagicMock(blobs=[
@@ -175,6 +177,9 @@ class TestDockerPushCLI:
                 MagicMock(action="skipped"),
             ])
         ]
+        mock_result.manifests_pushed = 2
+        mock_result.blobs_uploaded = 3
+        mock_result.blobs_skipped = 4
         mock_push.return_value = mock_result
 
         result = _runner().invoke(
@@ -184,12 +189,14 @@ class TestDockerPushCLI:
         )
         assert result.exit_code == 0, result.output
         assert "Pushed" in result.output
-        assert "1 manifest(s)" in result.output
-        assert "1 blob(s) uploaded" in result.output
-        assert "1 blob(s) skipped" in result.output
+        assert result.output == (
+            "Pushed nginx:latest to registry.io/myrepo/nginx:v1: "
+            "2 manifest(s), 3 blob(s) uploaded, 4 blob(s) skipped\n"
+        )
 
     @patch("regshape.cli.docker.push_image")
     def test_push_json_output(self, mock_push):
+        """Preserve JSON keys while forwarding all three authoritative SDK totals."""
         mock_result = MagicMock()
         mock_result.manifests = [
             MagicMock(blobs=[
@@ -197,6 +204,9 @@ class TestDockerPushCLI:
                 MagicMock(action="uploaded"),
             ])
         ]
+        mock_result.manifests_pushed = 2
+        mock_result.blobs_uploaded = 3
+        mock_result.blobs_skipped = 4
         mock_push.return_value = mock_result
 
         result = _runner().invoke(
@@ -206,24 +216,35 @@ class TestDockerPushCLI:
         )
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
-        assert data["image"] == "nginx:latest"
-        assert data["destination"] == "registry.io/myrepo/nginx:v1"
-        assert data["manifests_pushed"] == 1
-        assert data["blobs_uploaded"] == 2
+        assert data == {
+            "image": "nginx:latest",
+            "destination": "registry.io/myrepo/nginx:v1",
+            "manifests_pushed": 2,
+            "blobs_uploaded": 3,
+            "blobs_skipped": 4,
+        }
 
     @patch("regshape.cli.docker.push_image")
     def test_push_with_platform(self, mock_push):
-        mock_result = MagicMock()
-        mock_result.manifests = []
-        mock_push.return_value = mock_result
+        """Keep optional platform output and forwarding with empty SDK totals."""
+        mock_push.return_value = PushResult("layout", "registry.io/myrepo/nginx")
 
         result = _runner().invoke(
             regshape,
             ["docker", "push", "--image", "nginx:latest",
              "--dest", "registry.io/myrepo/nginx:v1",
-             "--platform", "linux/arm64"],
+             "--platform", "linux/arm64", "--json"],
         )
         assert result.exit_code == 0, result.output
+        assert json.loads(result.output) == {
+            "image": "nginx:latest",
+            "destination": "registry.io/myrepo/nginx:v1",
+            "platform": "linux/arm64",
+            "manifests_pushed": 0,
+            "blobs_uploaded": 0,
+            "blobs_skipped": 0,
+        }
+        assert mock_push.call_args.kwargs["platform"] == "linux/arm64"
 
     @patch("regshape.cli.docker.push_image")
     def test_push_docker_error(self, mock_push):
@@ -241,9 +262,8 @@ class TestDockerPushCLI:
 
     @patch("regshape.cli.docker.push_image")
     def test_push_with_force_and_chunked(self, mock_push):
-        mock_result = MagicMock()
-        mock_result.manifests = []
-        mock_push.return_value = mock_result
+        """Forward upload protocol settings while rendering a valid empty result."""
+        mock_push.return_value = PushResult("layout", "registry.io/myrepo/nginx")
 
         result = _runner().invoke(
             regshape,

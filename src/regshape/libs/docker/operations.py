@@ -8,7 +8,8 @@
    :platform: Unix, Windows
    :synopsis: Functions for listing local Docker images, exporting them as OCI
               Image Layouts, and pushing them to remote OCI registries. Uses the
-              Docker Engine API via the ``docker`` Python SDK.
+              Docker Engine API via the ``docker`` Python SDK. Registry clients
+              may be supplied by callers and are only used after local verification.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
@@ -23,7 +24,7 @@ import tarfile
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Union
+from typing import TYPE_CHECKING, Union
 
 import docker as docker_sdk
 from docker.errors import APIError, DockerException, ImageNotFound
@@ -46,6 +47,9 @@ from regshape.libs.models.mediatype import (
     OCI_IMAGE_MANIFEST,
 )
 from regshape.libs.progress import ProgressCallback
+
+if TYPE_CHECKING:
+    from regshape.libs.transport.client import RegistryClient
 
 logger = logging.getLogger(__name__)
 
@@ -494,18 +498,21 @@ def push_image(
     chunked: bool = False,
     chunk_size: int = 65536,
     transfer_callback: ProgressCallback | None = None,
+    client: "RegistryClient | None" = None,
 ) -> PushResult:
     """Export a Docker image and push it to a remote OCI registry.
 
     Creates a temporary OCI layout, then uses the same strict snapshot/plan and
     executor as push_layout. Validate the destination before daemon work and
-    finish local graph verification before constructing the credentialed client.
+    finish local graph verification before constructing or accessing the registry
+    client. A supplied client is borrowed unchanged and is not closed here.
     Omitted destination tags retain Docker push's historical ``latest`` default.
 
     :param image_ref: Docker image reference (e.g. ``nginx:latest``).
     :param dest: Destination registry reference (``registry/repo[:tag]``).
     :param platform: Optional platform filter in ``os/architecture`` format.
-    :param insecure: Allow HTTP (no TLS).
+    :param insecure: Allow HTTP (no TLS) for an internally created client.
+        Ignored when *client* is supplied; its transport configuration is preserved.
     :param force: Skip blob existence checks.
     :param chunked: Use chunked upload protocol for blobs.
     :param chunk_size: Chunk size in bytes for chunked uploads.
@@ -513,8 +520,11 @@ def push_image(
         layout push, including unique skipped blobs. Export/conversion happens
         before these observations; no image size is substituted as a byte total.
         Observer exceptions propagate unchanged.
+    :param client: Optional caller-owned registry client, whose configured registry
+        must exactly match the hostname and optional port in *dest*. When omitted,
+        credentials are resolved by a new client after local verification.
     :returns: :class:`~regshape.libs.layout.operations.PushResult`.
-    :raises DockerError: On daemon errors.
+    :raises DockerError: On daemon errors or a client/destination registry mismatch.
     :raises LayoutError: On layout errors.
     :raises regshape.libs.errors.ArtifactError: On strict graph/native storage errors.
     :raises ValueError: On invalid destination or chunk size before daemon/client work.
@@ -536,8 +546,14 @@ def push_image(
         export_image(image_ref, tmp_layout, platform=platform)
 
         with LayoutPushPlan(tmp_layout, tag or "latest") as plan:
-            config = TransportConfig(registry=registry, insecure=insecure)
-            client = RegistryClient(config)
+            if client is None:
+                config = TransportConfig(registry=registry, insecure=insecure)
+                client = RegistryClient(config)
+            elif client.config.registry != registry:
+                raise DockerError(
+                    "Registry client does not match push destination",
+                    f"expected registry {registry!r}, got {client.config.registry!r}",
+                )
             return execute_layout_push(
                 plan=plan, client=client, repo=repo, force=force, chunked=chunked,
                 chunk_size=chunk_size, transfer_callback=transfer_callback,

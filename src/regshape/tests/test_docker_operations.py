@@ -13,7 +13,7 @@ import tarfile
 import tempfile
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 from regshape.libs.docker.operations import (
     DockerImageInfo,
@@ -26,13 +26,14 @@ from regshape.libs.docker.operations import (
     _is_gzipped,
     _parse_platform_string,
 )
-from regshape.libs.errors import DockerError, LayoutError
+from regshape.libs.errors import ArtifactError, DockerError, LayoutError
 from regshape.libs.models.mediatype import (
     OCI_IMAGE_CONFIG,
     OCI_IMAGE_INDEX,
     OCI_IMAGE_LAYER_TAR_GZIP,
     OCI_IMAGE_MANIFEST,
 )
+from regshape.libs.transport import RegistryClient, TransportConfig
 
 
 # ---------------------------------------------------------------------------
@@ -480,6 +481,79 @@ def _export_for_push(image_ref, output_path, *, platform=None):
 
 class TestPushImage:
     """Docker export is mocked; real local planning precedes the mocked publisher."""
+
+    @pytest.mark.parametrize("registry", ["registry.io", "registry.io:5000"])
+    def test_push_uses_injected_client(self, registry):
+        """Borrow the configured client unchanged, ignoring insecure and forwarding observers."""
+        client = MagicMock(spec=RegistryClient)
+        client.config = TransportConfig(registry=registry, enable_retries=True)
+        observer = MagicMock()
+        with (
+            patch("regshape.libs.docker.operations.export_image", side_effect=_export_for_push),
+            patch("regshape.libs.docker.operations.execute_layout_push") as execute,
+            patch("regshape.libs.transport.client.RegistryClient") as construct,
+            patch("regshape.libs.transport.client.resolve_credentials") as credentials,
+        ):
+            result = push_image(
+                "nginx:latest", f"{registry}/myrepo/nginx:v1",
+                client=client, insecure=True, transfer_callback=observer,
+            )
+
+        assert result is execute.return_value
+        assert execute.call_args.kwargs["client"] is client
+        assert execute.call_args.kwargs["transfer_callback"] is observer
+        assert client.config.insecure is False
+        assert client.config.enable_retries is True
+        assert not client.mock_calls
+        construct.assert_not_called()
+        credentials.assert_not_called()
+
+    @pytest.mark.parametrize("client_registry", ["other.io", "registry.io:5000"])
+    def test_push_rejects_mismatched_client(self, client_registry):
+        """A different hostname or port must never receive the verified image."""
+        client = MagicMock(spec=RegistryClient)
+        client.config = TransportConfig(registry=client_registry)
+        with (
+            patch("regshape.libs.docker.operations.export_image", side_effect=_export_for_push),
+            patch("regshape.libs.docker.operations.execute_layout_push") as execute,
+            patch("regshape.libs.transport.client.resolve_credentials") as credentials,
+            pytest.raises(DockerError, match="does not match"),
+        ):
+            push_image("nginx:latest", "registry.io/myrepo/nginx:v1", client=client)
+
+        execute.assert_not_called()
+        credentials.assert_not_called()
+        assert not client.mock_calls
+
+    @pytest.mark.parametrize("failure_stage", ["export", "verification"])
+    def test_push_local_failure_precedes_client_access(self, failure_stage):
+        """Neither injected-client access nor credential lookup may precede local validation."""
+        client = MagicMock(spec=RegistryClient)
+        config = PropertyMock(side_effect=AssertionError("Client accessed before verification"))
+        type(client).config = config
+
+        def export(image_ref, output_path, *, platform=None):
+            """Fail daemon export or damage a real layout before strict verification."""
+            if failure_stage == "export":
+                raise DockerError("export failed", "test")
+            _export_for_push(image_ref, output_path, platform=platform)
+            (output_path / "index.json").write_text("{")
+
+        error = DockerError if failure_stage == "export" else ArtifactError
+        with (
+            patch("regshape.libs.docker.operations.export_image", side_effect=export),
+            patch("regshape.libs.docker.operations.execute_layout_push") as execute,
+            patch("regshape.libs.transport.client.RegistryClient") as construct,
+            patch("regshape.libs.transport.client.resolve_credentials") as credentials,
+            pytest.raises(error),
+        ):
+            push_image("nginx:latest", "registry.io/myrepo/nginx:v1", client=client)
+
+        config.assert_not_called()
+        execute.assert_not_called()
+        construct.assert_not_called()
+        credentials.assert_not_called()
+        assert not client.mock_calls
 
     @patch("regshape.libs.docker.operations.execute_layout_push")
     @patch("regshape.libs.docker.operations.export_image")
