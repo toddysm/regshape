@@ -7,7 +7,7 @@
 .. module:: regshape.cli.formatting
    :platform: Unix, Windows
    :synopsis: Centralized output helpers for JSON, text, error messages,
-              tables, lists, key-value pairs, and progress status.
+              tables, lists, sizes, digests, key-value pairs, and progress status.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
@@ -127,6 +127,33 @@ def emit_list(items: list[str], output_path: Optional[str] = None) -> None:
     :param output_path: If provided, write to file instead of stdout.
     """
     emit_text("\n".join(items), output_path)
+
+
+def format_size(size_bytes: int) -> str:
+    """Render a byte count using the compact Docker table format.
+
+    :param size_bytes: Image size in bytes.
+    :returns: Binary-scaled B/KB/MB/GB with no separating space. KB and MB
+        round to whole numbers; GB retains two decimal places.
+    """
+    if size_bytes >= 1_073_741_824:
+        return f"{size_bytes / 1_073_741_824:.2f}GB"
+    if size_bytes >= 1_048_576:
+        return f"{size_bytes / 1_048_576:.0f}MB"
+    if size_bytes >= 1024:
+        return f"{size_bytes / 1024:.0f}KB"
+    return f"{size_bytes}B"
+
+
+def short_digest(digest: str) -> str:
+    """Abbreviate an image ID using the existing Docker table convention.
+
+    :param digest: Image ID, optionally prefixed with ``sha256:``.
+    :returns: The first 19 characters with a leading ``sha256:`` removed,
+        leaving up to 12 SHA-256 hex characters. Other prefixes and
+        unprefixed IDs retain up to 19 characters; shorter IDs are unchanged.
+    """
+    return digest[:19].removeprefix("sha256:")
 
 
 def format_key_value(pairs: list[tuple[str, str]], separator: str = ":") -> str:

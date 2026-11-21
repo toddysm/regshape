@@ -132,6 +132,34 @@ Size        : 1234
 
 ---
 
+#### `format_size(size_bytes: int) -> str`
+
+Render a byte count in the existing compact Docker table format. Scale by powers
+of 1024 while retaining the labels `B`, `KB`, `MB`, and `GB`, with no separating
+space. KB and MB round to whole numbers using Python's ties-to-even formatting;
+GB uses two decimal places. Values below 1024 remain integer bytes.
+
+Examples: `1024` becomes `1KB`, `1536` becomes `2KB`, and `1073741824` becomes
+`1.00GB`. The largest unit remains GB.
+
+---
+
+#### `short_digest(digest: str) -> str`
+
+Abbreviate a Docker image ID by taking its first 19 characters, then removing
+only a leading `sha256:`. SHA-256 IDs therefore display up to 12 hexadecimal
+characters. Unprefixed IDs and other algorithm prefixes retain up to 19
+characters. This helper does not validate references or digest contents.
+
+Both helpers are presentation-only and are shared by tagged and untagged
+`docker list` rows. JSON retains complete IDs and integer byte counts.
+
+The live layout dry-run helpers remain separate: they preserve the algorithm
+prefix and use spaced size labels with one decimal place for scaled values.
+Do not replace them with Docker-style formatting.
+
+---
+
 #### `progress_status(message: str) -> None`
 
 Print a transient status message to stderr for long-running operations.
@@ -174,7 +202,7 @@ Replace duplicated code in each CLI module one at a time:
 | `ping.py` | Replace inline error echoing with `emit_error()` |
 | `auth.py` | Replace `_emit_error()` with `emit_error()` |
 | `layout.py` | Replace inline progress messages with `progress_status()`; replace `_emit_error()` with `emit_error()` |
-| `docker.py` | Replace `_emit_error()` with `emit_error()` |
+| `docker.py` | Replace `_emit_error()` with `emit_error()`; use `format_size()` and `short_digest()` for table rows without changing output |
 
 ### Phase 3: Add tests
 
@@ -186,6 +214,8 @@ Create `src/regshape/tests/test_formatting.py` covering:
 - `emit_table` — Verifies column alignment with and without headers.
 - `emit_list` — Verifies newline-joined output.
 - `format_key_value` — Verifies aligned key-value output.
+- `format_size` — Verifies binary unit boundaries and Docker's compact rounding.
+- `short_digest` — Verifies SHA-256 prefix removal and legacy truncation for other IDs.
 - `progress_status` — Verifies output goes to stderr.
 
 ## Design Decisions

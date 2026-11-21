@@ -10,6 +10,7 @@ import gzip
 import inspect
 import io
 import json
+import re
 import sys
 from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
@@ -393,6 +394,7 @@ class TestPushCLI:
         assert data["manifests"][0]["status"] == "pushed"
 
     def test_push_dry_run(self, tmp_path):
+        """Retain layout-specific prefixed digests and spaced sizes."""
         layout_dir = _build_layout(tmp_path)
 
         result = _runner().invoke(regshape, [
@@ -405,6 +407,16 @@ class TestPushCLI:
         assert "[dry-run]" in result.output
         assert "Would upload blob" in result.output
         assert "Would push manifest" in result.output
+        blob_lines = [
+            line for line in result.output.splitlines() if "Would upload blob" in line
+        ]
+        assert all(re.fullmatch(
+            r"\[dry-run\] Would upload blob sha256:[0-9a-f]{12} \([0-9]+ B\)", line,
+        ) for line in blob_lines)
+        assert re.search(
+            r"\[dry-run\] Would push manifest sha256:[0-9a-f]{12} as 'latest'",
+            result.output,
+        )
 
     def test_push_dry_run_json(self, tmp_path):
         layout_dir = _build_layout(tmp_path)

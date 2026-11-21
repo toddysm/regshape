@@ -14,7 +14,7 @@
 
 import click
 
-from regshape.cli.formatting import emit_error, emit_json
+from regshape.cli.formatting import emit_error, emit_json, format_size, short_digest
 from regshape.cli.progress import ProgressDisplay
 from regshape.libs.docker import export_image, list_images, push_image
 from regshape.libs.errors import (
@@ -25,23 +25,6 @@ from regshape.libs.errors import (
     LayoutError,
     ManifestError,
 )
-
-# ===========================================================================
-# Helpers
-# ===========================================================================
-
-
-def _format_size(size_bytes: int) -> str:
-    """Format a byte count as a human-readable size string."""
-    if size_bytes >= 1_073_741_824:
-        return f"{size_bytes / 1_073_741_824:.2f}GB"
-    if size_bytes >= 1_048_576:
-        return f"{size_bytes / 1_048_576:.0f}MB"
-    if size_bytes >= 1024:
-        return f"{size_bytes / 1024:.0f}KB"
-    return f"{size_bytes}B"
-
-
 
 # ===========================================================================
 # Public Click group
@@ -99,21 +82,17 @@ def list_cmd(ctx, name_filter, as_json):
         click.echo(header)
 
         for img in images:
+            short_id = short_digest(img.id)
+            size_str = format_size(img.size)
             if img.repo_tags:
                 for tag in img.repo_tags:
                     parts = tag.rsplit(":", 1)
                     repo = parts[0] if len(parts) == 2 else tag
                     tag_name = parts[1] if len(parts) == 2 else "<none>"
-                    short_id = img.id[:19] if len(img.id) > 19 else img.id
-                    short_id = short_id.removeprefix("sha256:")
-                    size_str = _format_size(img.size)
                     click.echo(
                         f"{repo:<30} {tag_name:<15} {short_id:<14} {size_str:<10} {img.created}"
                     )
             else:
-                short_id = img.id[:19] if len(img.id) > 19 else img.id
-                short_id = short_id.removeprefix("sha256:")
-                size_str = _format_size(img.size)
                 click.echo(
                     f"{'<none>':<30} {'<none>':<15} {short_id:<14} {size_str:<10} {img.created}"
                 )
