@@ -73,9 +73,12 @@ class TestParseImageRef:
         r, repo, ref = parse_image_ref("acr.io/myimage")
         assert ref == "latest"
 
-    def test_localhost_registry(self):
-        r, repo, ref = parse_image_ref("localhost/myimage:v2")
-        assert r == "localhost"
+    @pytest.mark.parametrize("registry", ["localhost", "LOCALHOST", "LocalHost"])
+    def test_localhost_registry(self, registry):
+        """Recognize localhost case-insensitively while retaining the supplied authority."""
+        r, repo, ref = parse_image_ref(f"{registry}/myimage:v2")
+        assert r == registry
+        assert repo == "myimage"
         assert ref == "v2"
 
     def test_localhost_with_port(self):

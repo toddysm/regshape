@@ -487,6 +487,8 @@ class TestPushImage:
         ("registry.io:5000", "registry.io:5000"),
         ("registry.io", "Registry.io"),
         ("Registry.io:5000", "registry.IO:5000"),
+        ("LOCALHOST", "localhost"),
+        ("localhost", "LocalHost"),
     ])
     def test_push_uses_injected_client(self, registry, client_registry):
         """Borrow matching authorities case-insensitively without changing the client's config."""

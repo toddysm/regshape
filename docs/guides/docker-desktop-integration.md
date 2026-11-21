@@ -252,6 +252,8 @@ print(result.manifests_pushed, result.blobs_uploaded, result.blobs_skipped)
 The client's configured registry must match the destination hostname
 case-insensitively and preserve its optional port; a mismatch raises `ValueError`
 without publishing. The client configuration is not normalized or changed.
+Bare `localhost` destinations are also recognized case-insensitively, so
+`LOCALHOST/repo:v1` works with a client configured for `localhost`.
 Its existing transport settings take precedence, so `insecure` is ignored when
 `client` is supplied. The library does not close or replace the supplied client.
 
