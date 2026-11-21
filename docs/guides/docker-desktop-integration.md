@@ -219,13 +219,49 @@ regshape docker push --image myapp:latest --dest registry.io/myrepo/myapp:v1 --p
 ```
 
 For supported pushes, shared blobs are deduplicated. Live `done`/`skipped`
-counters count unique digests, while existing JSON and summary counters retain
-their legacy semantics. `--json`, noninteractive stderr, and `--no-progress`
-suppress animation and per-state progress lines.
+counters count unique digests. JSON and text summaries now use the same
+`PushResult` totals as `layout push`: `manifests_pushed` counts document
+publications including required root aliases, `blobs_uploaded` counts unique
+uploads, and `blobs_skipped` includes reused per-manifest references. These totals
+replace Docker push's former per-manifest recounting; output labels and JSON keys
+are unchanged. `--json`, noninteractive stderr, and `--no-progress` suppress
+animation and per-state progress lines.
 
 Docker push does not gain the common telemetry switches or whole-command timing.
 The optional library `transfer_callback` is forwarded to layout push; see the
 [callback reference](../library/transfer-progress.md).
+
+### Supplying a registry client from Python
+
+The library accepts a caller-owned client, allowing explicit credentials, retry
+settings and custom middleware without moving registry logic into the CLI:
+
+```python
+from regshape.libs.docker import push_image
+from regshape.libs.transport import RegistryClient, TransportConfig
+
+client = RegistryClient(TransportConfig(
+    registry="registry.io",
+    enable_retries=True,
+    timeout=60,
+))
+result = push_image("nginx:latest", "registry.io/myrepo/nginx:v1", client=client)
+print(result.manifests_pushed, result.blobs_uploaded, result.blobs_skipped)
+```
+
+The client's configured registry must match the destination hostname
+case-insensitively and preserve its optional port; a mismatch raises `ValueError`
+without publishing. The client configuration is not normalized or changed.
+Bare `localhost` destinations are also recognized case-insensitively, so
+`LOCALHOST/repo:v1` works with a client configured for `localhost`.
+Its existing transport settings take precedence, so `insecure` is ignored when
+`client` is supplied. The library does not close or replace the supplied client.
+
+Export and strict local graph verification finish before `push_image` accesses
+the supplied client. Constructing that client yourself may already resolve
+credentials. If `client` is omitted, `push_image` constructs one and resolves
+credentials only after successful local verification, preserving the CLI's
+verification-before-credential-lookup guarantee.
 
 ---
 

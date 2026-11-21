@@ -220,6 +220,7 @@ def push_cmd(ctx, image, dest, platform, force, chunked, chunk_size, as_json, no
     JSON, noninteractive stderr and --no-progress suppress animation without
     changing export, upload protocols or the result schema. Invalid destinations
     and strict local snapshot/native-platform failures produce an error, not success.
+    Summary counts come directly from the same PushResult fields as layout push.
     """
     insecure = ctx.obj.get("insecure", False) if ctx.obj else False
 
@@ -246,28 +247,17 @@ def push_cmd(ctx, image, dest, platform, force, chunked, chunk_size, as_json, no
         output = {
             "image": image,
             "destination": dest,
-            "manifests_pushed": len(result.manifests),
-            "blobs_uploaded": sum(
-                1 for m in result.manifests for b in m.blobs if b.action == "uploaded"
-            ),
-            "blobs_skipped": sum(
-                1 for m in result.manifests for b in m.blobs if b.action == "skipped"
-            ),
+            "manifests_pushed": result.manifests_pushed,
+            "blobs_uploaded": result.blobs_uploaded,
+            "blobs_skipped": result.blobs_skipped,
         }
         if platform:
             output["platform"] = platform
         emit_json(output)
     else:
-        total_manifests = len(result.manifests)
-        total_uploaded = sum(
-            1 for m in result.manifests for b in m.blobs if b.action == "uploaded"
-        )
-        total_skipped = sum(
-            1 for m in result.manifests for b in m.blobs if b.action == "skipped"
-        )
         click.echo(
             f"Pushed {image} to {dest}: "
-            f"{total_manifests} manifest(s), "
-            f"{total_uploaded} blob(s) uploaded, "
-            f"{total_skipped} blob(s) skipped"
+            f"{result.manifests_pushed} manifest(s), "
+            f"{result.blobs_uploaded} blob(s) uploaded, "
+            f"{result.blobs_skipped} blob(s) skipped"
         )

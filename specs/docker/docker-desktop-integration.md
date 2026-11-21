@@ -133,6 +133,7 @@ def push_image(
     chunked: bool = False,
     chunk_size: int = 65536,
     transfer_callback: ProgressCallback | None = None,
+    client: RegistryClient | None = None,
 ) -> PushResult:
 ```
 
@@ -140,16 +141,32 @@ Exports a Docker image and pushes it to a remote registry.
 
 **Algorithm:**
 
-1. Create a temporary directory.
-2. Call `export_image(image_ref, temp_dir, platform=platform)` to produce an
-   OCI layout.
-3. Parse `dest` via `parse_image_ref()` to get `(registry, repo, reference)`.
-4. Build a `RegistryClient` with `TransportConfig`.
-5. Call `push_layout()` from `libs/layout/` to push the OCI layout to the
-   remote registry, forwarding `transfer_callback` unchanged for both upload
-   protocols and unique skipped blobs.
-6. Clean up the temporary directory.
-7. Return a `PushResult` (the existing dataclass from `libs/layout/`).
+1. Validate the observer and chunk size, then parse `dest` with
+   `parse_push_destination()` before daemon or registry work. An omitted tag
+   retains the Docker push default of `latest`.
+2. Export into a temporary OCI layout and enter `LayoutPushPlan` to snapshot
+   and verify the complete local graph.
+3. Only after verification, use the supplied `client` unchanged or construct
+   a `RegistryClient` with `TransportConfig(registry=registry, insecure=insecure)`.
+   An injected client's `config.registry` must match the destination hostname
+   case-insensitively, preserving its optional port; otherwise raise `ValueError`
+   before publishing. The client configuration itself is not normalized or changed.
+   `insecure` is ignored for injected clients. No supplied client is accessed
+   on export/verification failure, and it remains caller-owned and is not closed.
+   A client constructed by the caller may already have resolved credentials;
+   this function performs no additional lookup for it.
+4. Call `execute_layout_push()` with the verified plan, forwarding the client,
+   upload options and `transfer_callback` unchanged.
+5. Release the snapshot and clean up the temporary export on success or failure.
+6. Return the existing `PushResult` from `libs/layout/`.
+
+The CLI renders `manifests_pushed`, `blobs_uploaded` and `blobs_skipped` directly
+from this result, matching `layout push`, rather than recounting per-manifest
+reports. Manifest counts include document publications and required root aliases;
+blob uploads are unique, while skips include reused per-manifest references.
+Text labels, JSON field names, optional platform output and exit codes do not
+change. Counts may differ from the former per-manifest sums; no bytes field is
+added to the CLI output.
 
 This maximizes reuse — the network push logic is already implemented.
 The optional observer receives typed

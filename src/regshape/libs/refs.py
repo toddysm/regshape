@@ -93,7 +93,8 @@ def parse_image_ref(image_ref: str, *, strict: bool = True) -> tuple[str, str, s
         localhost:5000/myimage:tag
 
     The first component of the path is treated as the registry hostname
-    when it contains a dot (``.``), a colon (``:``), or equals ``localhost``.
+    when it contains a dot (``.``), a colon (``:``), or equals ``localhost``
+    case-insensitively. The returned registry retains its original spelling.
 
     :param image_ref: The image reference string.
     :param strict: Reject unsafe input by default. ``False`` bypasses only the
@@ -130,7 +131,7 @@ def parse_image_ref(image_ref: str, *, strict: bool = True) -> tuple[str, str, s
 
     parts = path_part.split("/")
     first = parts[0]
-    is_registry = "." in first or ":" in first or first == "localhost"
+    is_registry = "." in first or ":" in first or first.lower() == "localhost"
 
     if is_registry:
         registry = first
