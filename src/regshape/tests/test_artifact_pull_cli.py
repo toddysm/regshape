@@ -247,7 +247,8 @@ def test_four_roots_exact_results_and_push_roundtrip(
         )
         assert len(_rows(console)) == len(objects)
         assert all("Downloaded" in row for row in _rows(console))
-        assert "Publishing artifact ... done" in console.err.text
+        assert "Finalizing local artifact ... done" in console.err.text
+        assert "Publishing artifact" not in console.err.text
         assert ("Packaging OCI archive ... done" in console.err.text) == (output_format == "oci-tar-gzip")
     assert "\x1b" not in console.out.text
     with (
@@ -646,7 +647,7 @@ def test_command_forwards_each_budget_to_the_real_operation(
     if limit in ("--max-archive-bytes", "--max-archive-input-bytes"):
         assert all("Downloaded" in row for row in _rows(console))
         assert "Packaging OCI archive ... failed" in console.err.text
-        assert "Publishing artifact" not in console.err.text
+        assert "Finalizing local artifact" not in console.err.text
 
 
 @_NATIVE
@@ -705,7 +706,7 @@ def test_failure_after_publication_retains_complete_output(
             console.err.failure_when = lambda text: "telemetry" in text
             options.append("--time-scenarios")
         else:
-            console.err.failure_when = lambda text: "Publishing artifact ... done" in text
+            console.err.failure_when = lambda text: "Finalizing local artifact ... done" in text
     output = tmp_path / "out"
     result, _ = _invoke(runner, console, registry, output, options)
     assert result.exit_code == 1 and result.exception is primary

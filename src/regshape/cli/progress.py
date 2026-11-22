@@ -563,7 +563,7 @@ class ProgressDisplay:
         self.finish_preparation()
         self.prepare({
             ArtifactPhase.PACKAGING: "Packaging OCI archive",
-            ArtifactPhase.PUBLISHING: "Publishing artifact",
+            ArtifactPhase.PUBLISHING: "Finalizing local artifact",
         }[phase])
 
     def _observe_row(self, event: _Row) -> None:
