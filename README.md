@@ -144,8 +144,8 @@ a release announcement or the separate planned config/layer-position selector.
 - [Download Policy, Batch API and Typed Status](docs/library/downloads.md) — pooled defaults, retries, rollback and statistics
 - [Library Telemetry](docs/library/telemetry.md) — framework-neutral configuration, scoped logs and cleanup (unreleased 0.2 development API)
 - [Library Authentication](docs/library/auth.md) — verify credentials or verify and persist a registry login (unreleased 0.2 development API)
-- [Manifest Operations](docs/library/manifests.md) — protocol defaults and tag-to-digest resolution
-- [Registry Ping SDK](docs/library/ping.md) — connectivity and opt-in authentication-required results
+- [Manifest Operations](docs/library/manifests.md) — protocol defaults and tag-to-digest resolution (unreleased 0.2 development API)
+- [Registry Ping SDK](docs/library/ping.md) — connectivity and opt-in authentication-required results (unreleased 0.2 development API)
 
 ## Contributing
 
