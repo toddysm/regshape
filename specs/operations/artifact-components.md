@@ -350,6 +350,9 @@ Lifecycle:
 2. Open safe parent handles and a private namespace on the output filesystem.
    Receive one manifest using `download_manifest` and `DEFAULT_MANIFEST_ACCEPT`.
    Preserve manifest byte progress, digest verification and bounded error receipt.
+   Immediately after successful receipt/close, call `staging.register(manifest_name)`
+   for this invocation's exclusively created file, before parsing or any operation
+   that can fail. The receiver does not update SafeDirectory's ownership ledger.
 3. Parse that bounded raw file with `parse_document`/its strict helpers.
    Reject indexes explicitly. Supported OCI and Docker schema-2 simple manifests
    permit arbitrary valid config/layer media types. Select config by role, or
@@ -361,6 +364,13 @@ Lifecycle:
    with `total_size=descriptor.size`, a positive bounded `max_bytes` and borrowed
    parent handle. Size 0 uses a positive receiver cap while strict total size 0
    forbids any bytes; do not pass an invalid zero cap.
+   Immediately after successful receipt/close, call `staging.register(blob_name)`
+   before publication. Register only newly received files owned by this invocation;
+   do not adopt arbitrary existing files. Both downloaded files must be in the
+   ledger so publication can locate the blob identity and cleanup can remove the
+   manifest and any unpublished blob. If registration/identity verification itself
+   fails, report the failure and any retained staging rather than blindly unlinking
+   unregistered or replaced entries.
 6. After verified blob response/file closure, publish with `SafeDirectory.publish_file`.
    Existing destinations lose neither content nor identity even in a collision race.
    No pathname-based overwrite, copy fallback or cross-filesystem publication.
@@ -708,7 +718,7 @@ Deterministic fixture coverage, mapped to R1-R12/S1-S4:
 | Non-image payloads | Arbitrary config bytes, opaque/compressed layer bytes without interpretation |
 | Moving tags/indexes | No tag reread or descriptor mixing; explicit index rejection, no child fetch |
 | Integrity | Missing/403/404, invalid descriptor types, strict digest, corrupt/short/long content, zero-byte verification, cap overflow |
-| Output failures | Existing file/dir/dangling link, parent/symlink/support checks, short write, disk full, concurrent collision, identity replacement and cleanup failure |
+| Output failures | Existing file/dir/dangling link, parent/symlink/support checks, short write, disk full, concurrent collision, identity replacement, receipt-to-ownership registration, and cleanup failure |
 | Progress/callbacks | Actual manifest/config/layer bytes, typed immutable snapshots, caller thread, retries, terminal ordering, exceptions with preserved identity |
 | Cancellation/lifetimes | Before/during receipt, before/during publication, after publication, response/handle/worker cleanup and primary-error precedence |
 | CLI compatibility | Help/registration, required selectors, no-progress/non-TTY/JSON, stderr-only diagnostics, no success on error, telemetry/output-after-publication behavior |
