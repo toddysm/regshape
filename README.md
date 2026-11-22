@@ -137,12 +137,15 @@ a release announcement or the separate planned config/layer-position selector.
 
 ### Library Specs
 
+- [Python SDK Overview](docs/library/README.md) — direct library entry points and usage references
 - [Models](specs/models/) — Blob, Catalog, Error, Manifest, Referrer, Tags
 - [Operations](specs/operations/) — Blobs, Catalog, Manifests, Referrers, Tags
 - [Complete Artifact Library](specs/operations/artifacts.md) — pull, observations, limits, and snapshots
 - [Download Policy, Batch API and Typed Status](docs/library/downloads.md) — pooled defaults, retries, rollback and statistics
-- [Library Telemetry](docs/library/telemetry.md) — framework-neutral configuration, scoped logs and cleanup
-- [Library Authentication](docs/library/auth.md) — verify credentials or verify and persist a registry login
+- [Library Telemetry](docs/library/telemetry.md) — framework-neutral configuration, scoped logs and cleanup (unreleased 0.2 development API)
+- [Library Authentication](docs/library/auth.md) — verify credentials or verify and persist a registry login (unreleased 0.2 development API)
+- [Manifest Operations](docs/library/manifests.md) — protocol defaults and tag-to-digest resolution (unreleased 0.2 development API)
+- [Registry Ping SDK](docs/library/ping.md) — connectivity and opt-in authentication-required results (unreleased 0.2 development API)
 
 ## Contributing
 

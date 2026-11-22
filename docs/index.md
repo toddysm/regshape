@@ -23,6 +23,7 @@ to build your own tools. The CLI tool is built on top of the libraries and uses
 ## Guides and references
 
 - [Install and get started](../README.md#installation)
+- [Python SDK overview](library/README.md)
 - [Download, verify, and republish a complete artifact](guides/artifact-pull.md)
 - [Tune parallel downloads, ranges and throttling recovery](guides/parallel-downloads.md)
 - [Download policy, batch API and typed status](library/downloads.md)
@@ -34,7 +35,10 @@ to build your own tools. The CLI tool is built on top of the libraries and uses
 - [Monitor live transfer progress](guides/live-transfer-progress.md)
 - [Download a manifest or index with progress](guides/live-transfer-progress.md#download-a-manifest-or-index)
 - [Library transfer callbacks](library/transfer-progress.md)
-- [Registry ping SDK and authentication-required results](library/ping.md)
+- [Library telemetry configuration and sessions](library/telemetry.md) (unreleased 0.2 development API)
+- [Library credential verification and login](library/auth.md) (unreleased 0.2 development API)
+- [Manifest defaults and tag-to-digest resolution](library/manifests.md) (unreleased 0.2 development API)
+- [Registry ping SDK and authentication-required results](library/ping.md) (unreleased 0.2 development API)
 - [Manifest receive observations](library/transfer-progress.md#manifest-receive-observations)
 - [Artifact options and legacy-flag migration](guides/artifact-options.md)
 - [Implemented capabilities and remaining work](project-state.md)

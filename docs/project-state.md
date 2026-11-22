@@ -19,76 +19,20 @@ This inventory distinguishes implemented behavior from partial capabilities,
 unmerged proposals, and planned work. It is a dated snapshot, not an assertion
 that every registry or platform has been tested.
 
-CLI/library separation is **In progress** under
-[#163](https://github.com/toddysm/regshape/issues/163), which must remain open
-during this scoped build. Telemetry separation
-[#164](https://github.com/toddysm/regshape/issues/164) merged through
-[#177](https://github.com/toddysm/regshape/pull/177). Click option handling lives
-in the CLI; configuration, decorators and the managed
-[telemetry session](library/telemetry.md) are available directly from the library.
-Library credential verification and persisted login
-[#165](https://github.com/toddysm/regshape/issues/165) merged through
-[#178](https://github.com/toddysm/regshape/pull/178), with
-[SDK documentation](library/auth.md).
-Shared reference validation
-[#169](https://github.com/toddysm/regshape/issues/169), manifest protocol defaults
-[#168](https://github.com/toddysm/regshape/issues/168), and referrer digest resolution
-[#166](https://github.com/toddysm/regshape/issues/166) merged through
-[#179](https://github.com/toddysm/regshape/pull/179),
-[#180](https://github.com/toddysm/regshape/pull/180), and
-[#183](https://github.com/toddysm/regshape/pull/183), respectively.
-The [manifest SDK reference](library/manifests.md) covers those defaults and the
-companion tag-to-digest resolver used with the digest-only referrer APIs.
-Referrer resolution belongs to the SDK; the CLI only validates explicit input,
-delegates resolution/listing, and renders results.
-Layer compression preparation
-[#167](https://github.com/toddysm/regshape/issues/167) is delivered through
-[#184](https://github.com/toddysm/regshape/pull/184).
-The public library helper owns detection, deterministic compression and media-type
-selection; see the [layout API](../specs/layout/oci-layout-create.md#prepare_layer_content)
-and [Python example](guides/create-oci-layout.md#prepare-and-stage-a-layer-from-python).
-Stale-manifest reporting
-[#172](https://github.com/toddysm/regshape/issues/172) merged through
-[#185](https://github.com/toddysm/regshape/pull/185).
-The additive SDK result API preserves the descriptor-only config-update API;
-see the [API contract](../specs/layout/oci-layout-create.md#update_config_with_result)
-and [SDK update example](guides/create-oci-layout.md#post-generation-update-helpers).
-Shared plain-repository parsing and input safety
-[#170](https://github.com/toddysm/regshape/issues/170) merged through
-[#186](https://github.com/toddysm/regshape/pull/186). The SDK owns both validation
-rules; see the [shared parsing contract](guides/artifact-options.md#parse-plain-repositories-and-reject-unsafe-input).
-Library-owned blob upload/mount results
-[#171](https://github.com/toddysm/regshape/issues/171) are delivered through
-[#187](https://github.com/toddysm/regshape/pull/187).
-Additive SDK APIs preserve digest-string callers, count uploaded payload bytes,
-own trusted file-size probes and return the final registry Location (canonical
-fallback only if absent/empty). The CLI renders SDK dictionaries with unchanged
-JSON keys. See the [result API contract](../specs/operations/blobs.md#additive-upload-and-mount-result-apis)
-and [SDK example](library/transfer-progress.md#upload-and-mount-results).
-Legacy chunked uploads retain their no-probe behavior; trusted size inference
-belongs to the additive result API used by the CLI.
-The inventory prerequisite merged through
-[#176](https://github.com/toddysm/regshape/pull/176). Library-owned
-[ping authentication state #173](https://github.com/toddysm/regshape/issues/173)
-is covered by [#188](https://github.com/toddysm/regshape/pull/188).
-The [SDK reference](library/ping.md) documents opt-in authentication results,
-preserved default behavior and library-owned error details; the
-[command reference](../specs/cli/ping.md) preserves CLI output contracts.
-Raw HTTP 403 retains the legacy CLI failure contract while remaining an
-authentication-required SDK result.
-Docker push [#174](https://github.com/toddysm/regshape/issues/174) is delivered
-through [#189](https://github.com/toddysm/regshape/pull/189).
-It adds caller-provided registry clients and library-owned summary totals;
-see the [API contract](../specs/docker/docker-desktop-integration.md#push_image)
-and [Python usage](guides/docker-desktop-integration.md#supplying-a-registry-client-from-python).
-Hostname matching is case-insensitive and port-sensitive; a mismatch raises
-`ValueError` after local verification, before any publication.
-Formatting cleanup [#175](https://github.com/toddysm/regshape/issues/175) is the
-current scoped build: remove the unused layout reference helper and centralize
-Docker table size/digest formatting without changing output. The two live
-layout dry-run formatters remain separate to preserve their existing style.
-Delivery of #175 is not yet asserted on main; the complete separation feature
-is not yet implemented and #163 must remain open/In progress.
+CLI/library separation is **Implemented** under
+[#163](https://github.com/toddysm/regshape/issues/163), captured on **2026-11-21 (UTC)** at
+[main at ad24f24](https://github.com/toddysm/regshape/commit/ad24f249953b9dee91cb98c61bba7a805e3874a7).
+All twelve implementation items are delivered. Libraries own every capability
+and are usable directly from Python without importing Click or `regshape.cli`.
+The CLI only parses/validates arguments, prompts, renders text/JSON/progress
+and maps library exceptions to exit codes. Fresh-process tests check root and
+telemetry import isolation. Additive SDK APIs preserve existing callers; see the
+[SDK overview](library/README.md) for entry points and compatibility contracts,
+and the [capability inventory](#capability-inventory) for delivery evidence.
+
+Tracking issue [#163](https://github.com/toddysm/regshape/issues/163) remains
+open pending owner review. **Implemented** describes the delivered capability,
+not issue closure or release availability.
 
 Artifact-oriented option naming is implemented under
 [#87](https://github.com/toddysm/regshape/issues/87). The approved
@@ -175,7 +119,7 @@ the first version of every operation in that row.
 | Local Open Container Initiative (OCI) image-layout authoring, validation, and registry push | Implemented | - | - | [Design: layout creation](../specs/layout/oci-layout-create.md), [design/reference: layout push](../specs/cli/layout-push.md) | [How-to: create layouts](guides/create-oci-layout.md), [command reference: layouts](../specs/cli/layout.md) | - |
 | Docker daemon image listing, export/conversion, and registry push | Implemented | - | - | [Design: Docker integration](../specs/docker/docker-desktop-integration.md) | [How-to: Docker integration](guides/docker-desktop-integration.md) | - |
 | Opt-in request diagnostics, timing, metrics, and log output | Partial | Ordinary-transfer coverage gaps are not separately filed | - | [Design: telemetry](../specs/telemetry-enhancements.md) | [Option reference: current telemetry flags](#telemetry-options-current-baseline) | - |
-| Framework-independent Python library and thin CLI | In progress | [Feature #163](https://github.com/toddysm/regshape/issues/163); delivered [telemetry #164](https://github.com/toddysm/regshape/issues/164), [auth login #165](https://github.com/toddysm/regshape/issues/165), [reference validation #169](https://github.com/toddysm/regshape/pull/179), [manifest defaults #168](https://github.com/toddysm/regshape/pull/180), [referrer resolution #166](https://github.com/toddysm/regshape/pull/183), [layer preparation #167](https://github.com/toddysm/regshape/pull/184), [stale-manifest reporting #172](https://github.com/toddysm/regshape/pull/185), [repository parsing #170](https://github.com/toddysm/regshape/pull/186), [blob results #171](https://github.com/toddysm/regshape/pull/187), [ping state #173](https://github.com/toddysm/regshape/pull/188), [Docker push #174](https://github.com/toddysm/regshape/pull/189) | [Issue-backed design: #163, revision 11](https://github.com/toddysm/regshape/issues/163) | [Telemetry boundary](../specs/architecture.md#8-telemetry-decorators), [manifest resolution/defaults](../specs/operations/manifests.md#resolve_digest), [tag delete contract](../specs/operations/tags.md#delete_tag), [layout preparation API](../specs/layout/oci-layout-create.md#prepare_layer_content), [config-update result API](../specs/layout/oci-layout-create.md#update_config_with_result), [blob parsing contract](../specs/cli/blob.md#repository-reference-format), [blob result APIs](../specs/operations/blobs.md#additive-upload-and-mount-result-apis), [ping contract](../specs/cli/ping.md#library-layer), [Docker push API](../specs/docker/docker-desktop-integration.md#push_image) | [Telemetry library usage](library/telemetry.md), [authentication API](library/auth.md), [manifest SDK](library/manifests.md), [reference validation](guides/artifact-options.md#classify-and-validate-sdk-references), [repository parser](guides/artifact-options.md#parse-plain-repositories-and-reject-unsafe-input), [SDK layout workflow](guides/create-oci-layout.md#prepare-and-stage-a-layer-from-python), [SDK config updates](guides/create-oci-layout.md#post-generation-update-helpers), [SDK blob results](library/transfer-progress.md#upload-and-mount-results), [ping SDK](library/ping.md), [Docker push SDK](guides/docker-desktop-integration.md#supplying-a-registry-client-from-python) | - |
+| Framework-independent Python library and thin CLI | Implemented | [Feature #163](https://github.com/toddysm/regshape/issues/163); delivered [telemetry #164](https://github.com/toddysm/regshape/issues/164) ([#177](https://github.com/toddysm/regshape/pull/177)), [auth login #165](https://github.com/toddysm/regshape/issues/165) ([#178](https://github.com/toddysm/regshape/pull/178)), [reference validation #169](https://github.com/toddysm/regshape/issues/169) ([#179](https://github.com/toddysm/regshape/pull/179)), [manifest defaults #168](https://github.com/toddysm/regshape/issues/168) ([#180](https://github.com/toddysm/regshape/pull/180)), [referrer resolution #166](https://github.com/toddysm/regshape/issues/166) ([#183](https://github.com/toddysm/regshape/pull/183)), [layer preparation #167](https://github.com/toddysm/regshape/issues/167) ([#184](https://github.com/toddysm/regshape/pull/184)), [stale-manifest reporting #172](https://github.com/toddysm/regshape/issues/172) ([#185](https://github.com/toddysm/regshape/pull/185)), [repository parsing #170](https://github.com/toddysm/regshape/issues/170) ([#186](https://github.com/toddysm/regshape/pull/186)), [blob results #171](https://github.com/toddysm/regshape/issues/171) ([#187](https://github.com/toddysm/regshape/pull/187)), [ping state #173](https://github.com/toddysm/regshape/issues/173) ([#188](https://github.com/toddysm/regshape/pull/188)), [Docker push #174](https://github.com/toddysm/regshape/issues/174) ([#189](https://github.com/toddysm/regshape/pull/189)), [formatting cleanup #175](https://github.com/toddysm/regshape/issues/175) ([#190](https://github.com/toddysm/regshape/pull/190)) | [Issue-backed design: #163, revision 13](https://github.com/toddysm/regshape/issues/163) | [Telemetry boundary](../specs/architecture.md#8-telemetry-decorators), [manifest resolution/defaults](../specs/operations/manifests.md#resolve_digest), [tag delete contract](../specs/operations/tags.md#delete_tag), [layout preparation API](../specs/layout/oci-layout-create.md#prepare_layer_content), [config-update result API](../specs/layout/oci-layout-create.md#update_config_with_result), [blob parsing contract](../specs/cli/blob.md#repository-reference-format), [blob result APIs](../specs/operations/blobs.md#additive-upload-and-mount-result-apis), [ping contract](../specs/cli/ping.md#library-layer), [Docker push API](../specs/docker/docker-desktop-integration.md#push_image) | [Telemetry library usage](library/telemetry.md), [authentication API](library/auth.md), [manifest SDK](library/manifests.md), [reference validation](guides/artifact-options.md#classify-and-validate-sdk-references), [repository parser](guides/artifact-options.md#parse-plain-repositories-and-reject-unsafe-input), [SDK layout workflow](guides/create-oci-layout.md#prepare-and-stage-a-layer-from-python), [SDK config updates](guides/create-oci-layout.md#post-generation-update-helpers), [SDK blob results](library/transfer-progress.md#upload-and-mount-results), [ping SDK](library/ping.md), [Docker push SDK](guides/docker-desktop-integration.md#supplying-a-registry-client-from-python) | 2026-11-21 |
 | Break Mode request mutation | Planned | [#29](https://github.com/toddysm/regshape/issues/29) | [Issue requirements: #29](https://github.com/toddysm/regshape/issues/29) | [Architecture: Break Mode](../specs/architecture.md) | - | - |
 | Break Mode telemetry integration | Planned | [#38](https://github.com/toddysm/regshape/issues/38); depends on #29 | [Issue requirements: #38](https://github.com/toddysm/regshape/issues/38) | [Design: telemetry enhancements](../specs/telemetry-enhancements.md) | - | - |
 | Python Package Index (PyPI) release publication | Implemented | [Closed #57](https://github.com/toddysm/regshape/issues/57), [v0.1.1 release](https://github.com/toddysm/regshape/releases/tag/v0.1.1) | - | [Developer guide: contributing](../CONTRIBUTING.md) | [Overview/install reference](../README.md) | - |
