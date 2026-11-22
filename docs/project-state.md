@@ -30,9 +30,11 @@ telemetry import isolation. Additive SDK APIs preserve existing callers; see the
 [SDK overview](library/README.md) for entry points and compatibility contracts,
 and the [capability inventory](#capability-inventory) for delivery evidence.
 
-Tracking issue [#163](https://github.com/toddysm/regshape/issues/163) remains
-open pending owner review. **Implemented** describes the delivered capability,
-not issue closure or release availability.
+The owner approved the final documentation on 2026-11-22 (UTC), and tracking
+issue [#163](https://github.com/toddysm/regshape/issues/163) is closed by the
+pull request that records this approval. **Implemented** describes the
+delivered capability on main, not release availability; it is targeted for the
+[0.2 milestone](https://github.com/toddysm/regshape/milestone/1).
 
 Artifact-oriented option naming is implemented under
 [#87](https://github.com/toddysm/regshape/issues/87). The approved
