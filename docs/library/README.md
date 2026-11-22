@@ -6,9 +6,11 @@ Use `regshape.libs` directly to build Python tools without a Click command
 context. The libraries own every capability; the CLI only adapts user input and
 presentation. This overview links registry operations and the entry points
 delivered by [#163](https://github.com/toddysm/regshape/issues/163). New APIs
-described here target unreleased 0.2 development builds; consult each reference
-for its version and compatibility scope. Click is still installed for the CLI,
-but importing the library does not import Click or `regshape.cli`.
+described here target unreleased 0.2 development builds. Linked interfaces may
+differ from the published 0.1.1 package, including methods and arguments absent
+from that release; do not assume a PyPI installation supports these examples.
+Click is still installed for the CLI, but importing the library does not import
+Click or `regshape.cli`.
 
 ## Client setup
 
