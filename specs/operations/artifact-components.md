@@ -59,10 +59,11 @@ child-manifest reference; the tool never guesses a platform or child.
 
 **S4: Failure and recovery.** The operator supplies an existing output path, an
 invalid layer position, or encounters missing/corrupt content, disk exhaustion
-or cancellation. The operation reports failure, produces no success result and
+or cancellation. The operation reports failure, returns no successful SDK result and
 removes only its own incomplete staging. Existing files are untouched. If a
 failure occurs after verified publication, the complete file remains and the
-operator is told not to infer success from file existence alone.
+operator is told not to infer success from file existence or emitted CLI metadata
+alone. CLI output already emitted before a late failure cannot be recalled.
 
 ### 4. Outcomes, requirements and scope
 
@@ -158,7 +159,11 @@ Size: 12 bytes
 ```
 
 For a layer, the first line is `Downloaded layer 0.`. JSON field names/types are
-specified in PM-2. There is no success transcript or JSON object on failure:
+specified in PM-2. Failures before result emission produce no success transcript
+or JSON object, as in these selection/preflight examples. A failure during result
+writing may leave partial metadata, and a later flush/deferred-warning failure
+may leave complete metadata despite a nonzero exit. Consumers must check the final
+exit status, not just parseable JSON:
 
 ```text
 $ regshape layer get -a registry.example/team/package:stable --index 1 -o ./layer.bin
@@ -339,7 +344,7 @@ config get / layer get --> library component preflight/orchestration
       v                             |
 shared renderer <-- immutable observations
       |
-metadata stdout only after operation and CLI cleanup
+metadata stdout after operation/display/telemetry cleanup; final flush/warnings may still fail
 ```
 
 Lifecycle:
@@ -360,10 +365,17 @@ Lifecycle:
 4. Keep the descriptor digest, integer size and media type as immutable scalars.
    Do not reread the tag, traverse children/subject or satisfy receipt from
    embedded `data`/`urls`; the selected repository blob must exist.
-5. Enforce selected size against limits. Call `get_blob` into private storage
-   with `total_size=descriptor.size`, a positive bounded `max_bytes` and borrowed
-   parent handle. Size 0 uses a positive receiver cap while strict total size 0
-   forbids any bytes; do not pass an invalid zero cap.
+5. Enforce selected size against limits. For pooled/ranged receipt, use the existing
+   staging-aware `libs.blobs.batch._receive_blob` with `BlobDownload` carrying the
+   descriptor digest/size, positive bounded cap and `staging.fd`. Pass
+   `staging=(staging, staging_path)` and the selected progress/status observers so
+   default range scratch is handle-relative to this private namespace; an explicit
+   policy `scratch_dir` still takes precedence. Public `get_blob` alone does not
+   supply this staging context. For selected legacy/custom-client serial receipt,
+   retain bounded `get_blob` with `total_size=descriptor.size`, positive `max_bytes`
+   and `output_dir_fd=staging.fd`. Reuse existing policy resolution/coordinated
+   receipt rather than implement new pool or range logic. Size 0 uses a positive
+   receiver cap while strict total size 0 forbids any bytes; do not pass a zero cap.
    Immediately after successful receipt/close, call `staging.register(blob_name)`
    before publication. Register only newly received files owned by this invocation;
    do not adopt arbitrary existing files. Both downloaded files must be in the
@@ -497,8 +509,9 @@ retain their identity. Callback/cancellation and unexpected exceptions propagate
 unchanged. Only narrowly identified operation-owned filesystem/strict-parsing
 errors may become ComponentError with the original cause; callback errors of the
 same base type must not be mistaken for operation errors.
-CLI expected-operation failures use existing `emit_error`, exit 1; usage exit 2;
-interruptions retain Click's nonzero behavior and no result.
+CLI expected-operation failures use existing `emit_error`, exit 1; usage exit 2.
+Failures before result emission, including interruption there, produce no result;
+interruptions during/after emission remain nonzero but may leave emitted metadata.
 
 All methods are additive. Reads may be retried by existing transport policy; the
 overall operation is not automatically retried after publication. Reusing a
@@ -550,7 +563,7 @@ Do not fetch untrusted descriptor URLs or log tokens and signed URLs.
 | Response/short-write/disk-full/publication collision | Fail explicitly; preserve other owners' files |
 | Observer/cancellation exception | Abort acquisition and clean only owned staging; preserve exception identity |
 | Cleanup failure while failing | Report secondary error; do not replace the primary or imply complete cleanup |
-| Error/cancellation after publication | Retain the complete public file; no success result, no rollback of caller output |
+| Error/cancellation after publication | Retain the complete public file; fail the operation/command without rolling back caller output. A failed SDK call returns no result; CLI metadata already emitted before a late failure may remain |
 
 The hard-link syscall is the irreversible publication boundary, even if
 cancellation arrives before Python observes its return. No broad catch or cleanup
@@ -561,8 +574,9 @@ staging and explain that nonzero exit does not guarantee absence of a file.
 
 No extra retry loop: manifest uses existing client behavior and blob uses shared
 download/retry/range policy. Policy is resolved before effects. When range scratch
-is omitted, use the operation's trusted private namespace as the default, as
-complete-artifact pull already does. Preserve explicit legacy/custom-client
+is omitted, the staging-aware `_receive_blob` path uses the operation's trusted
+private namespace as the default, as complete-artifact pull already does.
+Preserve explicit legacy/custom-client
 compatibility and explicit failure for unsupported pooled/status requests.
 
 ### E. Risk identification and assessment
@@ -628,6 +642,12 @@ processing/local publishing, but cannot select descriptors, own acquisition or
 implement file cleanup. Keep metadata stdout outside display/telemetry cleanup
 using the existing after-telemetry pattern. A renderer/telemetry/output failure
 must remain failure even when publication has already succeeded.
+That pattern emits metadata before `DownloadWarnings._finish` performs its final
+stdout flush and deferred-warning delivery. Result-writing failures can leave
+partial text/JSON; a subsequent flush/warning failure can leave complete metadata.
+Do not promise rollback or absence of emitted metadata on those paths. Document
+and test the nonzero exit plus retained verified file/metadata, and require
+consumers to check process status rather than treat parseable JSON as success.
 
 Health signals: exit/exception outcome, verified byte count, completed immutable
 metadata and actual bytes/timings/status. Existing errors/status support the
@@ -721,7 +741,7 @@ Deterministic fixture coverage, mapped to R1-R12/S1-S4:
 | Output failures | Existing file/dir/dangling link, parent/symlink/support checks, short write, disk full, concurrent collision, identity replacement, receipt-to-ownership registration, and cleanup failure |
 | Progress/callbacks | Actual manifest/config/layer bytes, typed immutable snapshots, caller thread, retries, terminal ordering, exceptions with preserved identity |
 | Cancellation/lifetimes | Before/during receipt, before/during publication, after publication, response/handle/worker cleanup and primary-error precedence |
-| CLI compatibility | Help/registration, required selectors, no-progress/non-TTY/JSON, stderr-only diagnostics, no success on error, telemetry/output-after-publication behavior |
+| CLI compatibility | Help/registration, required selectors, no-progress/non-TTY/JSON, stderr-only diagnostics, no result before an early failure, and nonzero exit despite partial/complete metadata after a late output/flush/warning failure |
 | SDK isolation | Direct component operations in a fresh process with Click/CLI imports forbidden |
 | Existing behavior | Manifest descriptor extraction, blob get defaults/output, complete pull and legacy/minimum-Click tests unchanged |
 
