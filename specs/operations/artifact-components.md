@@ -1,6 +1,6 @@
 # Config and zero-based layer downloads: requirements and engineering design
 
-- Status: proposed design revision 2; review corrections incorporated; not implemented.
+- Status: proposed design revision 3; review corrections incorporated; not implemented.
 - Feature: [#112](https://github.com/toddysm/regshape/issues/112).
 - Design work: [#198](https://github.com/toddysm/regshape/issues/198).
 - Target: 0.2; no release, implementation or merge authorization is implied.
@@ -399,14 +399,20 @@ Lifecycle:
    no staging, while singular artifact and component receipt provide staging.
    Keep policy resolution, legacy/custom-client behavior, enclosing-coordinator
    handling and observers there, not in a third component-specific dispatcher.
-   Its pooled branch passes staging through `BlobDownload`/`_receive_blob`;
-   its serial branch uses `_get_blob_serial` unchanged. An explicit scratch
+   Its pooled branch passes staging through `BlobDownload`/`_receive_blob`
+   and performs the verified ownership handoff below; its serial branch uses
+   `_get_blob_serial` unchanged. An explicit scratch
    override still wins; default ranged scratch remains private and handle-relative.
    Pass the strict descriptor total, a positive bounded receiver cap and borrowed
    `staging.fd`. Size 0 uses cap 1 while strict total size 0 forbids any bytes.
-   Immediately after successful receipt/close, call `staging.register(blob_name)`
-   before publication. Register only newly received files owned by this invocation;
-   do not adopt arbitrary existing files. Both downloaded files must be in the
+   For serial receipt, immediately after successful return/close call
+   `staging.register(blob_name)`: its terminal observer runs inside the exclusive
+   file context, which still removes failed output. Manifest receipt has the
+   same observer-inside-owner ordering. Pooled receipt must register earlier,
+   before its coordinator can release the accepted sink and emit terminal
+   observations; registration after `_receive_blob` returns is insufficient.
+   Register only newly received files owned by this invocation; do not adopt
+   arbitrary existing files. Both downloaded files must be in the
    ledger so publication can locate the blob identity and cleanup can remove the
    manifest and any unpublished blob. If registration/identity verification itself
    fails, report the failure and any retained staging rather than blindly unlinking
@@ -417,6 +423,36 @@ Lifecycle:
 7. Clean up owned manifest/staging and close owned handles; preserve any primary
    exception while reporting secondary cleanup failures. Return the immutable
    completed result only when the complete operation succeeds.
+
+**Pooled receiver-to-staging ownership handoff.** Extend the private staged
+receipt/cleanup adapter, not the public blob API or generic coordinator's
+observer ordering. In `_receive_blob`'s invoking-thread result consumer, after
+`_consume` returns a verified final `BlobInfo` (never an intermediate range),
+transfer the exclusively created, closed sink into the staging ledger before
+`cleanup(True)`, pending-job release, ranged-source finalization, or terminal
+observers can fail. Use the receiver's retained file identity when registering:
+the no-follow entry must match that identity, not merely be a regular file.
+Extend the internal registration helper with an optional expected identity if
+needed; existing callers remain compatible.
+
+Receiver cleanup and staging cleanup share that ledger as the authoritative
+handoff record. Before successful registration the receiver owns removal; after
+it, receiver failure cleanup/finalization must leave the registered matching
+entry to staging, including an exception immediately after ledger insertion.
+Do not leave stale registrations by allowing receiver cleanup to unlink
+transferred files, or double-delete them. Scratch remains receiver-owned and is
+still drained/cleaned. Keep SafeDirectory mutation on the invoking thread, never
+in workers. On any pre-publication callback, cancellation, finalization or
+coordinator/transport teardown failure, staging removes the transferred blob and
+manifest by identity while preserving the primary exception. Registration failure
+leaves receiver ownership intact; replacements are never adopted or deleted, and
+secondary cleanup/retention diagnostics remain explicit.
+
+Apply the same staged handoff to singular artifact receipt through the shared
+dispatcher; preserve public nonstaged `get_blob`, graph-batch behavior and the
+manifest/serial exclusive-file cleanup contracts. Successful pooled returns
+already have a registered blob: the orchestration verifies that owned entry
+rather than attempting a belated ownership acquisition.
 
 The borrowed RegistryClient remains caller-owned; existing pooled receipt owns
 its worker contexts. No caller-owned stdout/client/callback is closed.
@@ -784,7 +820,7 @@ Deterministic fixture coverage, mapped to R1-R12/S1-S4:
 | Non-image payloads | Arbitrary config bytes, opaque/compressed layer bytes without interpretation |
 | Moving tags/indexes | No tag reread or descriptor mixing; explicit index rejection, no child fetch |
 | Integrity | Missing/403/404 including embedded-only descriptors, invalid descriptor types, strict digest, corrupt/short/long content, zero-byte verification, manifest-plus-blob total cap at/over boundary |
-| Output failures | Existing file/dir/dangling link, parent/symlink/support checks, short write, disk full, concurrent collision, identity replacement, receipt-to-ownership registration, and cleanup failure |
+| Output failures | Existing file/dir/dangling link, parent/symlink/support checks, short write, disk full, concurrent collision, identity replacement, receipt-to-ownership handoff, registration failure, and cleanup failure |
 | Progress/callbacks | Actual manifest/config/layer bytes, typed immutable snapshots, caller thread, retries, terminal ordering, exceptions with preserved identity |
 | Cancellation/lifetimes | Before/during receipt, before/during publication, after publication, response/handle/worker cleanup and primary-error precedence |
 | CLI compatibility | Help/registration, required selectors, no-progress/non-TTY/JSON, stderr-only diagnostics, no result before an early failure, and nonzero exit despite partial/complete metadata after a late output/flush/warning failure |
@@ -798,6 +834,15 @@ the explicit `urllib3-legacy` and `artifact-filesystem` file lists in
 `tests.yml`; the CLI implementation PR adds its file to `click-minimum` and
 `artifact-filesystem`. Extend existing blob/artifact dispatch tests and
 `test_artifact_options.py` for shared-helper and default-alias compatibility.
+Fault-inject pooled full/ranged `COMMITTING` progress and completed-status
+callbacks, cancellation and source/transport teardown before publication.
+Assert exact primary exception identity, no public destination, no leaked
+manifest/blob/staging, drained workers and scratch, and no stale/double-cleaned
+ledger entry. Cover failures immediately before/after handoff, identity
+replacement and registration failure; retain complete public output only after
+the actual publication syscall. Serial and manifest terminal-callback cases
+must continue to clean their exclusive output, and nonstaged blob/graph tests
+must preserve their established retention semantics.
 These small CI selector edits are required implementation work, not a separate
 optional authorization or a change to platforms/triggers/dependency versions.
 [Tests workflow](../../.github/workflows/tests.yml) runs on PRs and main pushes:
