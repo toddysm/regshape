@@ -132,6 +132,18 @@ def test_usage_rejection_precedes_preflight_and_credentials(runner, tmp_path, co
     preflight.assert_not_called()
     client.assert_not_called()
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("component", ["config", "layer"])
+@pytest.mark.parametrize("options", [("-o", "-"), ("--sequential", "--concurrency", "4")])
+def test_invalid_usage_precedes_inaccessible_log(runner, tmp_path, component, options):
+    """A missing log parent cannot replace an output/control usage error with a runtime failure."""
+    result = runner.invoke(regshape, [
+        "--log-file", str(tmp_path / "missing" / "log"), component, "get",
+        "-a", _SOURCE, "-o", str(tmp_path / "out"), *options,
+        *(("--index", "0") if component == "layer" else ()),
+    ])
+    assert result.exit_code == 2 and result.stdout == ""
     assert not list(tmp_path.iterdir())
 
 
