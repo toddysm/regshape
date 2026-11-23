@@ -12,7 +12,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import BinaryIO, Literal
+from typing import TYPE_CHECKING, BinaryIO, Literal
 from uuid import uuid4
 
 import requests
@@ -36,6 +36,9 @@ from regshape.libs.progress import TransferDirection, TransferPhase, TransferPro
 from regshape.libs.transport._coordinator import _Job, _Status, _Worker
 from regshape.libs.transport.middleware import RetryMiddleware
 from regshape.libs.transport.models import RegistryResponse
+
+if TYPE_CHECKING:
+    from regshape.libs.artifacts.storage import SafeDirectory
 
 
 def _decimal(value: str) -> int:
@@ -75,7 +78,11 @@ def _retry_delay(
 
 
 class _BlobOutput:
-    """Own one isolated optional sink; cleanup requires a retained file identity."""
+    """Own one isolated sink until its verified identity enters a staging ledger.
+
+    Only invoking-thread cleanup consults staging; workers never mutate its
+    ownership records. Nonstaged outputs retain their original cleanup rules.
+    """
 
     def __init__(self, path: str | None, bounded: bool, dir_fd: int | None) -> None:
         """Retain trusted caller paths without opening or truncating them."""
@@ -87,6 +94,7 @@ class _BlobOutput:
         self.identity: os.stat_result | None = None
         self.closed = False
         self.invalid_digest = False
+        self.staging: SafeDirectory | None = None
 
     def open(self) -> None:
         """Open only after acceptable response headers; never reopen on a zero-byte retry."""
@@ -145,13 +153,23 @@ class _BlobOutput:
         For unbounded symlinks, only the link is removed; its target retains
         unverified bytes.
         Removal errors propagate to the coordinator's secondary-error reporting.
+        A matching staging registration is the authoritative ownership transfer:
+        receiver cleanup must leave it to staging even after registration raises.
         """
         primary: BaseException | None = None
         try:
             self.close()
         except BaseException as error:
             primary = error
-        if self.file is not None and (
+        registered = (
+            self.staging.files.get(self.path.name)
+            if self.staging is not None and self.path is not None else None
+        )
+        transferred = (
+            registered is not None and self.identity is not None
+            and os.path.samestat(registered, self.identity)
+        )
+        if self.file is not None and not transferred and (
             self.invalid_digest or self.bounded and not accepted
         ):
             try:

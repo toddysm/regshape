@@ -89,6 +89,7 @@ jobs:
           src/regshape/tests/test_tag_pagination.py
           src/regshape/tests/test_artifact_graph.py
           src/regshape/tests/test_artifact_download.py
+          src/regshape/tests/test_component_download.py
           src/regshape/tests/test_artifact_storage.py
           src/regshape/tests/test_artifact_archive.py
           src/regshape/tests/test_artifact_push.py
@@ -151,6 +152,7 @@ jobs:
           src/regshape/tests/test_download_workers.py
           src/regshape/tests/test_artifact_storage.py
           src/regshape/tests/test_artifact_download.py
+          src/regshape/tests/test_component_download.py
           src/regshape/tests/test_artifact_namespace.py
           src/regshape/tests/test_artifact_archive.py
           src/regshape/tests/test_artifact_push.py

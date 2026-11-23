@@ -119,6 +119,14 @@ class ArtifactError(RegShapeError):
     """A graph, resource-budget, safe-storage or artifact-publication failure."""
 
 
+class ComponentError(ArtifactError):
+    """Invalid component selection, destination or operation-owned filesystem action.
+
+    Parser, native-storage, receiver and caller-observer errors retain their
+    established types. Existing-output conflicts never authorize replacement.
+    """
+
+
 class DockerError(RegShapeError):
     """
     Error caused by a Docker daemon interaction failure.
