@@ -30,7 +30,9 @@ from regshape.libs.transport import RegistryClient
 
 T = TypeVar("T")
 Component = Literal["config", "layer"]
-_EXISTING_OUTPUT = "Component destination already exists; choose a new output file"
+_EXISTING_OUTPUT = (
+    "Component destination already exists. Choose a new --output path or explicitly remove the existing file."
+)
 
 
 @dataclass(frozen=True)
@@ -183,12 +185,18 @@ def _select(raw: bytes, policy: ArtifactLimits, header: str, component: Componen
         raise ComponentError("Manifest has no config descriptor")
     parsed = parse_document(raw, policy, header=header)
     if parsed.media_type in INDEX_TYPES:
-        raise ComponentError("Index targets are unsupported; select an explicit child manifest")
+        raise ComponentError(
+            "Component selection requires a simple manifest; target an explicit child-manifest digest."
+        )
     if component == "config":
         return next(edge for edge in parsed.children if edge.role == "config")
     layers = tuple(edge for edge in parsed.children if edge.role == "layer")
     if index is None or index >= len(layers):
-        raise ComponentError(f"layer_index is out of range; manifest has {len(layers)} layers")
+        if not layers:
+            raise ComponentError("Layer index is out of range: manifest has no layers; no valid layer index exists.")
+        valid = "valid index: 0" if len(layers) == 1 else f"valid indexes: 0-{len(layers) - 1}"
+        noun = "layer" if len(layers) == 1 else "layers"
+        raise ComponentError(f"Layer index {index} is out of range for {len(layers)} {noun}; {valid}.")
     return layers[index]
 
 

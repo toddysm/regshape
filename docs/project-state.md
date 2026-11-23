@@ -80,8 +80,11 @@ Config/layer-position downloads are separately
 required child of #91. Revision 4 was approved and merged through
 [#202](https://github.com/toddysm/regshape/pull/202); the owner authorized SDK
 implementation [#199](https://github.com/toddysm/regshape/issues/199) on
-2026-11-23 (UTC). SDK, CLI and final user documentation remain incomplete;
-this transition does not claim delivery or authorize a release.
+2026-11-23 (UTC). SDK [#199](https://github.com/toddysm/regshape/issues/199)
+is delivered through [#204](https://github.com/toddysm/regshape/pull/204).
+CLI [#200](https://github.com/toddysm/regshape/issues/200) is in progress;
+required final user documentation [#201](https://github.com/toddysm/regshape/issues/201)
+remains incomplete. The capability is not yet fully delivered; no release is authorized.
 Both capabilities target the open 0.2 milestone.
 
 Tracking is **issues-only** because Project access is unavailable in this

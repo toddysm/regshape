@@ -548,6 +548,14 @@ class ProgressDisplay:
         """
         self._observe_row(_row(event))
 
+    def observe_component(self, event: TransferProgress, *, component: Literal["config", "layer"]) -> None:
+        """Render selected blob bytes as Config/Layer, preserving transfer identity and lifecycle.
+
+        This opt-in adapter changes only the display label; ordinary blob,
+        manifest and complete-artifact observations retain their existing layouts.
+        """
+        self._observe_row(replace(_row(event), label=component.title()))
+
     def artifact_phase(self, phase: ArtifactPhase) -> None:
         """Announce local packaging/publication separately after all object rows settle.
 

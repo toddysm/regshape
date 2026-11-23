@@ -112,6 +112,7 @@ jobs:
           src/regshape/tests/test_telemetry_cli.py
           src/regshape/tests/test_download_validation.py
           src/regshape/tests/test_artifact_options.py
+          src/regshape/tests/test_component_cli.py
           src/regshape/tests/test_artifact_cli.py
           src/regshape/tests/test_artifact_pull_cli.py
           src/regshape/tests/test_refs.py
@@ -153,6 +154,7 @@ jobs:
           src/regshape/tests/test_artifact_storage.py
           src/regshape/tests/test_artifact_download.py
           src/regshape/tests/test_component_download.py
+          src/regshape/tests/test_component_cli.py
           src/regshape/tests/test_artifact_namespace.py
           src/regshape/tests/test_artifact_archive.py
           src/regshape/tests/test_artifact_push.py

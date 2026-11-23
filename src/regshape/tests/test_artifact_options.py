@@ -177,6 +177,32 @@ def test_custom_repository_help(runner: CliRunner) -> None:
     assert " ".join(result.stdout.split()).count("Deprecated in 0.2") == 1
 
 
+@pytest.mark.parametrize("legacy_aliases", [True, False])
+def test_legacy_opt_out_preserves_modern_selector_resolution(
+    runner: CliRunner, calls: list[str], legacy_aliases: bool,
+) -> None:
+    """New callers can omit legacy aliases/help without changing modern duplicate/conflict rules."""
+    @click.command()
+    @artifact_option(help_text="Target reference.", legacy_aliases=legacy_aliases)
+    def example(image_ref: str) -> None:
+        """Record one resolved target; parse failures must not reach this callback."""
+        calls.append(image_ref)
+
+    help_result = runner.invoke(example, ["--help"])
+    assert help_result.exit_code == 0
+    assert ("--image-ref" in help_result.stdout) is legacy_aliases
+    assert ("Deprecated" in help_result.stdout) is legacy_aliases
+    assert runner.invoke(example, ["-a", REFERENCE, "--artifact", REFERENCE]).exit_code == 0
+    assert calls == [REFERENCE]
+    calls.clear()
+    conflict = runner.invoke(example, ["-a", REFERENCE, "--artifact", OTHER_REFERENCE])
+    assert conflict.exit_code == 2 and CONFLICT in conflict.stderr and calls == []
+    for alias in ("--image-ref", "-i"):
+        result = runner.invoke(example, [alias, REFERENCE])
+        assert result.exit_code == (0 if legacy_aliases else 2)
+    assert calls == ([REFERENCE, REFERENCE] if legacy_aliases else [])
+
+
 @pytest.mark.parametrize(
     "reference", ["", "not-a-registry:tag", "registry.example.invalid/repo@bad"]
 )
