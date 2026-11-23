@@ -41,10 +41,11 @@ def artifact_option(
     *,
     help_text: str,
     metavar: str = "ARTIFACT",
+    legacy_aliases: bool = True,
 ) -> Callable[[_F], _F]:
     """Declare one required target with preferred and legacy option spellings.
 
-    All four spellings feed the existing ``image_ref`` callback parameter as a
+    All enabled spellings feed the existing ``image_ref`` callback parameter as a
     string. Repeated identical targets are accepted; different targets produce
     a usage error before the command callback runs. Reference grammar and
     operation-specific restrictions remain the caller's responsibility.
@@ -53,18 +54,18 @@ def artifact_option(
         legacy-only deprecation notice.
     :param metavar: Displayed value label; repository-only commands may supply
         ``"REPOSITORY"``.
+    :param legacy_aliases: Include legacy spellings and their notice by default;
+        new resource commands opt out without changing selector conflict handling.
     :returns: A Click decorator preserving the decorated callable's type.
     """
     return click.option(
-        "--artifact",
-        "-a",
-        "--image-ref",
-        "-i",
+        "--artifact", "-a",
+        *(("--image-ref", "-i") if legacy_aliases else ()),
         "image_ref",
         required=True,
         multiple=True,
         type=click.STRING,
         callback=_resolve_artifact_reference,
         metavar=metavar,
-        help=f"{help_text} {_LEGACY_NOTICE}",
+        help=f"{help_text} {_LEGACY_NOTICE}" if legacy_aliases else help_text,
     )

@@ -94,6 +94,25 @@ Check installed command help if using an older release. See the
 [artifact-option migration guide](docs/guides/artifact-options.md) for the eight
 affected commands and unchanged Docker/blob options.
 
+Development builds targeting 0.2 add file-only component downloads:
+
+```bash
+regshape config get -a registry.example/team/package:stable -o ./config.bin
+regshape layer get -a registry.example/team/package:stable --index 0 -o ./layer.bin
+```
+
+These new commands accept only the modern selector. They save exact verified
+registry blob bytes to a **new file**, never stdout or an existing path; indexes
+require an explicit child-manifest target. Embedded descriptor data is not a
+fallback (use `artifact pull` for embedded-only content). Log and output must use
+separate paths; on Linux, two absent same-directory filenames equivalent after
+Unicode normalization and case folding are conservatively rejected. Use names
+differing beyond case. Use command `--help`
+for limits, progress and download controls. Always check the exit status:
+post-publication failures retain the complete file, and late result/flush/warning
+failures may also retain partial or complete metadata. See the
+[approved component contract](specs/operations/artifact-components.md#pm-2-python-and-cli-contracts).
+
 ## Documentation
 
 Development builds targeting 0.2 also support

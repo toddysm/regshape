@@ -83,6 +83,8 @@ class _DownloadOutput(io.TextIOBase, IO[str]):
 
     Existing display cleanup keeps its repaint behavior; the outer warning
     collector uses the persistent flag to avoid any additional diagnostics.
+    ``failure`` retains the first exact sink exception for operation boundaries
+    that must distinguish diagnostic I/O from acquisition I/O.
     """
 
     def __init__(self, stream: IO[str]) -> None:
@@ -90,6 +92,7 @@ class _DownloadOutput(io.TextIOBase, IO[str]):
         super().__init__()
         self.stream = stream
         self.failed = False
+        self.failure: BaseException | None = None
 
     def write(self, text: str) -> int:
         """Record a real text-write failure, excluding Click's empty binary probes."""
@@ -97,16 +100,20 @@ class _DownloadOutput(io.TextIOBase, IO[str]):
             raise TypeError("Download diagnostics require text")
         try:
             return self.stream.write(text)
-        except BaseException:
+        except BaseException as error:
             self.failed = True
+            if self.failure is None:
+                self.failure = error
             raise
 
     def flush(self) -> None:
         """Record flush failures without changing their exception identity."""
         try:
             self.stream.flush()
-        except BaseException:
+        except BaseException as error:
             self.failed = True
+            if self.failure is None:
+                self.failure = error
             raise
 
     def writable(self) -> bool:

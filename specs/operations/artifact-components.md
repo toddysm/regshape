@@ -537,6 +537,27 @@ filesystem/collision checks without acquiring credentials or creating output.
 The download entry points repeat preflight using `client.config.registry`; CLI
 preflight is not a trust substitute or filesystem reservation.
 
+The additive `validate_component_source(registry, repo, reference)` SDK helper
+validates only the source and raises `ReferenceValidationError` before credentials,
+storage or telemetry effects. The CLI uses it for usage exit 2 before opening a
+log. The download/preflight entry points retain their specified `ComponentError`
+source classification. Telemetry log and component output must name different
+files; equivalent paths, symlink aliases and existing hard links are rejected
+before telemetry can create or append to either path.
+On Darwin, absent case-only aliases follow the volume's native case-sensitivity
+setting, not a blanket case-folded comparison on case-sensitive filesystems.
+Linux has no portable read-only case-policy proof, so same-parent log/output
+filenames equivalent after canonical Unicode normalization and case folding,
+when both are absent, are conservatively rejected before either file is opened,
+including on case-sensitive Linux filesystems. Callers must choose filenames
+differing beyond case.
+File-only output and conflicting download controls are also rejected before
+telemetry can open a log.
+SDK output preflight also precedes telemetry log acquisition. Missing parents
+are reported consistently as output-parent failures, not log-alias comparison
+errors. Component diagnostics omit an absent cause while retaining explicit
+cause details and chained exceptions.
+
 Python callers can start from the same registry-embedded artifact string and use
 the existing `parse_artifact_ref` helper to supply the borrowed-client API:
 
