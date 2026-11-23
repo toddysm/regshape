@@ -77,8 +77,9 @@ all animated rows. Progress/diagnostics use stderr, not stdout.
 
 There are no `--platform`, `--part`, or `--raw` flags on this command.
 Standalone manifest/blob commands retain their existing semantics;
-[component selection #112](https://github.com/toddysm/regshape/issues/112)
-remains Planned.
+[config/layer component commands](components.md) select one registry blob from
+a simple manifest, rather than a complete graph. Their embedded-data policy
+differs: a missing registry blob fails even if the descriptor embeds bytes.
 
 Default pooled acquisition pins/discovers documents serially, reserves all
 graph/byte limits, then overlaps independent blobs. Eligible ranges share the

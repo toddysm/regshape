@@ -2,7 +2,7 @@
 
 <!-- doc-type: how-to -->
 
-RegShape displays live progress for complete-artifact pulls, Open Container Initiative (OCI) manifest
+RegShape displays live progress for config/layer downloads, complete-artifact pulls, Open Container Initiative (OCI) manifest
 downloads, blob downloads and uploads, layout pushes, and Docker pushes. Progress is automatic
 on an interactive standard-error terminal; it does not require telemetry flags.
 
@@ -23,6 +23,8 @@ examples; blob-only progress support does not establish manifest support.
   `--output` can overwrite files, and failed writes are not rolled back.
   Complete `artifact pull` instead requires a new destination; see its
   [distinct storage prerequisites and recovery](artifact-pull.md).
+  Config/layer downloads also require a new file and native trusted storage;
+  see [component output safety](artifact-components.md#before-you-start-output-and-trust).
 - The shell examples use a Bash-compatible shell and `cmp` for local verification.
 - Docker access is needed only for `docker push`; a completed local layout is
   needed only for `layout push`.
@@ -40,6 +42,11 @@ fetch an index's child manifests, configuration or layer blobs. For the complete
 graph, use the [artifact pull workflow](artifact-pull.md), including
 [config-inclusive captured progress](artifact-pull.md#progress-captured-screens-not-an-overall-percentage).
 No Docker daemon is required for these registry requests.
+
+For just one referenced payload, use the [config/layer workflow](artifact-components.md).
+It includes captured manifest/config/layer counters, suppression rules and
+the distinction between private verification and public publication.
+`manifest get --part config` or `--part layers` extracts descriptors, not payload bytes.
 
 ### Save and verify the result
 

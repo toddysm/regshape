@@ -111,7 +111,9 @@ differing beyond case. Use command `--help`
 for limits, progress and download controls. Always check the exit status:
 post-publication failures retain the complete file, and late result/flush/warning
 failures may also retain partial or complete metadata. See the
-[approved component contract](specs/operations/artifact-components.md#pm-2-python-and-cli-contracts).
+[component workflow](docs/guides/artifact-components.md),
+[command reference](specs/cli/components.md), and
+[SDK reference](docs/library/components.md).
 
 ## Documentation
 
@@ -120,11 +122,13 @@ Development builds targeting 0.2 also support
 including all platforms and directory/gzip-tar output. **These operations require
 Linux/macOS, a supported filesystem, and a trusted private namespace; Windows
 fails closed.** See the guide's prerequisites before running them. This is not
-a release announcement or the separate planned config/layer-position selector.
+a release announcement. For just one config or layer, use the
+[component download workflow](docs/guides/artifact-components.md).
 
 ### Guides
 
 - [Complete Artifact Download and Round-trip](docs/guides/artifact-pull.md)
+- [Config and Zero-based Layer Downloads](docs/guides/artifact-components.md)
 - [Parallel Downloads, Ranges and Throttling Recovery](docs/guides/parallel-downloads.md)
 - [Creating OCI Layouts](docs/guides/create-oci-layout.md)
 - [Docker Desktop Integration](docs/guides/docker-desktop-integration.md)
@@ -146,6 +150,7 @@ a release announcement or the separate planned config/layer-position selector.
 | Auth | [specs/cli/auth.md](specs/cli/auth.md) |
 | Blob | [specs/cli/blob.md](specs/cli/blob.md) |
 | Catalog | [specs/cli/catalog.md](specs/cli/catalog.md) |
+| Config / Layer Get | [specs/cli/components.md](specs/cli/components.md) |
 | Manifest | [specs/cli/manifest.md](specs/cli/manifest.md) |
 | Tag | [specs/cli/tag.md](specs/cli/tag.md) |
 | Referrer | [specs/cli/referrer.md](specs/cli/referrer.md) |
@@ -160,6 +165,7 @@ a release announcement or the separate planned config/layer-position selector.
 - [Models](specs/models/) — Blob, Catalog, Error, Manifest, Referrer, Tags
 - [Operations](specs/operations/) — Blobs, Catalog, Manifests, Referrers, Tags
 - [Complete Artifact Library](specs/operations/artifacts.md) — pull, observations, limits, and snapshots
+- [Component Download SDK](docs/library/components.md) — config/layer receipt, publication, callbacks and errors
 - [Download Policy, Batch API and Typed Status](docs/library/downloads.md) — pooled defaults, retries, rollback and statistics
 - [Library Telemetry](docs/library/telemetry.md) — framework-neutral configuration, scoped logs and cleanup (unreleased 0.2 development API)
 - [Library Authentication](docs/library/auth.md) — verify credentials or verify and persist a registry login (unreleased 0.2 development API)
