@@ -12,18 +12,38 @@ from pathlib import Path
 from typing import Literal, TypeVar
 from uuid import uuid4
 
-from regshape.libs.artifacts.graph import INDEX_TYPES, MANIFEST_TYPES, Edge, parse_document, strict_json
-from regshape.libs.artifacts.models import ArtifactLimits, ArtifactPhase, ArtifactPhaseCallback
+from regshape.libs.artifacts.graph import (
+    INDEX_TYPES,
+    MANIFEST_TYPES,
+    Edge,
+    parse_document,
+    strict_json,
+)
+from regshape.libs.artifacts.models import (
+    ArtifactLimits,
+    ArtifactPhase,
+    ArtifactPhaseCallback,
+)
 from regshape.libs.artifacts.operations import _registry
 from regshape.libs.artifacts.storage import SafeDirectory, require_archive_publication
 from regshape.libs.blobs.batch import _coordinated, _guard_observer
-from regshape.libs.blobs.download import DownloadOptions, DownloadStatus, resolve_download_options
+from regshape.libs.blobs.download import (
+    DownloadOptions,
+    DownloadStatus,
+    resolve_download_options,
+)
 from regshape.libs.blobs.operations import _get_blob_with_context
-from regshape.libs.errors import ComponentError
+from regshape.libs.errors import ComponentError, ReferenceValidationError
 from regshape.libs.manifests import DEFAULT_MANIFEST_ACCEPT
-from regshape.libs.manifests.download import _download_manifest_with_context, _validate_inputs
+from regshape.libs.manifests.download import (
+    _download_manifest_with_context,
+    _validate_inputs,
+)
 from regshape.libs.progress import (
-    ManifestProgressCallback, ProgressCallback, TransferPhase, TransferProgress,
+    ManifestProgressCallback,
+    ProgressCallback,
+    TransferPhase,
+    TransferProgress,
 )
 from regshape.libs.refs import format_ref, reject_unsafe_reference
 from regshape.libs.transport import RegistryClient
@@ -55,6 +75,30 @@ class ComponentDownloadResult:
     output_path: str
 
 
+def validate_component_source(registry: str, repo: str, reference: str) -> None:
+    """Validate a component source without credentials, storage probes or telemetry.
+
+    Download/preflight entry points wrap failures in their existing
+    ComponentError classification.
+
+    :param registry: Registry authority, with an optional numeric port and no URL scheme.
+    :param repo: OCI repository path.
+    :param reference: Tag or supported SHA digest.
+    :raises ReferenceValidationError: For an invalid authority, OCI repository,
+        tag or supported SHA digest; diagnostics omit the supplied source.
+    """
+    try:
+        _registry(registry)
+        _validate_inputs(
+            repo, reference, DEFAULT_MANIFEST_ACCEPT, None, None, ArtifactLimits().max_manifest_bytes,
+        )
+        reject_unsafe_reference(format_ref(registry, repo, reference))
+    except ValueError as error:
+        raise ReferenceValidationError(
+            "Invalid component source; use a registry, repository and tag or SHA digest",
+        ) from error
+
+
 def _inputs(
     registry: str, repo: str, reference: str, output_path: str | Path,
     component: Component, layer_index: int | None, limits: ArtifactLimits | None,
@@ -75,9 +119,7 @@ def _inputs(
     if not isinstance(policy, ArtifactLimits):
         raise ValueError("limits must be ArtifactLimits")
     try:
-        _registry(registry)
-        _validate_inputs(repo, reference, DEFAULT_MANIFEST_ACCEPT, None, None, policy.max_manifest_bytes)
-        reject_unsafe_reference(format_ref(registry, repo, reference))
+        validate_component_source(registry, repo, reference)
     except ValueError as error:
         raise ComponentError("Invalid component source; use a registry, repository and tag or SHA digest") from error
     if not isinstance(output_path, (str, Path)) or str(output_path) in ("", "-"):

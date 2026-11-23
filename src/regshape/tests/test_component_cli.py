@@ -564,3 +564,137 @@ def test_secondary_status_callback_cannot_replace_primary_observer_identity(runn
         result, _ = _invoke(runner, console, registry, tmp_path / "out")
     assert result.exception is primary and result.exit_code == 1
     assert console.out.text == "" and not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("component", ["config", "layer"])
+@pytest.mark.parametrize("source", [
+    "registry.example/INVALID:tag", "registry.example/repo@sha256:abc",
+    "registry.example:invalid/repo:tag", "registry.example/repo:",
+])
+def test_invalid_source_grammar_is_usage_before_storage_or_telemetry(runner, tmp_path, component, source):
+    """Strict SDK source validation must classify usage before native probes, log creation or credentials."""
+    with (
+        patch.object(SafeDirectory, "open") as storage,
+        patch("regshape.cli.components.RegistryClient") as client,
+    ):
+        result = runner.invoke(regshape, [
+            "--log-file", str(tmp_path / "log"), component, "get", "-a", source,
+            "-o", str(tmp_path / "out"), *(("--index", "0") if component == "layer" else ()),
+        ])
+    assert result.exit_code == 2 and result.stdout == ""
+    assert "--artifact" in result.stderr
+    storage.assert_not_called()
+    client.assert_not_called()
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("component", ["config", "layer"])
+@pytest.mark.parametrize("alias", [
+    "same", "relative", "parent", "hardlink",
+    pytest.param("dangling", marks=_NATIVE), pytest.param("symlink-parent", marks=_NATIVE),
+])
+def test_log_output_aliases_are_rejected_before_opening_either_path(
+    runner, tmp_path, monkeypatch, component, alias,
+):
+    """Lexical/equivalent and existing hard-link aliases cannot create or append to the caller's output."""
+    output = tmp_path / "out"
+    monkeypatch.chdir(tmp_path)
+    if alias == "hardlink":
+        output.write_bytes(b"caller owned")
+        log = tmp_path / "log"
+        os.link(output, log)
+    elif alias == "relative":
+        log = "./out"
+    elif alias == "parent":
+        parent = tmp_path / "subdir"
+        parent.mkdir()
+        log = str(parent / ".." / "out")
+    elif alias == "dangling":
+        log = tmp_path / "log"
+        log.symlink_to(output)
+    elif alias == "symlink-parent":
+        parent = tmp_path / "parent"
+        parent.symlink_to(tmp_path, target_is_directory=True)
+        log = parent / "out"
+    else:
+        log = output
+    with patch("regshape.cli.components.RegistryClient") as client:
+        result = runner.invoke(regshape, [
+            "--log-file", str(log), component, "get", "-a", _SOURCE, "-o", str(output),
+            *(("--index", "0") if component == "layer" else ()),
+        ])
+    assert result.exit_code == 2 and result.stdout == "" and "--log-file" in result.stderr
+    client.assert_not_called()
+    if alias == "hardlink":
+        assert output.read_bytes() == b"caller owned" and log.read_bytes() == b"caller owned"
+    else:
+        assert not output.exists()
+
+
+@pytest.mark.parametrize("component", ["config", "layer"])
+@pytest.mark.parametrize("error", [OSError("cannot inspect path"), RuntimeError("symlink loop")])
+def test_log_output_comparison_errors_are_explicit_before_telemetry(runner, tmp_path, component, error):
+    """Uninspectable aliases fail closed with a runtime diagnostic and no files or credentials."""
+    with (
+        patch("regshape.cli.components.Path.resolve", side_effect=error),
+        patch("regshape.cli.components.RegistryClient") as client,
+    ):
+        result = runner.invoke(regshape, [
+            "--log-file", str(tmp_path / "log"), component, "get", "-a", _SOURCE,
+            "-o", str(tmp_path / "out"), *(("--index", "0") if component == "layer" else ()),
+        ])
+    assert result.exit_code == 1 and result.stdout == ""
+    assert "--log-file" in result.stderr and str(error) in result.stderr
+    client.assert_not_called()
+    assert not list(tmp_path.iterdir())
+
+
+@_NATIVE
+@pytest.mark.parametrize("component", ["config", "layer"])
+@pytest.mark.parametrize("sink", ["log", "stderr"])
+@pytest.mark.parametrize("error_type", [OSError, ArtifactError, ComponentError, requests.ConnectionError])
+def test_debug_telemetry_sink_failure_during_manifest_retains_identity(
+    runner, tmp_path, component, sink, error_type,
+):
+    """Legacy HTTP debug writes occur inside acquisition but remain sink-origin, never operation errors."""
+    registry, console, output = _registry(), ArtifactConsole(), tmp_path / "out"
+    primary = error_type("synthetic debug sink failure")
+    log, log_path, real_open = FaultLog("write" if sink == "log" else "", primary), tmp_path / "log", open
+
+    def open_log(name, *args, **kwargs):
+        """Substitute only the owned debug log; component staging remains native."""
+        return log if name == str(log_path) else real_open(name, *args, **kwargs)
+
+    if sink == "stderr":
+        console.err.failure = primary
+        console.err.failure_when = lambda text: "registry.example" in text
+    with patch("builtins.open", side_effect=open_log):
+        result, send = _invoke(
+            runner, console, registry, output, component=component,
+            options=("--debug-calls", "--legacy-transport"),
+            global_options=("--log-file", str(log_path)),
+        )
+    assert send.called and result.exit_code == 1 and result.exception is primary
+    assert console.out.text == "" and not output.exists() and log.close_attempted
+    assert all(response.close_calls == 1 for response in registry.responses)
+    assert not list(tmp_path.glob(".regshape-*"))
+
+
+@_NATIVE
+@pytest.mark.parametrize("component", ["config", "layer"])
+def test_terminal_callback_interruption_keeps_complete_output_without_metadata(runner, tmp_path, component):
+    """Interruption after publication is nonzero and cannot delete complete caller-owned bytes."""
+    registry, console, output = _registry(), ArtifactConsole(), tmp_path / "out"
+    original = ProgressDisplay.observe_component
+
+    def observe(display, event, **kwargs):
+        """Cancel only the SDK's post-cleanup completion notification."""
+        if event.phase == TransferPhase.COMPLETED:
+            raise KeyboardInterrupt
+        original(display, event, **kwargs)
+
+    with patch.object(ProgressDisplay, "observe_component", new=observe):
+        result, _ = _invoke(runner, console, registry, output, component=component)
+    assert result.exit_code == 1 and console.out.text == "" and "Aborted!" in console.err.text
+    assert output.read_bytes() == (_CONFIG if component == "config" else _LAYERS[0])
+    assert not list(tmp_path.glob(".regshape-*"))

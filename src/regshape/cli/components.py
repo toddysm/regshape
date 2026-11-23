@@ -8,12 +8,18 @@ display/scenario/telemetry cleanup. Complete public files are never removed here
 from collections.abc import Callable
 from dataclasses import asdict
 from functools import wraps
+from pathlib import Path
 from typing import Any, TypeVar
 
 import click
 import requests
 
-from regshape.cli.downloads import DownloadWarnings, download_options, download_policy
+from regshape.cli.downloads import (
+    DownloadWarnings,
+    _DownloadOutput,
+    download_options,
+    download_policy,
+)
 from regshape.cli.formatting import emit_error, emit_json, emit_text
 from regshape.cli.options import artifact_option
 from regshape.cli.progress import ProgressDisplay
@@ -26,7 +32,9 @@ from regshape.libs.components import (
     download_config,
     download_layer,
     preflight_component_download,
+    validate_component_source,
 )
+from regshape.libs.decorators import get_telemetry_config
 from regshape.libs.decorators.output import flush_telemetry
 from regshape.libs.decorators.scenario import track_scenario
 from regshape.libs.errors import ArtifactError, AuthError, BlobError, ManifestError
@@ -107,12 +115,24 @@ class _ComponentObservers:
 def _after_telemetry(
     function: Callable[..., ComponentDownloadResult],
 ) -> Callable[..., None]:
-    """Emit only after operation/display/telemetry cleanup; later sink errors remain nonzero."""
+    """Validate source/destination separation before telemetry, then emit only after cleanup."""
     @wraps(function)
     def wrapper(*args: Any, **kwargs: Any) -> None:
         """Write completed scalar metadata, retaining shared deferred-warning/error semantics."""
+        try:
+            source = parse_artifact_ref(kwargs["image_ref"])
+            validate_component_source(*source)
+        except ValueError as error:
+            raise click.BadParameter(
+                "Use a valid artifact registry, repository and tag or SHA digest, not a URL.",
+                param_hint="--artifact",
+            ) from error
+        try:
+            _separate_log_output(kwargs["output"])
+        except (OSError, RuntimeError) as error:
+            emit_error("--log-file", f"Cannot inspect log/output separation: {error}")
         with DownloadWarnings() as warnings:
-            result = function(*args, **kwargs, download_warnings=warnings)
+            result = function(*args, **kwargs, parsed_source=source, download_warnings=warnings)
             try:
                 if kwargs["json_output"]:
                     emit_json(asdict(result))
@@ -132,6 +152,23 @@ def _after_telemetry(
     return wrapper
 
 
+def _separate_log_output(output: str) -> None:
+    """Reject equivalent log/output paths before telemetry can create or append to either.
+
+    Resolve parent/symlink spellings and detect existing hard links. This is a
+    usage check, not a reservation against concurrent namespace changes.
+    """
+    ctx = click.get_current_context()
+    log_path = ctx.obj.get("log_file") if ctx.obj else None
+    if not log_path:
+        return
+    target, log = Path(output).resolve(), Path(log_path).resolve()
+    if target == log or (target.exists() and log.exists() and target.samefile(log)):
+        raise click.BadParameter(
+            "Telemetry log and component output must name different files.", param_hint="--log-file",
+        )
+
+
 def _operation(
     ctx: click.Context, registry: str, repo: str, reference: str, output: str,
     component: Component, index: int | None, limits: ArtifactLimits, chunk_size: int,
@@ -142,6 +179,11 @@ def _operation(
     Callback, cancellation and unexpected exceptions retain identity. Transport
     messages are omitted because redirect URLs can contain signed credentials.
     """
+    config = get_telemetry_config()
+    original_log = config.log_file
+    log_output = _DownloadOutput(original_log) if original_log is not None else None
+    if log_output is not None:
+        config.log_file = log_output
     try:
         client = RegistryClient(TransportConfig(
             registry=registry, insecure=ctx.obj.get("insecure", False) if ctx.obj else False,
@@ -161,7 +203,11 @@ def _operation(
             manifest_progress_callback=observers.manifest, download_status_callback=status,
         )
     except (ArtifactError, AuthError, BlobError, ManifestError, requests.RequestException, OSError) as error:
-        if any(error is observed for observed in observers.errors):
+        if (
+            any(error is observed for observed in observers.errors)
+            or observers.display.sink_failed
+            or (log_output is not None and log_output.failure is error)
+        ):
             raise
         if isinstance(error, requests.RequestException):
             message = f"Transport failed ({type(error).__name__})"
@@ -173,6 +219,8 @@ def _operation(
                 "is not a fallback. Use artifact pull for embedded-only content or publish the blob first."
             )
         raise _ComponentCommandFailure(message) from error
+    finally:
+        config.log_file = original_log
 
 
 def _get_command(component: Component) -> click.Command:
@@ -203,6 +251,7 @@ def _get_command(component: Component) -> click.Command:
         ctx: click.Context, image_ref: str, output: str, chunk_size: int,
         max_manifest_bytes: int, max_total_bytes: int, json_output: bool, no_progress: bool,
         download_warnings: DownloadWarnings,
+        parsed_source: tuple[str, str, str],
         concurrency: int, ranges_per_blob: int, range_size: int, sequential: bool,
         legacy_transport: bool, download_retries: int | None, scratch_dir: str | None,
         index: int | None = None,
@@ -215,12 +264,7 @@ def _get_command(component: Component) -> click.Command:
         )
         if output == "-":
             raise click.BadParameter("Choose a new file; stdout payload is unsupported.", param_hint="--output")
-        try:
-            registry, repo, reference = parse_artifact_ref(image_ref)
-        except ValueError as error:
-            raise click.BadParameter(
-                "Use an artifact with an embedded registry and repository, not a URL.", param_hint="--artifact",
-            ) from error
+        registry, repo, reference = parsed_source
         limits = ArtifactLimits(max_manifest_bytes=max_manifest_bytes, max_total_bytes=max_total_bytes)
         try:
             preflight_component_download(

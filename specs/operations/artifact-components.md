@@ -537,6 +537,14 @@ filesystem/collision checks without acquiring credentials or creating output.
 The download entry points repeat preflight using `client.config.registry`; CLI
 preflight is not a trust substitute or filesystem reservation.
 
+The additive `validate_component_source(registry, repo, reference)` SDK helper
+validates only the source and raises `ReferenceValidationError` before credentials,
+storage or telemetry effects. The CLI uses it for usage exit 2 before opening a
+log. The download/preflight entry points retain their specified `ComponentError`
+source classification. Telemetry log and component output must name different
+files; equivalent paths, symlink aliases and existing hard links are rejected
+before telemetry can create or append to either path.
+
 Python callers can start from the same registry-embedded artifact string and use
 the existing `parse_artifact_ref` helper to supply the borrowed-client API:
 
