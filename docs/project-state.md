@@ -84,13 +84,13 @@ implementation [#199](https://github.com/toddysm/regshape/issues/199) on
 is delivered through [#204](https://github.com/toddysm/regshape/pull/204).
 CLI [#200](https://github.com/toddysm/regshape/issues/200) is delivered through
 [#205](https://github.com/toddysm/regshape/pull/205) on 2026-11-23 (UTC);
-required final user documentation [#201](https://github.com/toddysm/regshape/issues/201)
-is in progress. This documentation change supplies the
+User documentation for [#201](https://github.com/toddysm/regshape/issues/201),
+tracked through [#206](https://github.com/toddysm/regshape/pull/206), covers the
 [component workflow](guides/artifact-components.md),
 [command reference](../specs/cli/components.md) and
-[SDK reference](library/components.md); capability close-out remains separate
-until the documentation merges. The capability remains In progress; no release
-is authorized.
+[SDK reference](library/components.md). Capability inventory close-out remains
+a separate step after documentation delivery. The capability remains In progress;
+no release is authorized.
 Both capabilities target the open 0.2 milestone.
 
 Tracking is **issues-only** because Project access is unavailable in this

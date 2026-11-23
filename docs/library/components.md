@@ -194,12 +194,15 @@ Run this complete block from a development checkout using `PYTHONPATH=src python
 It uses the existing **test-only** fake registry, not a public fixture API.
 There are no sockets, credentials or CLI imports; native storage operations
 and trust requirements are real. Only the known temporary parent is resolved
-for macOS aliases. Temporary outputs are removed when the block exits.
+for macOS aliases. The fake registry uses explicit legacy transport because
+it does not support pooled download forks. Temporary outputs are removed when
+the block exits.
 
 ```python
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from regshape.libs.blobs import DownloadOptions
 from regshape.libs.components import download_config, download_layer
 from regshape.tests.artifact_fixtures import Registry, address, document, edge
 
@@ -214,9 +217,13 @@ registry = Registry(
 )
 with TemporaryDirectory() as temporary:
     parent = Path(temporary).resolve()
-    config = download_config(registry, "repo", "moving", parent / "config.bin")
+    config = download_config(
+        registry, "repo", "moving", parent / "config.bin",
+        download_options=DownloadOptions.legacy(),
+    )
     layer = download_layer(
         registry, "repo", address(manifest), parent / "layer.bin", layer_index=0,
+        download_options=DownloadOptions.legacy(),
     )
     assert Path(config.output_path).read_bytes() == config_bytes
     assert Path(layer.output_path).read_bytes() == layer_bytes
