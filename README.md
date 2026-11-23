@@ -104,7 +104,10 @@ regshape layer get -a registry.example/team/package:stable --index 0 -o ./layer.
 These new commands accept only the modern selector. They save exact verified
 registry blob bytes to a **new file**, never stdout or an existing path; indexes
 require an explicit child-manifest target. Embedded descriptor data is not a
-fallback (use `artifact pull` for embedded-only content). Use command `--help`
+fallback (use `artifact pull` for embedded-only content). Log and output must use
+separate paths; on Linux, two absent same-directory filenames equivalent after
+Unicode normalization and case folding are conservatively rejected. Use names
+differing beyond case. Use command `--help`
 for limits, progress and download controls. Always check the exit status:
 post-publication failures retain the complete file, and late result/flush/warning
 failures may also retain partial or complete metadata. See the

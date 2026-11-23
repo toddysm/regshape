@@ -12,6 +12,7 @@ from dataclasses import asdict
 from functools import wraps
 from pathlib import Path
 from typing import Any, TypeVar
+from unicodedata import normalize
 
 import click
 import requests
@@ -53,6 +54,9 @@ The output must be a new file under an existing trusted parent; no overwrite,
 stdout payload, extraction or decompression. Native publication requires Linux
 or macOS; Windows fails closed. Index targets require an explicit child-manifest
 digest. Credentials are resolved automatically.
+
+On Linux, two absent same-directory log/output names equivalent after Unicode
+normalization and case folding are rejected. Choose names differing beyond case.
 
 The selected blob must exist at the registry blob endpoint. Embedded descriptor
 data and URLs are not fallbacks: use artifact pull for embedded-only content, or
@@ -168,6 +172,8 @@ def _separate_log_output(output: str) -> None:
 
     Resolve parent/symlink spellings and detect existing hard links. On Darwin,
     query the actual volume's case policy before comparing absent leaf names.
+    Linux has no portable read-only case-policy query, so ambiguous same-parent
+    names fail closed, including canonical Unicode spelling differences.
     This is a usage check, not a reservation against concurrent namespace changes.
     """
     ctx = click.get_current_context()
@@ -175,13 +181,24 @@ def _separate_log_output(output: str) -> None:
     if not log_path:
         return
     target, log = Path(output).resolve(), Path(log_path).resolve()
-    aliases = target == log or (target.exists() and log.exists() and target.samefile(log))
-    if not aliases and sys.platform == "darwin" and target.name.casefold() == log.name.casefold():
-        if target.parent.samefile(log.parent):
+    target_exists, log_exists = target.exists(), log.exists()
+    aliases = target == log or (target_exists and log_exists and target.samefile(log))
+    target_name, log_name = normalize("NFD", target.name), normalize("NFD", log.name)
+    if (
+        not aliases and not (target_exists or log_exists)
+        and target_name.casefold() == log_name.casefold()
+        and target.parent.samefile(log.parent)
+    ):
+        if sys.platform == "darwin":
             sensitive = os.pathconf(target.parent, _DARWIN_PC_CASE_SENSITIVE)
             if sensitive not in (0, 1):
                 raise OSError("Cannot establish filesystem case sensitivity")
-            aliases = sensitive == 0
+            aliases = sensitive == 0 or target_name == log_name
+        elif sys.platform.startswith("linux"):
+            raise click.BadParameter(
+                "Cannot prove log/output separation for case- or Unicode-equivalent filenames on Linux; "
+                "choose names differing beyond case.", param_hint="--log-file",
+            )
     if aliases:
         raise click.BadParameter(
             "Telemetry log and component output must name different files.", param_hint="--log-file",

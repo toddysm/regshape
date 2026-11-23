@@ -546,6 +546,11 @@ files; equivalent paths, symlink aliases and existing hard links are rejected
 before telemetry can create or append to either path.
 On Darwin, absent case-only aliases follow the volume's native case-sensitivity
 setting, not a blanket case-folded comparison on case-sensitive filesystems.
+Linux has no portable read-only case-policy proof, so same-parent log/output
+filenames equivalent after canonical Unicode normalization and case folding,
+when both are absent, are conservatively rejected before either file is opened,
+including on case-sensitive Linux filesystems. Callers must choose filenames
+differing beyond case.
 File-only output and conflicting download controls are also rejected before
 telemetry can open a log.
 

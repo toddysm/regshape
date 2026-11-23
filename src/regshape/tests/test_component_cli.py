@@ -608,9 +608,7 @@ def test_invalid_source_grammar_is_usage_before_storage_or_telemetry(runner, tmp
 @pytest.mark.parametrize("alias", [
     "same", "relative", "parent", "hardlink",
     pytest.param("dangling", marks=_NATIVE), pytest.param("symlink-parent", marks=_NATIVE),
-    pytest.param("case", marks=pytest.mark.skipif(
-        sys.platform != "darwin", reason="Requires native Darwin case-sensitivity query",
-    )),
+    pytest.param("case", marks=_NATIVE), pytest.param("unicode", marks=_NATIVE),
 ])
 def test_log_output_aliases_are_rejected_before_opening_either_path(
     runner, tmp_path, monkeypatch, component, alias,
@@ -636,9 +634,11 @@ def test_log_output_aliases_are_rejected_before_opening_either_path(
         parent.symlink_to(tmp_path, target_is_directory=True)
         log = parent / "out"
     elif alias == "case":
-        if os.pathconf(tmp_path, 11):
+        if sys.platform == "darwin" and os.pathconf(tmp_path, 11):
             pytest.skip("Requires a case-insensitive Darwin volume")
         log = tmp_path / "OUT"
+    elif alias == "unicode":
+        output, log = tmp_path / "caf\u00e9", tmp_path / "cafe\u0301"
     else:
         log = output
     with patch("regshape.cli.components.RegistryClient") as client:
@@ -671,9 +671,22 @@ def test_absent_case_alias_uses_volume_policy_or_fails_closed(tmp_path, sensitiv
 
 
 @_NATIVE
+@pytest.mark.parametrize("names", [("out", "OUT"), ("caf\u00e9", "cafe\u0301")])
+def test_linux_case_equivalent_names_fail_closed_before_opening(tmp_path, names):
+    """Unprovable Linux case/normalization separation is a usage error without filesystem writes."""
+    with (
+        click.Context(regshape, obj={"log_file": str(tmp_path / names[1])}),
+        patch("regshape.cli.components.sys.platform", "linux"),
+        pytest.raises(click.BadParameter, match="prove"),
+    ):
+        _separate_log_output(str(tmp_path / names[0]))
+    assert not list(tmp_path.iterdir())
+
+
+@_NATIVE
 @pytest.mark.parametrize("component", ["config", "layer"])
 def test_distinct_case_log_and_output_on_sensitive_volume(runner, tmp_path, component):
-    """A case-sensitive native filesystem keeps legitimately distinct output and debug log names."""
+    """An existing log proves distinct lookup on a case-sensitive filesystem without new-file probing."""
     probe = tmp_path / "case-probe"
     probe.touch()
     try:
@@ -683,6 +696,7 @@ def test_distinct_case_log_and_output_on_sensitive_volume(runner, tmp_path, comp
     if not sensitive:
         pytest.skip("Requires a case-sensitive filesystem")
     registry, console, output, log = _registry(), ArtifactConsole(), tmp_path / "out", tmp_path / "OUT"
+    log.touch()
     result, _ = _invoke(
         runner, console, registry, output, component=component,
         options=("--debug-calls", "--legacy-transport"), global_options=("--log-file", str(log)),
