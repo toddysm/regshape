@@ -82,7 +82,7 @@ def _inputs(
     if not isinstance(output_path, (str, Path)) or str(output_path) in ("", "-"):
         raise ComponentError("Component output must name a new file; stdout is unsupported")
     output = Path(output_path).absolute()
-    if output.name in ("", ".", "..") or "\x00" in str(output) or "\\" in str(output):
+    if output.name in ("", ".", "..") or "\x00" in str(output) or "\\" in output.as_posix():
         raise ComponentError("Component output must name a new file")
     require_archive_publication()
     return output, policy

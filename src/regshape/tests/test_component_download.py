@@ -204,11 +204,20 @@ def test_unsupported_platform_error_is_not_normalized(tmp_path):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Actual Windows fail-closed contract")
-def test_windows_explicitly_fails_closed(tmp_path):
+@pytest.mark.parametrize("path_type", ["path", "string"])
+def test_windows_explicitly_fails_closed(tmp_path, path_type):
     """A valid SDK call on Windows cannot create staging, credentials or registry requests."""
     registry = _registry()
-    with pytest.raises(ArtifactError, match="unsupported"):
-        download_config(registry, "repo", "moving", tmp_path / "out")
+    output = tmp_path / "out" if path_type == "path" else str(tmp_path / "out")
+    for action in (
+        lambda: preflight_component_download(
+            "registry.example", "repo", "moving", output, component="config",
+        ),
+        lambda: download_config(registry, "repo", "moving", output),
+    ):
+        with pytest.raises(ArtifactError, match="unsupported") as caught:
+            action()
+        assert type(caught.value) is ArtifactError
     assert not registry.calls and not list(tmp_path.iterdir())
 
 
