@@ -1,10 +1,10 @@
 # Config and zero-based layer downloads: requirements and engineering design
 
-- Status: proposed design revision 4; review corrections incorporated; not implemented.
+- Status: approved design revision 4; merged through [#202](https://github.com/toddysm/regshape/pull/202); not implemented.
 - Feature: [#112](https://github.com/toddysm/regshape/issues/112).
 - Design work: [#198](https://github.com/toddysm/regshape/issues/198).
-- Target: 0.2; no release, implementation or merge authorization is implied.
-- Updated: 2026-11-22 (UTC).
+- Target: 0.2; SDK [#199](https://github.com/toddysm/regshape/issues/199) Build authorized separately; its PR merge and release publication remain unauthorized.
+- Updated: 2026-11-23 (UTC); lifecycle metadata only, approved contracts unchanged.
 - Source baseline: [abc6daa](https://github.com/toddysm/regshape/commit/abc6daae216159e1d902145a8eaadae1a5f79b74).
 - Planning format: full, combined product requirements and engineering design.
 - Testing mode: hosted GitHub CI and automated review; local checks precede publishing.
@@ -282,15 +282,16 @@ size-coercion bugs (strict parser), premature success (deferred completion),
 publication/cleanup races (existing ownership helpers), unsupported filesystems
 (fail closed) and shared-command regressions (compatibility test gates).
 
-> NOTE: Safe Linux/macOS-only publication is a proposed compatibility constraint
-> inherited from the selected storage mechanism, not a newly approved Windows
-> promise. The owner reviews this constraint at the design gate.
+> NOTE: The owner approved safe Linux/macOS-only publication and Windows
+> fail-closed behavior at the revision-4 design gate. This is not a Windows
+> support promise.
 
 ### 14. Rollout and milestones
 
 1. **Design, started 2026-11-22 UTC:** requirements, child breakdown, inventory,
    local self-review and hosted checks/review. Exit: explicit owner approval
-   and an authorized design merge. Implementation is blocked until then.
+   and an authorized design merge, completed through #202. SDK Build was
+   subsequently authorized separately; runtime delivery remains incomplete.
 2. **Runtime delivery for 0.2:** SDK selection/storage, then CLI/progress and
    compatibility. Exit: acceptance tests, resolved review feedback and valid
    hosted checks for each head; no unverified or incomplete result.
@@ -321,16 +322,19 @@ actual byte progress without turning receipt into command success. Credential
 handling, redirects, retries, cancellation and primary-error preservation remain
 with the current transport and download primitives. This is additive work for
 0.2; existing descriptor extraction, blob get and complete-artifact pull remain
-unchanged, and this proposed design awaits explicit owner approval.
+unchanged. The owner approved revision 4 and its native child breakdown before
+the design merge; only SDK Build is currently authorized.
 
 ### B. Pre-requisites
 
-Part I is the current proposed requirements source and
-[#198](https://github.com/toddysm/regshape/issues/198) owns its approval.
+Part I is the approved revision-4 requirements source;
+[#198](https://github.com/toddysm/regshape/issues/198) is complete through
+[#202](https://github.com/toddysm/regshape/pull/202).
 Earlier [#120](https://github.com/toddysm/regshape/pull/120) is merged but approved
 complete-artifact operations, not this feature. Reuse completed foundations on
 main from #90, #91, #131 and #163; #88 is related, not a prerequisite.
-No implementation starts until this full design and its native children are approved.
+The design and native child scope approval gate is satisfied. Each runtime
+item still requires its own Build/merge authorization.
 
 ### C. Introduction
 
@@ -877,7 +881,7 @@ otherwise record that absence and verify changed links locally.
 
 ### O. Next actions and launch checklist
 
-- [ ] Approve this full design and native child scope, then authorize design merge.
+- [x] Approve revision 4 and native child scope, then authorize design merge (#202).
 - [ ] Implement/test/review SDK, then CLI, in separate instance-owned feature PRs.
 - [ ] Complete the single final documentation child and its navigation/recovery guidance.
 - [ ] Reconcile all children and inventory before closing the tracking issue.
