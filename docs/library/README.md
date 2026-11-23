@@ -71,12 +71,14 @@ the operation reference before opting in to new result shapes or behavior.
 - **Selected components:** `download_config`, `download_layer` and
   `preflight_component_download` in `regshape.libs.components` save only the
   selected registry blob from one pinned simple manifest. See the
-  [SDK contracts](../../specs/operations/artifact-components.md#pm-2-python-and-cli-contracts)
+  [SDK reference and direct Python examples](components.md)
   and [source reference](../../src/regshape/libs/components.py). A new file is
   required; no stdout, overwrite, index traversal, embedded/URL fallback or
   payload transformation is supported. Native publication requires Linux/macOS;
   Windows fails closed. A complete file remains after errors occurring after
-  publication, including late observer/cleanup failures.
+  publication, including late observer/cleanup failures. Even verified private
+  bytes are cleaned after prepublication failure when safe; staging handoff is
+  not publication.
 - [Downloads](downloads.md) covers `DownloadOptions`, batch blob acquisition
   and typed status/statistics, including retry and caller-ownership contracts.
 

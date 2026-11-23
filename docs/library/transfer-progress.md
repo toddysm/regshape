@@ -20,6 +20,12 @@ not change the standalone events below. The
 [mock-safe round-trip example](../guides/artifact-pull.md#try-the-workflow-without-a-registry)
 shows both callbacks.
 
+Selected config/layer downloads reuse `ManifestProgress` and `TransferProgress`,
+but defer blob `COMPLETED` and terminal pooled status until public hard-link
+publication and owned cleanup. Receipt becomes `COMMITTING`, not operation
+success. See the [component callback lifetime](components.md#callback-lifetime-and-publication)
+before reusing a standalone blob observer.
+
 ## Imports and supported operations
 
 ```python

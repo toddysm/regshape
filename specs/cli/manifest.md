@@ -14,6 +14,11 @@ model (`config`, `layers`, `subject`, `annotations`) using the `--part`
 option, which is useful for scripting and for verifying individual fields
 without having to `jq`-parse the raw JSON.
 
+Config/layer selections contain **descriptors, not referenced blob content**. To save exact
+config bytes or a zero-based content layer, use
+[`config get` / `layer get`](components.md), with their distinct new-file,
+verification and publication contracts.
+
 All requests use the shared `RegistryClient` transport and its authentication
 and telemetry support.
 

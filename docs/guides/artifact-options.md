@@ -22,6 +22,11 @@ or newer, as before.
 
 ## 1. Identify the affected commands
 
+The compatibility table below covers the eight pre-existing migrated commands.
+The newer [`config get` and `layer get`](artifact-components.md) accept only
+`--artifact/-a`, not the deprecated aliases. Their registry-embedded tag/digest
+selection does not change the older commands' compatibility.
+
 | Commands | What `--artifact` selects |
 | --- | --- |
 | `manifest get`, `info`, `descriptor` | A manifest/index by the existing registry/repository tag or digest reference |

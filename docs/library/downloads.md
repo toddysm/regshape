@@ -12,6 +12,11 @@ The [blob API](../../specs/operations/blobs.md#get_blob) and
 accept keyword-only `download_options`; existing positional arguments, results,
 output ownership and progress schemas are unchanged. Both operations also accept
 `download_status_callback` on supported pooled transport.
+Selected [config/layer SDK downloads](components.md) use the same policy and
+range/retry engine. They default scratch to private component staging, verify
+the selected descriptor's exact size/digest, and defer terminal success until
+publication/cleanup; they do not inherit standalone output ownership or
+verify-only behavior.
 
 Maintainers can reproduce correctness, performance and registry release checks
 with the [download validation workflow](download-validation.md). Local fixture

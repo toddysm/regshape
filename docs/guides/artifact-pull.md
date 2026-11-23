@@ -381,8 +381,11 @@ directory authoring extras are ignored, while archive extras are rejected.
 Standalone `manifest get` still retrieves one parsed/raw/selected document,
 and `blob get` still retrieves a selected digest; their overwrite/output/progress
 semantics have **not** become complete-artifact semantics. Separate config or
-layer-position downloads [#112](https://github.com/toddysm/regshape/issues/112)
-remain **Planned/unimplemented**. Full pull includes those blobs but adds no
+layer-position downloads are available through the
+[component workflow](artifact-components.md) in development builds targeting 0.2.
+They require a new file, a simple manifest and a registry-resident selected
+blob; unlike full pull, embedded descriptor data is not a fallback.
+Full pull includes those blobs but adds no
 `--part`, `--raw`, `--platform`, or component selector.
 No release or package-version change is implied by these docs.
 Cancellation stops scheduling before joining active readers. Socket-inactivity
