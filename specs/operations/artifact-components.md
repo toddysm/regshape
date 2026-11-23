@@ -1,6 +1,6 @@
 # Config and zero-based layer downloads: requirements and engineering design
 
-- Status: proposed design revision 1; not approved or implemented.
+- Status: proposed design revision 2; review corrections incorporated; not implemented.
 - Feature: [#112](https://github.com/toddysm/regshape/issues/112).
 - Design work: [#198](https://github.com/toddysm/regshape/issues/198).
 - Target: 0.2; no release, implementation or merge authorization is implied.
@@ -122,8 +122,12 @@ regshape layer get -a registry.example/team/package:stable --index 0 -o ./layer.
 ```
 
 Both commands require `--artifact/-a` and `--output/-o`. `layer get` also requires
-`--index N`; there is no implicit position. Use the shared artifact-option helper,
-including its compatible `--image-ref/-i` aliases and conflict rejection.
+`--index N`; there is no implicit position. Extend the shared artifact-option
+helper with `legacy_aliases: bool = True`; these new commands pass `False` and
+expose only `--artifact/-a`, without a day-one deprecated `--image-ref/-i` alias
+or deprecation notice. Existing commands retain the default aliases/help unchanged.
+Repeated identical modern selectors still resolve once; differing values fail
+before the command callback.
 The shared parser's omitted-tag default remains `latest`; explicit tag and digest
 targets are tested. The registry must be embedded.
 
@@ -132,6 +136,14 @@ The initial contract is file-only: `--output -` is a usage error, not a file nam
 symlinks, are refused. Parent directories must already exist. An existing-file
 error advises selecting a new path or explicitly removing the old file.
 No `--force` or automatic overwrite/recovery option is added.
+
+These resource operations intentionally require the selected blob to be available
+from the registry's digest-addressed blob endpoint. Descriptor `data` is not a
+fallback, even when it contains verified inline bytes. Thus `config get`/`layer get`
+fail on missing blobs whose descriptors carry only embedded content, whereas
+`artifact pull` can acquire those bytes from embedded `data`. Use complete-artifact
+pull for that embedded-content workflow, or publish the component blob before
+using these resource commands. Descriptor `urls` are never followed.
 
 Normal stdout contains a completed metadata summary. `--json` instead emits one
 completed result object. Raw component bytes go only into the selected file;
@@ -203,15 +215,23 @@ Registry/network egress and local storage remain the caller's costs.
 ### 10. Performance and scale
 
 One operation selects one blob. Defaults reuse existing budgets: 16 MiB per
-manifest, 1 TiB selected-blob cap, 128 JSON depth and 500,000 descriptor edges.
-Expose `--max-manifest-bytes` and `--max-blob-bytes` as positive integer overrides.
-Reject an advertised blob size over its cap before the blob request. Require
-exact size equality on receipt; enforce the cap before writes, including size 0.
+manifest, 1 TiB total unique content bytes, 128 JSON depth and 500,000 descriptor
+edges. Expose `--max-manifest-bytes` and `--max-total-bytes` as positive integer
+overrides, matching artifact/layout commands; do not add `--max-blob-bytes`.
+The verified raw manifest counts against `max_total_bytes`, as in artifact pull.
+Receive it under `min(max_manifest_bytes, max_total_bytes)`, then reserve the
+selected descriptor's bytes from the remaining budget before any blob request.
+Charge each content address once; retries, scratch spools and publication links
+do not increase this logical unique-content budget. A repeated address must have
+consistent declared size; it does not permit skipping the required blob endpoint.
+Require exact size equality on receipt; enforce remaining capacity before writes.
+Equality at the total cap is valid, including a zero-byte blob with zero remaining
+capacity. Use a positive receiver cap while enforcing its strict declared size 0.
 A zero-byte blob is valid only when its digest verifies the empty payload.
 
 Read buffers default to 65,536 bytes; the complete blob is never buffered in
 memory. Parsing memory is bounded by the manifest cap and existing JSON/edge
-limits. Private output is at most the manifest bytes plus selected blob bytes;
+limits. Private output is at most the charged manifest plus selected blob bytes;
 publication uses a same-filesystem hard link, not another full content copy.
 Optional range scratch and transport concurrency retain existing policy bounds.
 
@@ -325,6 +345,12 @@ in the SDK first removes duplicate CLI-only logic and fits the next-release requ
 Proposed new modules are `src/regshape/libs/components.py` (shared orchestration,
 result and preflight), `src/regshape/cli/config.py` and `src/regshape/cli/layer.py`
 (resource groups), and a small shared `src/regshape/cli/components.py` presenter.
+Extract one staging-aware private dispatch helper in
+[blob operations](../../src/regshape/libs/blobs/operations.py) and route public
+`get_blob`, singular artifact receipt and component receipt through it. Keep
+graph-batch acquisition and existing public signatures unchanged. Extend
+[artifact options](../../src/regshape/cli/options.py) with the default-on alias
+switch described in section 7.
 Register the two resource groups in [CLI main](../../src/regshape/cli/main.py)
 and export the library module from [libs](../../src/regshape/libs/__init__.py).
 These new paths are proposals, not files already on main.
@@ -365,17 +391,19 @@ Lifecycle:
 4. Keep the descriptor digest, integer size and media type as immutable scalars.
    Do not reread the tag, traverse children/subject or satisfy receipt from
    embedded `data`/`urls`; the selected repository blob must exist.
-5. Enforce selected size against limits. For pooled/ranged receipt, use the existing
-   staging-aware `libs.blobs.batch._receive_blob` with `BlobDownload` carrying the
-   descriptor digest/size, positive bounded cap and `staging.fd`. Pass
-   `staging=(staging, staging_path)` and the selected progress/status observers so
-   default range scratch is handle-relative to this private namespace; an explicit
-   policy `scratch_dir` still takes precedence. Public `get_blob` alone does not
-   supply this staging context. For selected legacy/custom-client serial receipt,
-   retain bounded `get_blob` with `total_size=descriptor.size`, positive `max_bytes`
-   and `output_dir_fd=staging.fd`. Reuse existing policy resolution/coordinated
-   receipt rather than implement new pool or range logic. Size 0 uses a positive
-   receiver cap while strict total size 0 forbids any bytes; do not pass a zero cap.
+5. Charge the received manifest and reserve selected blob bytes against the shared
+   unique-content total, as in section 10. Call the proposed private
+   `_get_blob_with_context` helper in blob operations with the existing `get_blob`
+   arguments plus `staging=(staging, staging_path)`. Extract the current
+   `get_blob` policy/context decision into that helper; `get_blob` delegates with
+   no staging, while singular artifact and component receipt provide staging.
+   Keep policy resolution, legacy/custom-client behavior, enclosing-coordinator
+   handling and observers there, not in a third component-specific dispatcher.
+   Its pooled branch passes staging through `BlobDownload`/`_receive_blob`;
+   its serial branch uses `_get_blob_serial` unchanged. An explicit scratch
+   override still wins; default ranged scratch remains private and handle-relative.
+   Pass the strict descriptor total, a positive bounded receiver cap and borrowed
+   `staging.fd`. Size 0 uses cap 1 while strict total size 0 forbids any bytes.
    Immediately after successful receipt/close, call `staging.register(blob_name)`
    before publication. Register only newly received files owned by this invocation;
    do not adopt arbitrary existing files. Both downloaded files must be in the
@@ -435,7 +463,7 @@ def download_config(
 
 def download_layer(
     client: RegistryClient, repo: str, reference: str, output_path: str | Path, *,
-    index: int,
+    layer_index: int,
     limits: ArtifactLimits | None = None,
     chunk_size: int = 65536,
     progress_callback: ProgressCallback | None = None,
@@ -447,10 +475,12 @@ def download_layer(
 ```
 
 `ArtifactLimits` is reused without adding a policy type: apply its manifest,
-selected-blob (`max_total_bytes`), JSON depth and descriptor-edge budgets; unrelated
-graph/archive fields do not expand scope. The CLI maps `--max-blob-bytes` to
-`max_total_bytes`. `chunk_size` and byte limits must be positive, non-boolean
-integers. Layer index must have `type(index) is int` and be nonnegative; do not
+unique manifest-plus-selected-blob (`max_total_bytes`), JSON depth and
+descriptor-edge budgets; unrelated graph/archive fields do not expand scope.
+The CLI exposes the same `--max-total-bytes` name and semantics. `chunk_size`
+and byte limits must be positive, non-boolean integers.
+Both SDK entry points and the result use `layer_index`; CLI `--index` maps to it.
+Layer index must have `type(layer_index) is int` and be nonnegative; do not
 coerce booleans, floats or strings. A layer operation cannot accidentally select
 config when an invalid `None` index reaches it.
 
@@ -469,7 +499,7 @@ from regshape.libs.transport import RegistryClient, TransportConfig
 
 registry, repo, reference = parse_artifact_ref("registry.example/team/package:stable")
 client = RegistryClient(TransportConfig(registry=registry))
-result = download_layer(client, repo, reference, "./layer.bin", index=0)
+result = download_layer(client, repo, reference, "./layer.bin", layer_index=0)
 ```
 
 The proposed API borrows the client; the caller retains its normal transport
@@ -495,20 +525,35 @@ serializes exactly these eight fields with existing JSON formatting.
 
 Common CLI options: required `--artifact/-a`, required `--output/-o`, `--json`,
 `--no-progress`, positive `--chunk-size` (default 65536),
-`--max-manifest-bytes` (16777216), `--max-blob-bytes` (1099511627776),
+`--max-manifest-bytes` (16777216), `--max-total-bytes` (1099511627776),
 existing telemetry flags and the unchanged shared download options
 (`--concurrency`, `--ranges-per-blob`, `--range-size`, `--sequential`,
 `--legacy-transport`, `--download-retries`, `--scratch-dir`).
 Only `layer get` adds required `--index` as `click.IntRange(min=0)`.
 No `--part`, `--platform`, `--force`, `--raw` or per-command credentials.
 
-New library validation/selection/output errors use a `ComponentError` extending
-`RegShapeError` in [errors](../../src/regshape/libs/errors.py), with safe actionable
-messages. Existing AuthError, ManifestError, BlobError and transport exceptions
-retain their identity. Callback/cancellation and unexpected exceptions propagate
-unchanged. Only narrowly identified operation-owned filesystem/strict-parsing
-errors may become ComponentError with the original cause; callback errors of the
-same base type must not be mistaken for operation errors.
+Add `ComponentError(ArtifactError)` in [errors](../../src/regshape/libs/errors.py),
+so callers catching the established artifact-domain base also catch component
+validation/selection errors. Do not normalize every helper failure to this subtype.
+
+| Source | SDK exception contract |
+| --- | --- |
+| Component-specific source/index/output-policy validation, index/position selection, missing config or total-budget reservation | ComponentError with an actionable safe message |
+| Existing strict `parse_document`/descriptor validation, SafeDirectory/native support, identity, cleanup and publication policy checks | Original ArtifactError unchanged; this includes unsupported Windows/filesystem and private-storage policy errors |
+| Destination already exists, detected before receipt or raced at publication | ComponentError with the existing-output recovery message; a publication FileExistsError is chained as its cause |
+| Other operation-owned parent/open/read/write/link OSError outside receivers | ComponentError chained from the original OSError |
+| `download_manifest` or shared blob receiver auth, manifest/blob, transport and receiver-owned I/O errors | Original AuthError, ManifestError, BlobError, transport exception or OSError unchanged |
+| Invalid download policy or non-callable callbacks | Existing ValueError/TypeError unchanged |
+| Any caller callback, cancellation or unexpected exception | Exact exception identity unchanged, including ArtifactError/ComponentError/OSError thrown by an observer |
+
+Preflight must explicitly check an existing destination and raise ComponentError;
+it must not rely on a differently typed `pull_artifact` error. Keep error handling
+local to operation-owned actions: parser/storage policy errors pass through,
+and OSError translation is limited to the listed operations, excluding callbacks
+and receivers. No broad whole-operation catch. Cleanup reports secondary errors
+without changing the active exception. The CLI catches ArtifactError (including
+ComponentError) and established auth/manifest/blob/transport failures only when
+they originate from the operation, not an observer or output sink.
 CLI expected-operation failures use existing `emit_error`, exit 1; usage exit 2.
 Failures before result emission, including interruption there, produce no result;
 interruptions during/after emission remain nonzero but may leave emitted metadata.
@@ -574,8 +619,9 @@ staging and explain that nonzero exit does not guarantee absence of a file.
 
 No extra retry loop: manifest uses existing client behavior and blob uses shared
 download/retry/range policy. Policy is resolved before effects. When range scratch
-is omitted, the staging-aware `_receive_blob` path uses the operation's trusted
-private namespace as the default, as complete-artifact pull already does.
+is omitted, the shared staging-aware dispatch helper passes the operation's
+trusted private namespace to `_receive_blob`, as complete-artifact pull already
+does. Component/CLI code never repeats the pooled-versus-serial decision.
 Preserve explicit legacy/custom-client
 compatibility and explicit failure for unsupported pooled/status requests.
 
@@ -716,8 +762,8 @@ Estimated maintainer engineering days are planning estimates, not promised dates
 | Deliverable/components | Implement/author | Tests/review | Delivery/rollback | Dependencies |
 | --- | --- | --- | --- | --- |
 | Full design and inventory | 0.5 | 0.5 | 0.25 | None; owner gate |
-| SDK selection, strict receipt and publication | 1.5-2 | 1-1.5 | 0.25 | Approved design |
-| Config/layer CLI, shared rendering/options and compatibility | 1 | 0.75-1 | 0.25 | SDK |
+| SDK selection, shared blob dispatch, strict receipt, publication and CI selectors | 1.5-2 | 1-1.5 | 0.25 | Approved design |
+| Config/layer CLI, shared rendering/alias switch and CI selectors | 1 | 0.75-1 | 0.25 | SDK |
 | Final guide, command/API references and navigation | 0.75 | 0.5 | 0.25 | Both runtime children |
 
 Long poles: existing helper error/ownership contracts, delayed callback completion,
@@ -737,23 +783,29 @@ Deterministic fixture coverage, mapped to R1-R12/S1-S4:
 | Input validation | Negative/noninteger/bool/None index, missing output, `-`, selector conflicts and unsafe refs fail at the proper boundary |
 | Non-image payloads | Arbitrary config bytes, opaque/compressed layer bytes without interpretation |
 | Moving tags/indexes | No tag reread or descriptor mixing; explicit index rejection, no child fetch |
-| Integrity | Missing/403/404, invalid descriptor types, strict digest, corrupt/short/long content, zero-byte verification, cap overflow |
+| Integrity | Missing/403/404 including embedded-only descriptors, invalid descriptor types, strict digest, corrupt/short/long content, zero-byte verification, manifest-plus-blob total cap at/over boundary |
 | Output failures | Existing file/dir/dangling link, parent/symlink/support checks, short write, disk full, concurrent collision, identity replacement, receipt-to-ownership registration, and cleanup failure |
 | Progress/callbacks | Actual manifest/config/layer bytes, typed immutable snapshots, caller thread, retries, terminal ordering, exceptions with preserved identity |
 | Cancellation/lifetimes | Before/during receipt, before/during publication, after publication, response/handle/worker cleanup and primary-error precedence |
 | CLI compatibility | Help/registration, required selectors, no-progress/non-TTY/JSON, stderr-only diagnostics, no result before an early failure, and nonzero exit despite partial/complete metadata after a late output/flush/warning failure |
 | SDK isolation | Direct component operations in a fresh process with Click/CLI imports forbidden |
-| Existing behavior | Manifest descriptor extraction, blob get defaults/output, complete pull and legacy/minimum-Click tests unchanged |
+| Existing behavior | Manifest descriptor extraction, blob get dispatch/defaults/output, complete pull (including embedded fallback), legacy aliases on old commands and legacy/minimum-Click tests unchanged |
 
 Use pytest mocks/loopback fixtures, not live credential-dependent registries.
-New targeted component test files join the default `python -m pytest -q`
-collection. Wire relevant cases into existing explicit minimum-Click,
-urllib3-legacy and filesystem selectors; preserve their runtime dependencies.
+Proposed `test_component_download.py` and `test_component_cli.py` join default
+`python -m pytest -q` collection. The SDK implementation PR adds its test file to
+the explicit `urllib3-legacy` and `artifact-filesystem` file lists in
+`tests.yml`; the CLI implementation PR adds its file to `click-minimum` and
+`artifact-filesystem`. Extend existing blob/artifact dispatch tests and
+`test_artifact_options.py` for shared-helper and default-alias compatibility.
+These small CI selector edits are required implementation work, not a separate
+optional authorization or a change to platforms/triggers/dependency versions.
 [Tests workflow](../../.github/workflows/tests.yml) runs on PRs and main pushes:
 Ubuntu Python 3.10/3.11/3.12 plus explicit compatibility/platform jobs.
 Run native successful filesystem cases on Linux and the local Mac; Windows tests
-assert explicit fail-closed behavior. Existing hosted platform jobs remain
-unchanged unless a later separately approved workflow change is needed.
+assert explicit fail-closed behavior. Preserve the existing hosted macOS/Windows
+jobs, platforms, triggers and commands, apart from adding the new test files to
+their explicit selectors. Do not claim new hosted coverage without those edits.
 
 This design-only PR changes no executable behavior: validate its links, schema/
 signature consistency and requirement matrix; normal hosted tests still run.
@@ -765,6 +817,8 @@ binding; never fabricate success or override protection.
 Final documentation is a required child: explain resource-vs-meta commands,
 tag/digest and zero-based examples, arbitrary payloads, index rejection, file-only
 defaults, refusal to overwrite, cleanup/publication caveats, result/error shapes,
+the intentional embedded-only divergence from artifact pull, manifest-inclusive
+`--max-total-bytes`, modern-only selectors, consistent SDK `layer_index`,
 SDK observers, progress suppression, platforms and recovery. Update command/
 library references, README/help navigation and guide links. No hollow unit tests
 for documentation-only work; use existing docs build/lint/link tools if present,
