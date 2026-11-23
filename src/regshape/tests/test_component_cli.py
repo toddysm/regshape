@@ -653,11 +653,13 @@ def test_log_output_comparison_errors_are_explicit_before_telemetry(runner, tmp_
 @pytest.mark.parametrize("component", ["config", "layer"])
 @pytest.mark.parametrize("sink", ["log", "stderr"])
 @pytest.mark.parametrize("error_type", [OSError, ArtifactError, ComponentError, requests.ConnectionError])
+@pytest.mark.parametrize("mode", ["interactive", "no-progress", "json", "noninteractive"])
 def test_debug_telemetry_sink_failure_during_manifest_retains_identity(
-    runner, tmp_path, component, sink, error_type,
+    runner, tmp_path, component, sink, error_type, mode,
 ):
-    """Legacy HTTP debug writes occur inside acquisition but remain sink-origin, never operation errors."""
-    registry, console, output = _registry(), ArtifactConsole(), tmp_path / "out"
+    """HTTP debug failures retain sink identity whether progress is enabled or suppressed."""
+    registry, output = _registry(), tmp_path / "out"
+    console = ArtifactConsole(interactive=mode != "noninteractive")
     primary = error_type("synthetic debug sink failure")
     log, log_path, real_open = FaultLog("write" if sink == "log" else "", primary), tmp_path / "log", open
 
@@ -671,7 +673,8 @@ def test_debug_telemetry_sink_failure_during_manifest_retains_identity(
     with patch("builtins.open", side_effect=open_log):
         result, send = _invoke(
             runner, console, registry, output, component=component,
-            options=("--debug-calls", "--legacy-transport"),
+            options=("--debug-calls", "--legacy-transport",
+                     *((f"--{mode}",) if mode in ("no-progress", "json") else ())),
             global_options=("--log-file", str(log_path)),
         )
     assert send.called and result.exit_code == 1 and result.exception is primary

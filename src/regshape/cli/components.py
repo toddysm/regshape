@@ -176,8 +176,9 @@ def _operation(
 ) -> ComponentDownloadResult:
     """Invoke the complete SDK, formatting only operation-origin expected failures.
 
-    Callback, cancellation and unexpected exceptions retain identity. Transport
-    messages are omitted because redirect URLs can contain signed credentials.
+    Callback, telemetry, cancellation and unexpected exceptions retain identity,
+    including diagnostic failures when progress is suppressed. Transport messages
+    are omitted because redirect URLs can contain signed credentials.
     """
     config = get_telemetry_config()
     original_log = config.log_file
@@ -206,6 +207,7 @@ def _operation(
         if (
             any(error is observed for observed in observers.errors)
             or observers.display.sink_failed
+            or (isinstance(config.output, _DownloadOutput) and config.output.failure is error)
             or (log_output is not None and log_output.failure is error)
         ):
             raise
