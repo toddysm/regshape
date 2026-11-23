@@ -544,6 +544,10 @@ log. The download/preflight entry points retain their specified `ComponentError`
 source classification. Telemetry log and component output must name different
 files; equivalent paths, symlink aliases and existing hard links are rejected
 before telemetry can create or append to either path.
+On Darwin, absent case-only aliases follow the volume's native case-sensitivity
+setting, not a blanket case-folded comparison on case-sensitive filesystems.
+File-only output and conflicting download controls are also rejected before
+telemetry can open a log.
 
 Python callers can start from the same registry-embedded artifact string and use
 the existing `parse_artifact_ref` helper to supply the borrowed-client API:

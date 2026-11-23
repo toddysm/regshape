@@ -14,10 +14,12 @@ from typing import Any
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
+import click
 import pytest
 import requests
 from click.testing import CliRunner
 
+from regshape.cli.components import _separate_log_output
 from regshape.cli.downloads import DownloadWarnings
 from regshape.cli.main import regshape
 from regshape.cli.progress import ProgressDisplay
@@ -116,18 +118,20 @@ def test_help_exposes_file_only_modern_resources(runner, component):
     ("-a", "https://user:synthetic-secret@registry.example/repo", "-o", "out"),
 ])
 def test_usage_rejection_precedes_preflight_and_credentials(runner, tmp_path, component, options):
-    """Missing/invalid arguments and policy conflicts have no filesystem or credential effects."""
+    """Missing/invalid arguments and policy conflicts cannot open logs or touch storage/credentials."""
     with (
         patch("regshape.cli.components.preflight_component_download") as preflight,
         patch("regshape.cli.components.RegistryClient") as client,
     ):
         result = runner.invoke(regshape, [
-            component, "get", *options, *(("--index", "0") if component == "layer" else ()),
+            "--log-file", str(tmp_path / "log"), component, "get", *options,
+            *(("--index", "0") if component == "layer" else ()),
         ])
     assert result.exit_code == 2, result.exception
     assert result.stdout == "" and "synthetic-secret" not in result.stderr
     preflight.assert_not_called()
     client.assert_not_called()
+    assert not list(tmp_path.iterdir())
     assert not list(tmp_path.iterdir())
 
 
@@ -592,6 +596,9 @@ def test_invalid_source_grammar_is_usage_before_storage_or_telemetry(runner, tmp
 @pytest.mark.parametrize("alias", [
     "same", "relative", "parent", "hardlink",
     pytest.param("dangling", marks=_NATIVE), pytest.param("symlink-parent", marks=_NATIVE),
+    pytest.param("case", marks=pytest.mark.skipif(
+        sys.platform != "darwin", reason="Requires native Darwin case-sensitivity query",
+    )),
 ])
 def test_log_output_aliases_are_rejected_before_opening_either_path(
     runner, tmp_path, monkeypatch, component, alias,
@@ -616,6 +623,10 @@ def test_log_output_aliases_are_rejected_before_opening_either_path(
         parent = tmp_path / "parent"
         parent.symlink_to(tmp_path, target_is_directory=True)
         log = parent / "out"
+    elif alias == "case":
+        if os.pathconf(tmp_path, 11):
+            pytest.skip("Requires a case-insensitive Darwin volume")
+        log = tmp_path / "OUT"
     else:
         log = output
     with patch("regshape.cli.components.RegistryClient") as client:
@@ -629,6 +640,44 @@ def test_log_output_aliases_are_rejected_before_opening_either_path(
         assert output.read_bytes() == b"caller owned" and log.read_bytes() == b"caller owned"
     else:
         assert not output.exists()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin volume case policy")
+@pytest.mark.parametrize("sensitive", [1, -1])
+def test_absent_case_alias_uses_volume_policy_or_fails_closed(tmp_path, sensitive):
+    """Case-sensitive volumes allow distinct leaves; an unknown case policy is not assumed safe."""
+    with (
+        click.Context(regshape, obj={"log_file": str(tmp_path / "OUT")}),
+        patch("regshape.cli.components.os.pathconf", return_value=sensitive),
+    ):
+        if sensitive == 1:
+            _separate_log_output(str(tmp_path / "out"))
+        else:
+            with pytest.raises(OSError, match="case sensitivity"):
+                _separate_log_output(str(tmp_path / "out"))
+    assert not list(tmp_path.iterdir())
+
+
+@_NATIVE
+@pytest.mark.parametrize("component", ["config", "layer"])
+def test_distinct_case_log_and_output_on_sensitive_volume(runner, tmp_path, component):
+    """A case-sensitive native filesystem keeps legitimately distinct output and debug log names."""
+    probe = tmp_path / "case-probe"
+    probe.touch()
+    try:
+        sensitive = not probe.with_name("CASE-PROBE").exists()
+    finally:
+        probe.unlink()
+    if not sensitive:
+        pytest.skip("Requires a case-sensitive filesystem")
+    registry, console, output, log = _registry(), ArtifactConsole(), tmp_path / "out", tmp_path / "OUT"
+    result, _ = _invoke(
+        runner, console, registry, output, component=component,
+        options=("--debug-calls", "--legacy-transport"), global_options=("--log-file", str(log)),
+    )
+    assert result.exit_code == 0, result.exception
+    assert output.read_bytes() == (_CONFIG if component == "config" else _LAYERS[0])
+    assert log.exists() and not output.samefile(log) and "registry.example" in log.read_text()
 
 
 @pytest.mark.parametrize("component", ["config", "layer"])

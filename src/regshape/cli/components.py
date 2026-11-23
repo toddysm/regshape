@@ -5,6 +5,8 @@ module only declares options, adapts typed observations and emits metadata after
 display/scenario/telemetry cleanup. Complete public files are never removed here.
 """
 
+import os
+import sys
 from collections.abc import Callable
 from dataclasses import asdict
 from functools import wraps
@@ -43,6 +45,7 @@ from regshape.libs.refs import parse_artifact_ref
 from regshape.libs.transport import RegistryClient, TransportConfig
 
 _DEFAULTS = ArtifactLimits()
+_DARWIN_PC_CASE_SENSITIVE = 11  # sys/unistd.h; not exposed in Python's pathconf_names.
 _Event = TypeVar("_Event")
 _HELP = """Save exact verified component bytes from a simple artifact manifest.
 
@@ -115,7 +118,7 @@ class _ComponentObservers:
 def _after_telemetry(
     function: Callable[..., ComponentDownloadResult],
 ) -> Callable[..., None]:
-    """Validate source/destination separation before telemetry, then emit only after cleanup."""
+    """Validate usage/destination separation before telemetry, then emit only after cleanup."""
     @wraps(function)
     def wrapper(*args: Any, **kwargs: Any) -> None:
         """Write completed scalar metadata, retaining shared deferred-warning/error semantics."""
@@ -127,12 +130,20 @@ def _after_telemetry(
                 "Use a valid artifact registry, repository and tag or SHA digest, not a URL.",
                 param_hint="--artifact",
             ) from error
+        if kwargs["output"] == "-":
+            raise click.BadParameter("Choose a new file; stdout payload is unsupported.", param_hint="--output")
+        policy = download_policy(
+            click.get_current_context(), concurrency=kwargs["concurrency"],
+            ranges_per_blob=kwargs["ranges_per_blob"], range_size=kwargs["range_size"],
+            sequential=kwargs["sequential"], legacy_transport=kwargs["legacy_transport"],
+            download_retries=kwargs["download_retries"], scratch_dir=kwargs["scratch_dir"],
+        )
         try:
             _separate_log_output(kwargs["output"])
         except (OSError, RuntimeError) as error:
             emit_error("--log-file", f"Cannot inspect log/output separation: {error}")
         with DownloadWarnings() as warnings:
-            result = function(*args, **kwargs, parsed_source=source, download_warnings=warnings)
+            result = function(*args, **kwargs, parsed_source=source, policy=policy, download_warnings=warnings)
             try:
                 if kwargs["json_output"]:
                     emit_json(asdict(result))
@@ -155,15 +166,23 @@ def _after_telemetry(
 def _separate_log_output(output: str) -> None:
     """Reject equivalent log/output paths before telemetry can create or append to either.
 
-    Resolve parent/symlink spellings and detect existing hard links. This is a
-    usage check, not a reservation against concurrent namespace changes.
+    Resolve parent/symlink spellings and detect existing hard links. On Darwin,
+    query the actual volume's case policy before comparing absent leaf names.
+    This is a usage check, not a reservation against concurrent namespace changes.
     """
     ctx = click.get_current_context()
     log_path = ctx.obj.get("log_file") if ctx.obj else None
     if not log_path:
         return
     target, log = Path(output).resolve(), Path(log_path).resolve()
-    if target == log or (target.exists() and log.exists() and target.samefile(log)):
+    aliases = target == log or (target.exists() and log.exists() and target.samefile(log))
+    if not aliases and sys.platform == "darwin" and target.name.casefold() == log.name.casefold():
+        if target.parent.samefile(log.parent):
+            sensitive = os.pathconf(target.parent, _DARWIN_PC_CASE_SENSITIVE)
+            if sensitive not in (0, 1):
+                raise OSError("Cannot establish filesystem case sensitivity")
+            aliases = sensitive == 0
+    if aliases:
         raise click.BadParameter(
             "Telemetry log and component output must name different files.", param_hint="--log-file",
         )
@@ -254,18 +273,12 @@ def _get_command(component: Component) -> click.Command:
         max_manifest_bytes: int, max_total_bytes: int, json_output: bool, no_progress: bool,
         download_warnings: DownloadWarnings,
         parsed_source: tuple[str, str, str],
+        policy: DownloadOptions,
         concurrency: int, ranges_per_blob: int, range_size: int, sequential: bool,
         legacy_transport: bool, download_retries: int | None, scratch_dir: str | None,
         index: int | None = None,
     ) -> ComponentDownloadResult:
         """Preflight before client creation, then return completed SDK metadata after sink cleanup."""
-        policy = download_policy(
-            ctx, concurrency=concurrency, ranges_per_blob=ranges_per_blob,
-            range_size=range_size, sequential=sequential, legacy_transport=legacy_transport,
-            download_retries=download_retries, scratch_dir=scratch_dir,
-        )
-        if output == "-":
-            raise click.BadParameter("Choose a new file; stdout payload is unsupported.", param_hint="--output")
         registry, repo, reference = parsed_source
         limits = ArtifactLimits(max_manifest_bytes=max_manifest_bytes, max_total_bytes=max_total_bytes)
         try:
