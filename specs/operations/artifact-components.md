@@ -1,6 +1,6 @@
 # Config and zero-based layer downloads: requirements and engineering design
 
-- Status: proposed design revision 3; review corrections incorporated; not implemented.
+- Status: proposed design revision 4; review corrections incorporated; not implemented.
 - Feature: [#112](https://github.com/toddysm/regshape/issues/112).
 - Design work: [#198](https://github.com/toddysm/regshape/issues/198).
 - Target: 0.2; no release, implementation or merge authorization is implied.
@@ -394,7 +394,11 @@ Lifecycle:
 5. Charge the received manifest and reserve selected blob bytes against the shared
    unique-content total, as in section 10. Call the proposed private
    `_get_blob_with_context` helper in blob operations with the existing `get_blob`
-   arguments plus `staging=(staging, staging_path)`. Extract the current
+   arguments plus private `staging=(staging, staging_path)` and optional
+   `transfer_id: str | None = None`. Public `get_blob` leaves both private
+   arguments unset; singular artifact receipt supplies `transfer_id=row.identity`.
+   Forward that identity to `_receive_blob` unchanged so artifact progress and
+   download status stay correlated. Extract the current
    `get_blob` policy/context decision into that helper; `get_blob` delegates with
    no staging, while singular artifact and component receipt provide staging.
    Keep policy resolution, legacy/custom-client behavior, enclosing-coordinator
@@ -834,6 +838,8 @@ the explicit `urllib3-legacy` and `artifact-filesystem` file lists in
 `tests.yml`; the CLI implementation PR adds its file to `click-minimum` and
 `artifact-filesystem`. Extend existing blob/artifact dispatch tests and
 `test_artifact_options.py` for shared-helper and default-alias compatibility.
+Assert singular artifact full/ranged progress and status retain `row.identity`
+through the shared helper; public nonstaged `get_blob` keeps its identity defaults.
 Fault-inject pooled full/ranged `COMMITTING` progress and completed-status
 callbacks, cancellation and source/transport teardown before publication.
 Assert exact primary exception identity, no public destination, no leaked
