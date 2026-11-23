@@ -385,9 +385,13 @@ Lifecycle:
 2. Open safe parent handles and a private namespace on the output filesystem.
    Receive one manifest using `download_manifest` and `DEFAULT_MANIFEST_ACCEPT`.
    Preserve manifest byte progress, digest verification and bounded error receipt.
-   Immediately after successful receipt/close, call `staging.register(manifest_name)`
-   for this invocation's exclusively created file, before parsing or any operation
-   that can fail. The receiver does not update SafeDirectory's ownership ledger.
+   Immediately after successful receipt/close, register this invocation's
+   exclusively created manifest against its retained receiver identity, before
+   parsing or releasing the exclusive receiver context. A private verified-output
+   hook performs this handoff without changing the public manifest API/result.
+   Receiver cleanup remains responsible if registration fails before insertion;
+   once the matching identity enters staging's ledger, staging owns cleanup even
+   if registration then raises. Neither owner adopts or deletes replacements.
 3. Parse that bounded raw file with `parse_document`/its strict helpers.
    Reject indexes explicitly. Supported OCI and Docker schema-2 simple manifests
    permit arbitrary valid config/layer media types. Select config by role, or

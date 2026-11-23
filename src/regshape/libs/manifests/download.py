@@ -8,10 +8,11 @@ the returned file. Clients are borrowed; responses and output handles are owned.
 import hashlib
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
-from typing import BinaryIO, Literal, final
+from typing import TYPE_CHECKING, BinaryIO, Literal, final
 
 import requests
 
@@ -35,6 +36,9 @@ from regshape.libs.progress import (
 )
 from regshape.libs.refs import validate_digest
 from regshape.libs.transport import RegistryClient
+
+if TYPE_CHECKING:
+    from regshape.libs.artifacts.storage import SafeDirectory
 
 _CHUNK_SIZE = 64 * 1024
 _DEFAULT_MAX_BYTES = 16 * 1024 * 1024
@@ -131,6 +135,8 @@ class _DownloadFile:
     Remove failed output only if its directory entry still identifies our file.
     This is not a sandbox for an adversary controlling parent directories; graph
     orchestration must provide its own safe staging/publication boundary.
+    A private verified handoff transfers cleanup only when the retained identity
+    enters staging's ledger; public nonstaged receipt is unchanged.
     """
 
     def __init__(self, path: Path, dir_fd: int | None = None) -> None:
@@ -142,6 +148,7 @@ class _DownloadFile:
         self.file: BinaryIO | None = None
         self.identity: os.stat_result | None = None
         self.close_attempted = False
+        self.staging: SafeDirectory | None = None
 
     def __enter__(self) -> "_DownloadFile":
         """Create without replacing any existing file, directory or symlink."""
@@ -201,12 +208,28 @@ class _DownloadFile:
             raise OSError("Manifest output was replaced; refusing to use or remove it")
 
     def _remove_failed(self) -> None:
-        """Remove only our failed entry; report missing/replaced output explicitly."""
+        """Remove only our failed entry unless its identity transferred to staging."""
+        registered = self.staging.files.get(self.path.name) if self.staging is not None else None
+        if registered is not None and self.identity is not None and os.path.samestat(registered, self.identity):
+            return
         self.verify_identity()
         if self.dir_fd is None:
             self.path.unlink()
         else:
             os.unlink(self.path, dir_fd=self.dir_fd)
+
+    def handoff(self, staging: "SafeDirectory") -> None:
+        """Transfer verified, closed output identity to a borrowed staging ledger.
+
+        Call inside the receiver context, with staging open until receiver exit.
+        Failed insertion leaves receiver ownership; successful insertion is
+        authoritative even if registration subsequently raises. Replacements
+        are never adopted or removed.
+        """
+        if self.dir_fd != staging.fd or self.identity is None:
+            raise ValueError("Staged handoff requires the receiver's retained identity and directory")
+        self.staging = staging
+        staging.register(self.path.name, expected_identity=self.identity)
 
     def __exit__(
         self,
@@ -306,6 +329,29 @@ def download_manifest(
     partial-range responses are not accepted as complete manifests. Identity,
     gzip and deflate entity decoding is bounded independently of urllib3.
     """
+    return _download_manifest_with_context(
+        client, repo, reference, accept, output_path,
+        expected_digest=expected_digest, expected_size=expected_size,
+        max_bytes=max_bytes, progress_callback=progress_callback, output_dir_fd=output_dir_fd,
+    )
+
+
+def _download_manifest_with_context(
+    client: RegistryClient, repo: str, reference: str, accept: str,
+    output_path: str | Path, *,
+    expected_digest: str | None = None, expected_size: int | None = None,
+    max_bytes: int = _DEFAULT_MAX_BYTES,
+    progress_callback: ManifestProgressCallback | None = None,
+    output_dir_fd: int | None = None,
+    on_received: Callable[[_DownloadFile], None] | None = None,
+) -> ManifestDownload:
+    """Share raw receipt with an optional invoking-thread verified-output handoff.
+
+    Public defaults and errors match download_manifest. The private hook runs
+    after observer/response/file completion and final identity verification,
+    inside receiver cleanup ownership; it may hand off to staging. Hook failures
+    propagate unchanged and reclaim only unchanged receiver-owned output.
+    """
     progress = _ManifestProgress(progress_callback)
     requested = _validate_inputs(
         repo, reference, accept, expected_digest, expected_size, max_bytes
@@ -374,4 +420,6 @@ def download_manifest(
         output.close()
         progress.emit(ManifestPhase.RECEIVED)
         output.verify_identity()
+        if on_received is not None:
+            on_received(output)
         return ManifestDownload(str(path), digest, size, media_type, reported)

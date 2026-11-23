@@ -20,8 +20,8 @@ from regshape.libs.blobs.batch import _coordinated, _guard_observer
 from regshape.libs.blobs.download import DownloadOptions, DownloadStatus, resolve_download_options
 from regshape.libs.blobs.operations import _get_blob_with_context
 from regshape.libs.errors import ComponentError
-from regshape.libs.manifests import DEFAULT_MANIFEST_ACCEPT, download_manifest
-from regshape.libs.manifests.download import _validate_inputs
+from regshape.libs.manifests import DEFAULT_MANIFEST_ACCEPT
+from regshape.libs.manifests.download import _download_manifest_with_context, _validate_inputs
 from regshape.libs.progress import (
     ManifestProgressCallback, ProgressCallback, TransferPhase, TransferProgress,
 )
@@ -247,12 +247,14 @@ def _download(
             )
         )
         with acquisition as (worker, _):
-            received = download_manifest(
+            received = _download_manifest_with_context(
                 worker, repo, reference, DEFAULT_MANIFEST_ACCEPT, manifest_name,
                 max_bytes=min(budget.max_manifest_bytes, budget.max_total_bytes),
                 progress_callback=observers.manifest, output_dir_fd=staging.fd,
+                on_received=lambda receiver: _owned_io(
+                    lambda: receiver.handoff(staging), "Cannot register received manifest",
+                ),
             )
-            _owned_io(lambda: staging.register(manifest_name), "Cannot register received manifest")
             raw = _owned_io(
                 lambda: staging.read_bytes(manifest_name, budget.max_manifest_bytes),
                 "Cannot read received manifest",

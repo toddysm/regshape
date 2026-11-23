@@ -312,6 +312,74 @@ def test_missing_config_has_a_component_selection_error(tmp_path):
 
 
 @native
+@pytest.mark.parametrize("after", [False, True])
+@pytest.mark.parametrize("error_type", [OSError, RuntimeError, KeyboardInterrupt])
+def test_manifest_registration_failure_keeps_exactly_one_cleanup_owner(tmp_path, after, error_type, caplog):
+    """Registration faults on either side of insertion reclaim only owned manifest bytes."""
+    registry = _registry()
+    primary = error_type("synthetic manifest registration failure")
+    original = SafeDirectory.register
+    progress = []
+
+    def registered(directory, name, **kwargs):
+        """Fail around retained-identity registration without changing the ownership ledger."""
+        if name.startswith("manifest-"):
+            assert kwargs["expected_identity"] is not None
+            if after:
+                original(directory, name, **kwargs)
+            raise primary
+        return original(directory, name, **kwargs)
+
+    with patch.object(SafeDirectory, "register", registered), pytest.raises(
+        ComponentError if error_type is OSError else error_type,
+    ) as caught:
+        download_config(registry, "repo", "moving", tmp_path / "out", progress_callback=progress.append)
+    if error_type is OSError:
+        assert caught.value.__cause__ is primary
+    else:
+        assert caught.value is primary
+    assert registry.calls == ["/v2/repo/manifests/moving"]
+    assert not list(tmp_path.iterdir()) and not progress
+    assert "cleanup" not in caplog.text.lower()
+
+
+@native
+@pytest.mark.parametrize("after", [False, True])
+def test_manifest_registration_failure_retains_replacement_identity(tmp_path, after, caplog):
+    """Receiver/staging ownership never adopts or removes a replaced raw manifest entry."""
+    registry = _registry()
+    primary = RuntimeError("synthetic manifest replacement")
+    original = SafeDirectory.register
+
+    def replaced(directory, name, **kwargs):
+        """Replace the live inode before/after insertion and then fail registration."""
+        if name.startswith("manifest-"):
+            if after:
+                original(directory, name, **kwargs)
+            fd = os.open("replacement", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600, dir_fd=directory.fd)
+            try:
+                os.write(fd, b"another owner")
+            finally:
+                os.close(fd)
+            os.replace("replacement", name, src_dir_fd=directory.fd, dst_dir_fd=directory.fd)
+            if after:
+                raise primary
+        return original(directory, name, **kwargs)
+
+    with patch.object(SafeDirectory, "register", replaced), pytest.raises(
+        RuntimeError if after else ArtifactError,
+    ) as caught:
+        download_config(registry, "repo", "moving", tmp_path / "out")
+    if after:
+        assert caught.value is primary
+    retained = list(tmp_path.rglob("manifest-*"))
+    assert len(retained) == 1 and retained[0].read_bytes() == b"another owner"
+    assert not (tmp_path / "out").exists()
+    assert registry.calls == ["/v2/repo/manifests/moving"]
+    assert "cleanup" in caplog.text.lower()
+
+
+@native
 def test_sha512_manifest_and_selected_descriptor_are_verified_without_normalization(tmp_path):
     """Reported SHA-512 pins the received manifest, and the selected blob keeps its SHA-512 address."""
     payload = b"sha512 config"
