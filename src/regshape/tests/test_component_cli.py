@@ -275,17 +275,45 @@ def test_default_tag_and_identical_modern_selectors_share_sdk_policy(runner, tmp
 
 @_NATIVE
 @pytest.mark.parametrize("layers,index,message", [
-    ((), 0, "manifest has no layers"),
-    ((b"only",), 1, "valid index: 0"),
-    ((b"first", b"last"), 2, "valid indexes: 0-1"),
+    ((), 0, "Layer index is out of range: manifest has no layers; no valid layer index exists."),
+    ((b"only",), 1, "Layer index 1 is out of range for 1 layer; valid index: 0."),
+    ((b"first", b"last"), 2, "Layer index 2 is out of range for 2 layers; valid indexes: 0-1."),
 ])
 def test_layer_selection_errors_are_actionable_and_do_not_acquire_blobs(runner, tmp_path, layers, index, message):
     """Empty/out-of-range SDK selection fails after one manifest, without output or false metadata."""
     registry, console = _registry(layers=layers), ArtifactConsole()
-    result, _ = _invoke(runner, console, registry, tmp_path / "out", component="layer", index=index)
+    result, _ = _invoke(
+        runner, console, registry, tmp_path / "out", component="layer", index=index, options=("--no-progress",),
+    )
     assert result.exit_code == 1 and console.out.text == ""
-    assert message in console.err.text and len(registry.calls) == 1
+    assert console.err.text == f"Error [{_SOURCE}]: {message}\n"
+    assert len(registry.calls) == 1
     assert not list(tmp_path.iterdir())
+
+
+@_NATIVE
+@pytest.mark.parametrize("component", ["config", "layer"])
+@pytest.mark.parametrize("log_name", ["Out.bin", "separate.log"])
+def test_missing_output_parent_precedes_log_open(runner, tmp_path, component, log_name):
+    """Missing output parents get the same SDK diagnostic regardless of log filename spelling."""
+    parent = tmp_path / "missing"
+    with patch("regshape.cli.components.RegistryClient") as client:
+        result = runner.invoke(regshape, [
+            "--log-file", str(parent / log_name), component, "get", "-a", _SOURCE,
+            "-o", str(parent / "out.bin"), *(("--index", "0") if component == "layer" else ()),
+        ])
+    assert result.exit_code == 1 and result.stdout == ""
+    assert result.stderr == f"Error [{_SOURCE}]: Cannot open component output parent\n"
+    client.assert_not_called()
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("cause", [None, "registry unavailable"])
+def test_component_error_omits_only_absent_detail(cause):
+    """Component messages omit an absent detail without changing explicitly supplied cause text."""
+    error = ComponentError("Component unavailable", cause)
+    expected = "Component unavailable" if cause is None else f"Component unavailable : {cause}"
+    assert str(error) == expected
 
 
 @_NATIVE

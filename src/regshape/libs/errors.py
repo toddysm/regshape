@@ -126,6 +126,15 @@ class ComponentError(ArtifactError):
     established types. Existing-output conflicts never authorize replacement.
     """
 
+    def __init__(self, message: str | None = None, cause: str | None = None, *args: object) -> None:
+        """Retain component detail without appending an absent legacy cause.
+
+        Explicit cause text is preserved; chained exceptions remain separate
+        from the caller-facing diagnostic.
+        """
+        self.message = str(message) if cause is None else f"{message} : {cause}"
+        Exception.__init__(self, self.message, *args)
+
 
 class DockerError(RegShapeError):
     """

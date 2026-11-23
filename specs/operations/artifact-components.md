@@ -553,6 +553,10 @@ including on case-sensitive Linux filesystems. Callers must choose filenames
 differing beyond case.
 File-only output and conflicting download controls are also rejected before
 telemetry can open a log.
+SDK output preflight also precedes telemetry log acquisition. Missing parents
+are reported consistently as output-parent failures, not log-alias comparison
+errors. Component diagnostics omit an absent cause while retaining explicit
+cause details and chained exceptions.
 
 Python callers can start from the same registry-embedded artifact string and use
 the existing `parse_artifact_ref` helper to supply the borrowed-client API:

@@ -9,7 +9,7 @@ import os
 import sys
 from collections.abc import Callable
 from dataclasses import asdict
-from functools import wraps
+from functools import partial, wraps
 from pathlib import Path
 from typing import Any, TypeVar
 from unicodedata import normalize
@@ -121,8 +121,9 @@ class _ComponentObservers:
 
 def _after_telemetry(
     function: Callable[..., ComponentDownloadResult],
+    *, component: Component,
 ) -> Callable[..., None]:
-    """Validate usage/destination separation before telemetry, then emit only after cleanup."""
+    """Validate usage and SDK output preflight before telemetry; emit only after cleanup."""
     @wraps(function)
     def wrapper(*args: Any, **kwargs: Any) -> None:
         """Write completed scalar metadata, retaining shared deferred-warning/error semantics."""
@@ -146,8 +147,21 @@ def _after_telemetry(
             _separate_log_output(kwargs["output"])
         except (OSError, RuntimeError) as error:
             emit_error("--log-file", f"Cannot inspect log/output separation: {error}")
+        limits = ArtifactLimits(
+            max_manifest_bytes=kwargs["max_manifest_bytes"], max_total_bytes=kwargs["max_total_bytes"],
+        )
+        try:
+            preflight_component_download(
+                *source, kwargs["output"], component=component, layer_index=kwargs.get("index"), limits=limits,
+            )
+        except (ArtifactError, OSError) as error:
+            emit_error(kwargs["image_ref"], str(error))
+        except ValueError as error:
+            raise click.BadParameter(str(error)) from error
         with DownloadWarnings() as warnings:
-            result = function(*args, **kwargs, parsed_source=source, policy=policy, download_warnings=warnings)
+            result = function(
+                *args, **kwargs, parsed_source=source, policy=policy, limits=limits, download_warnings=warnings,
+            )
             try:
                 if kwargs["json_output"]:
                     emit_json(asdict(result))
@@ -174,6 +188,7 @@ def _separate_log_output(output: str) -> None:
     query the actual volume's case policy before comparing absent leaf names.
     Linux has no portable read-only case-policy query, so ambiguous same-parent
     names fail closed, including canonical Unicode spelling differences.
+    Missing parents are left to SDK output preflight, before telemetry opens.
     This is a usage check, not a reservation against concurrent namespace changes.
     """
     ctx = click.get_current_context()
@@ -187,6 +202,7 @@ def _separate_log_output(output: str) -> None:
     if (
         not aliases and not (target_exists or log_exists)
         and target_name.casefold() == log_name.casefold()
+        and target.parent.exists() and log.parent.exists()
         and target.parent.samefile(log.parent)
     ):
         if sys.platform == "darwin":
@@ -264,7 +280,7 @@ def _operation(
 def _get_command(component: Component) -> click.Command:
     """Declare identical resource policy/lifetimes; only layer has a required zero-based index."""
     @click.command("get", help=_HELP)
-    @_after_telemetry
+    @partial(_after_telemetry, component=component)
     @telemetry_options
     @artifact_option(
         help_text="Artifact source with embedded registry (registry/repo:tag or registry/repo@sha256:...).",
@@ -291,21 +307,13 @@ def _get_command(component: Component) -> click.Command:
         download_warnings: DownloadWarnings,
         parsed_source: tuple[str, str, str],
         policy: DownloadOptions,
+        limits: ArtifactLimits,
         concurrency: int, ranges_per_blob: int, range_size: int, sequential: bool,
         legacy_transport: bool, download_retries: int | None, scratch_dir: str | None,
         index: int | None = None,
     ) -> ComponentDownloadResult:
-        """Preflight before client creation, then return completed SDK metadata after sink cleanup."""
+        """Use preflighted arguments and return completed SDK metadata after sink cleanup."""
         registry, repo, reference = parsed_source
-        limits = ArtifactLimits(max_manifest_bytes=max_manifest_bytes, max_total_bytes=max_total_bytes)
-        try:
-            preflight_component_download(
-                registry, repo, reference, output, component=component, layer_index=index, limits=limits,
-            )
-        except (ArtifactError, OSError) as error:
-            emit_error(image_ref, str(error))
-        except ValueError as error:
-            raise click.BadParameter(str(error)) from error
 
         @track_scenario(f"{component} get")
         def acquire(progress: ProgressDisplay) -> ComponentDownloadResult:
