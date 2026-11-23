@@ -5,7 +5,6 @@ dispatch and identity-aware native storage. It never traverses indexes/subjects,
 uses embedded data/URLs, interprets payloads or imports CLI frameworks.
 """
 
-import os
 from collections.abc import Callable
 from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass, replace
@@ -20,7 +19,7 @@ from regshape.libs.artifacts.storage import SafeDirectory, require_archive_publi
 from regshape.libs.blobs.batch import _coordinated, _guard_observer
 from regshape.libs.blobs.download import DownloadOptions, DownloadStatus, resolve_download_options
 from regshape.libs.blobs.operations import _get_blob_with_context
-from regshape.libs.errors import ArtifactError, ComponentError
+from regshape.libs.errors import ComponentError
 from regshape.libs.manifests import DEFAULT_MANIFEST_ACCEPT, download_manifest
 from regshape.libs.manifests.download import _validate_inputs
 from regshape.libs.progress import (

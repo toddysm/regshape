@@ -204,6 +204,8 @@ def _get_blob_with_context(
     match get_blob. Staging borrows its handle/path for default range scratch;
     explicit scratch overrides win. Serial success registers immediately after
     exclusive receiver close; pooled receipt hands off before terminal callbacks.
+    The serial receiver verifies its retained identity inside the exclusive file
+    context; its unchanged return type does not expose that identity to registration.
     A supplied transfer_id reaches the pooled receiver unchanged.
     """
     if staging is not None and (
@@ -224,8 +226,7 @@ def _get_blob_with_context(
             progress_callback=progress_callback, total_size=total_size,
             max_bytes=max_bytes, output_dir_fd=output_dir_fd,
         )
-        if staging is not None:
-            assert output_path is not None
+        if staging is not None and output_path is not None:
             staging[0].register(output_path)
         return info
     from regshape.libs.blobs.batch import _receive_blob
