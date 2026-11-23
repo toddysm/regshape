@@ -287,17 +287,22 @@ class SafeDirectory:
         """Create an owned staging child inside the private root, not in the public output parent."""
         return self.mkdir(".regshape-staging-" + uuid4().hex)
 
-    def register(self, name: str) -> None:
+    def register(self, name: str, *, expected_identity: os.stat_result | None = None) -> None:
         """Register a successful exclusive receive for later promotion or safe cleanup.
 
         Only call for a file just created by this invocation in this private
         directory. Arbitrary source files must never be registered as owned.
+        A pooled receiver supplies its retained exclusive identity; mismatched
+        entries are never adopted. Ledger insertion transfers cleanup ownership,
+        including when a later caller action raises.
         """
         _component(name)
         self.verify()
         identity = os.stat(name, dir_fd=self.fd, follow_symlinks=False)
         if not stat.S_ISREG(identity.st_mode):
             raise ArtifactError("Artifact receive is not a regular file")
+        if expected_identity is not None and not os.path.samestat(identity, expected_identity):
+            raise ArtifactError("Artifact receive identity changed; replacement retained")
         self.files[name] = identity
 
     def create_file(self, name: str) -> SafeFile:

@@ -68,6 +68,15 @@ the operation reference before opting in to new result shapes or behavior.
   use `regshape.libs.artifacts` for directory/archive receipt and verification;
   read the [native storage and private-namespace prerequisites](../../specs/operations/artifacts.md#safe-storage-and-snapshot-consumers)
   before use. Windows is unsupported and fails closed.
+- **Selected components:** `download_config`, `download_layer` and
+  `preflight_component_download` in `regshape.libs.components` save only the
+  selected registry blob from one pinned simple manifest. See the
+  [SDK contracts](../../specs/operations/artifact-components.md#pm-2-python-and-cli-contracts)
+  and [source reference](../../src/regshape/libs/components.py). A new file is
+  required; no stdout, overwrite, index traversal, embedded/URL fallback or
+  payload transformation is supported. Native publication requires Linux/macOS;
+  Windows fails closed. A complete file remains after errors occurring after
+  publication, including late observer/cleanup failures.
 - [Downloads](downloads.md) covers `DownloadOptions`, batch blob acquisition
   and typed status/statistics, including retry and caller-ownership contracts.
 

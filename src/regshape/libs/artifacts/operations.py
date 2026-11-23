@@ -48,8 +48,9 @@ from regshape.libs.artifacts.storage import (
     require_archive_publication,
     require_safe_filesystem,
 )
-from regshape.libs.blobs import BlobDownload, DownloadOptions, DownloadStatus, get_blob
+from regshape.libs.blobs import DownloadOptions, DownloadStatus
 from regshape.libs.blobs.download import resolve_download_options
+from regshape.libs.blobs.operations import _get_blob_with_context
 from regshape.libs.errors import ArtifactError
 from regshape.libs.manifests import download_manifest
 from regshape.libs.manifests.download import _validate_inputs
@@ -392,26 +393,15 @@ def _pull_artifact(
                             progress_callback=row.manifest, output_dir_fd=staging.fd,
                         )
                         header = result.media_type
+                        staging.register(filename)
                     else:
-                        context = getattr(client, "_download_context", None)
-                        if context is not None and isinstance(context, DownloadTransport) and context.coordinator is not None:
-                            from regshape.libs.blobs.batch import _receive_blob
-
-                            _receive_blob(
-                                client, context.options, BlobDownload(
-                                    edge.digest, filename, edge.size,
-                                    max(1, min(edge.size, remaining)), staging.fd,
-                                ), repo, progress_callback=row.blob, transfer_id=row.identity,
-                                staging=(staging, output.parent / namespace.name / staging.name),
-                            )
-                        else:
-                            get_blob(
-                                client, repo, edge.digest, filename, total_size=edge.size,
-                                max_bytes=max(1, min(edge.size, remaining)),
-                                output_dir_fd=staging.fd, progress_callback=row.blob,
-                                download_options=blob_options,
-                            )
-                    staging.register(filename)
+                        _get_blob_with_context(
+                            client, repo, edge.digest, filename, total_size=edge.size,
+                            max_bytes=max(1, min(edge.size, remaining)),
+                            output_dir_fd=staging.fd, progress_callback=row.blob,
+                            download_options=blob_options, transfer_id=row.identity,
+                            staging=(staging, output.parent / namespace.name / staging.name),
+                        )
                     store.promote(filename, edge.digest)
                     return "network", header
 

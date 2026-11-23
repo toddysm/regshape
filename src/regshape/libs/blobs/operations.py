@@ -26,7 +26,7 @@ import os
 import stat
 from collections.abc import Callable
 from pathlib import Path
-from typing import BinaryIO, Optional
+from typing import TYPE_CHECKING, BinaryIO, Optional
 from urllib.parse import parse_qsl, urlparse
 
 import requests
@@ -66,6 +66,9 @@ _DEFAULT_CHUNK_SIZE = 65_536
 _DEFAULT_CONTENT_TYPE = "application/octet-stream"
 _SUPPORTED_ALGORITHMS = {"sha256", "sha512"}
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from regshape.libs.artifacts.storage import SafeDirectory
 
 
 # ===========================================================================
@@ -175,6 +178,41 @@ def get_blob(
     :raises ValueError: For invalid policy or unsupported explicit pooled clients,
         before acquisition effects.
     """
+    return _get_blob_with_context(
+        client, repo, digest, output_path, chunk_size,
+        progress_callback=progress_callback, total_size=total_size,
+        max_bytes=max_bytes, output_dir_fd=output_dir_fd,
+        download_options=download_options,
+        download_status_callback=download_status_callback,
+    )
+
+
+def _get_blob_with_context(
+    client: RegistryClient, repo: str, digest: str,
+    output_path: str | None = None, chunk_size: int = _DEFAULT_CHUNK_SIZE, *,
+    progress_callback: ProgressCallback | None = None,
+    total_size: int | None = None, max_bytes: int | None = None,
+    output_dir_fd: int | None = None,
+    download_options: DownloadOptions | None = None,
+    download_status_callback: Callable[[DownloadStatus], None] | None = None,
+    staging: tuple["SafeDirectory", Path] | None = None,
+    transfer_id: str | None = None,
+) -> BlobInfo:
+    """Dispatch verified receipt with optional private staging and logical identity.
+
+    Public defaults, legacy/custom clients and enclosing coordinator selection
+    match get_blob. Staging borrows its handle/path for default range scratch;
+    explicit scratch overrides win. Serial success registers immediately after
+    exclusive receiver close; pooled receipt hands off before terminal callbacks.
+    The serial receiver verifies its retained identity inside the exclusive file
+    context; its unchanged return type does not expose that identity to registration.
+    A supplied transfer_id reaches the pooled receiver unchanged.
+    """
+    if staging is not None and (
+        output_path is None or str(Path(output_path)) != Path(output_path).name
+        or output_dir_fd != staging[0].fd or max_bytes is None
+    ):
+        raise ValueError("Staged receipt requires bounded output under its staging handle")
     policy = resolve_download_options(
         client, download_options, requires_pooled=download_status_callback is not None,
     )
@@ -183,17 +221,21 @@ def get_blob(
         isinstance(context, DownloadTransport) and context.coordinator is None
         and download_status_callback is None
     ):
-        return _get_blob_serial(
+        info = _get_blob_serial(
             client, repo, digest, output_path, chunk_size,
             progress_callback=progress_callback, total_size=total_size,
             max_bytes=max_bytes, output_dir_fd=output_dir_fd,
         )
+        if staging is not None and output_path is not None:
+            staging[0].register(output_path)
+        return info
     from regshape.libs.blobs.batch import _receive_blob
 
     return _receive_blob(client, policy, BlobDownload(
         digest, output_path, total_size, max_bytes, output_dir_fd, chunk_size,
     ), repo, progress_callback=progress_callback,
         download_status_callback=download_status_callback,
+        staging=staging, transfer_id=transfer_id,
     )
 
 

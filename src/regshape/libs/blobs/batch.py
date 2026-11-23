@@ -32,7 +32,7 @@ from regshape.libs.blobs.download import (
     DownloadStatus,
     resolve_download_options,
 )
-from regshape.libs.errors import BlobError
+from regshape.libs.errors import ArtifactError, BlobError
 from regshape.libs.manifests.download import _validate_inputs
 from regshape.libs.models.blob import BlobInfo
 from regshape.libs.progress import ProgressCallback, TransferProgress
@@ -269,18 +269,35 @@ def _receive_blob(
     and return only after the verified sink and its caller-side cleanup finish.
     Borrowed staging supplies handle-relative default scratch and its diagnostic
     location; an explicit policy scratch_dir still takes precedence.
+    Verified staged sinks transfer their retained identity on this thread before
+    accepted cleanup/release/finalization or terminal observers. The shared ledger
+    remains authoritative if registration raises immediately after insertion.
     """
     _validate_observers(progress_callback, download_status_callback)
     blob = _full_blob(repo, request, policy, transfer_id=transfer_id)
+    if staging is not None:
+        directory, _ = staging
+        if (
+            request.output_dir_fd != directory.fd or request.max_bytes is None
+            or blob.output.path is None or str(blob.output.path) != blob.output.path.name
+        ):
+            raise ValueError("Staged receipt requires bounded output under its staging handle")
+        blob.output.staging = directory
     results: list[BlobInfo] = []
     with _coordinated(
         client, policy, progress_callback=progress_callback,
         download_status_callback=download_status_callback,
     ) as (_, coordinator):
         def receive(result: BlobInfo | _RangePart) -> None:
-            """Retain metadata only after a full worker or final ordered part verifies."""
+            """Transfer verified final output before any accepted-sink cleanup can fail."""
             info = _consume(result, coordinator)
             if info is not None:
+                if staging is not None:
+                    if blob.output.path is None or blob.output.identity is None:
+                        raise ArtifactError("Verified staged blob has no retained output identity")
+                    staging[0].register(
+                        blob.output.path.name, expected_identity=blob.output.identity,
+                    )
                 results.append(info)
 
         coordinator.run([_source(blob, policy, staging=staging)], on_result=receive)
