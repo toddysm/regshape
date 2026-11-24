@@ -5,6 +5,8 @@ namespace and installed with a native atomic no-replace rename. Public names are
 never reopened to acquire ownership. The caller must exclusively control the
 effective user identity and privileged actors during the namespace lifetime:
 ordinary permissions do not isolate hostile same-identity processes.
+Read-only acquisition can check only read primitives without weakening the
+default publication prerequisites or acquiring cleanup ownership.
 """
 
 import errno
@@ -34,6 +36,16 @@ def require_safe_filesystem() -> None:
         or os.stat not in os.supports_follow_symlinks
     ):
         raise ArtifactError("Safe handle-relative artifact storage is unsupported on this platform")
+
+
+def require_readonly_filesystem() -> None:
+    """Require only primitives needed for no-follow, regular-file local inspection."""
+    if (
+        not all(hasattr(os, flag) for flag in ("O_NOFOLLOW", "O_DIRECTORY", "O_NONBLOCK"))
+        or not all(operation in os.supports_dir_fd for operation in (os.open, os.stat))
+        or os.stat not in os.supports_follow_symlinks
+    ):
+        raise ArtifactError("Safe read-only artifact opens are unsupported on this platform")
 
 
 def require_archive_publication() -> None:
@@ -118,9 +130,17 @@ class SafeDirectory:
         self.native: NativeFilesystem | None = None
 
     @classmethod
-    def open(cls, path: str | Path) -> "SafeDirectory":
-        """Open an existing absolute/relative path componentwise, rejecting symlinks."""
-        require_safe_filesystem()
+    def open(cls, path: str | Path, *, read_only: bool = False) -> "SafeDirectory":
+        """Open a path componentwise, rejecting symlinks and parent traversal.
+
+        ``read_only`` checks only read primitives; it does not acquire ownership,
+        probe publication, change permissions or require write-capable syscalls.
+        The default preserves the existing publication prerequisite.
+        """
+        if read_only:
+            require_readonly_filesystem()
+        else:
+            require_safe_filesystem()
         if ".." in Path(path).parts:
             raise ArtifactError("Parent path components are not supported by safe artifact opens")
         path = Path(os.path.abspath(path))
