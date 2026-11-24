@@ -17,6 +17,11 @@ documented [`layout push`](layout-push.md) performs registry operations unless
 **Recursive validation and push require Linux/macOS, compatible native
 filesystems, and the trusted-private namespace contract; Windows fails closed.**
 
+The planned [`layout inspect` human-output design](layout-inspect.md) captures
+the approved graph presentation and color rules for
+[#130](https://github.com/toddysm/regshape/issues/130). That specification is not
+an implementation announcement; legacy `layout show` remains documented below.
+
 ### Primary Workflow
 
 ```
