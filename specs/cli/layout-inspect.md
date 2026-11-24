@@ -183,9 +183,11 @@ and malformed documents must remain explicit errors, not be silently presented
 as missing or successful empty metadata. Exact diagnostic wording, partial-view
 structure, and exit behavior remain open.
 
-Missing optional values are to be represented by `null` in the eventual
-normalized JSON result, subject to defining that result's exact schema. This
-does not authorize inserting nulls into stored OCI documents.
+The earlier discussion proposed `null` for missing optional values in a
+normalized JSON result. That is not an approved machine-readable contract:
+[#211](https://github.com/toddysm/regshape/issues/211) must resolve optional-field
+presence and null semantics along with the exact schema. This human-output
+decision does not authorize inserting nulls into stored OCI documents.
 
 ## Referrers and subject direction
 
