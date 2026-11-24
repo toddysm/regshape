@@ -34,6 +34,7 @@ to build your own tools. The CLI tool is built on top of the libraries and uses
 - [Complete-artifact library reference](../specs/operations/artifacts.md)
 - [Recursive layout push reference](../specs/cli/layout-push.md)
 - [Create an OCI layout](guides/create-oci-layout.md)
+- [Inspect a local layout from Python](library/layout-inspection.md) (unreleased 0.2 development API)
 - [Docker Desktop integration](guides/docker-desktop-integration.md)
 - [Monitor live transfer progress](guides/live-transfer-progress.md)
 - [Download a manifest or index with progress](guides/live-transfer-progress.md#download-a-manifest-or-index)

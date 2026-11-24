@@ -10,6 +10,11 @@
     moduleauthor:: ToddySM <toddysm@gmail.com>
 """
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from regshape.libs.layout.inspection_models import InspectionDiagnostic
+
 class RegShapeError(Exception):
     """
     A base error class from which all other errors inheirt.
@@ -117,6 +122,22 @@ class LayoutError(RegShapeError):
 
 class ArtifactError(RegShapeError):
     """A graph, resource-budget, safe-storage or artifact-publication failure."""
+
+
+class LayoutInspectionError(ArtifactError):
+    """No-tree root/platform failure or refusal to materialize oversized output.
+
+    ``diagnostics`` retains nonempty typed causes; no empty success result or
+    automatic metadata logging is produced.
+    """
+
+    def __init__(self, diagnostics: tuple["InspectionDiagnostic", ...]) -> None:
+        """Preserve typed inspection causes without legacy absent-cause text."""
+        if not diagnostics:
+            raise ValueError("LayoutInspectionError requires diagnostics")
+        self.diagnostics = diagnostics
+        self.message = "; ".join(f"{item.code}: {item.message}" for item in diagnostics)
+        Exception.__init__(self, self.message)
 
 
 class ComponentError(ArtifactError):

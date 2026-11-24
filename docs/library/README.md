@@ -41,6 +41,11 @@ then pass the caller-owned client to registry operations. See the
   `update_config_with_result` reports
   [whether this update made the manifest stale](../guides/create-oci-layout.md#post-generation-update-helpers),
   not its overall validity or pre-existing staleness.
+- **Local layout inspection:** `inspect_layout` in `regshape.libs.layout`
+  returns a bounded immutable occurrence tree with source-owned metadata,
+  partial diagnostics and versioned hierarchical JSON. See the
+  [inspection SDK reference](layout-inspection.md) for Linux/macOS safe-open
+  requirements, independent limits and the metadata-only boundary.
 - **Blob results:** `upload_blob_stream_result`, `upload_blob_chunked_result`
   and `mount_blob_result` in `regshape.libs.blobs` return library-owned
   [upload/mount result metadata](transfer-progress.md#upload-and-mount-results);
