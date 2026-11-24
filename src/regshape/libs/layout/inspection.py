@@ -569,7 +569,7 @@ class _Inspector:
                     ) from error
                 try:
                     directory.verify()
-                except ArtifactError as error:
+                except (OSError, ArtifactError) as error:
                     raise _InputFailure(
                         _Problem(
                             "CHANGED_DURING_READ",
@@ -869,6 +869,16 @@ class _Inspector:
                             _Problem(
                                 "CONFLICTING_DESCRIPTOR",
                                 "Descriptor mediaType differs from document mediaType",
+                                edge.source,
+                            )
+                        )
+                    elif document.media_type is None and document.kind != (
+                        "index" if edge.media_type in INDEX_TYPES else "manifest"
+                    ):
+                        problems.append(
+                            _Problem(
+                                "CONFLICTING_DESCRIPTOR",
+                                "Descriptor mediaType differs from observed document kind",
                                 edge.source,
                             )
                         )

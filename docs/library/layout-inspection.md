@@ -47,6 +47,7 @@ still expand in source order and retain their own descriptor comparisons.
 Bytes returned before a stream failure still spend the aggregate metadata
 budget. Required files disappearing after their read are reported as
 `CHANGED_DURING_READ`, distinct from files missing at initial acquisition.
+Post-read directory/ancestor renames are likewise detected association changes.
 `read_index`, authoring and recursive verification APIs remain unchanged.
 
 ## Results and source ownership
@@ -64,6 +65,9 @@ document and RFC 6901 JSON pointer. `incoming` and `source_position` identify
 the referring slot on a child; they are SDK provenance, not extra JSON fields.
 Invalid slots retain their position and independently valid display properties.
 They never manufacture a digest or unsafe child path.
+An index/manifest descriptor family conflicting with the observed document
+shape is diagnosed even when the document omits optional `mediaType`; that
+absent field is not filled in.
 
 Explicit subjects stay full source descriptors. They are not containment
 children: their target is not followed, statted, or included in stored-object

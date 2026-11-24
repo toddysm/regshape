@@ -383,6 +383,34 @@ def test_size_type_and_artifact_conflicts_preserve_intrinsic_and_incoming_fields
     _validate(result.to_dict())
 
 
+@pytest.mark.parametrize("kind", ["index", "manifest"])
+def test_absent_media_type_still_detects_descriptor_kind_conflicts(
+    tmp_path: Path, kind: str
+) -> None:
+    """Observed shape conflicts with a declared family without inventing absent mediaType."""
+    parsed = json.loads(_index([]) if kind == "index" else _manifest(layers=[]))
+    del parsed["mediaType"]
+    raw = _raw(parsed)
+    declared = OCI_INDEX if kind == "index" else OCI_MANIFEST
+    wrong = OCI_MANIFEST if kind == "index" else OCI_INDEX
+    path = _layout(
+        tmp_path,
+        _index([edge(raw, wrong), edge(raw, declared)]),
+        {address(raw): raw, address(b"{}"): b"{}"},
+    )
+    result = inspect_layout(path)
+    bad, good = result.root.children[0].children
+    assert not result.complete
+    assert bad.kind == good.kind == kind
+    assert bad.media_type is good.media_type is None
+    assert [item.code for item in bad.errors] == ["CONFLICTING_DESCRIPTOR"]
+    assert bad.errors[0].source == bad.incoming.source
+    assert good.errors == ()
+    for item in result.to_dict()["children"][0]["children"]:
+        assert "mediaType" not in item
+    _validate(result.to_dict())
+
+
 def test_unsupported_type_is_not_opened_and_malformed_document_keeps_identity(
     tmp_path: Path,
 ) -> None:
@@ -760,22 +788,30 @@ def test_nonregular_input_does_not_block_on_fifo(tmp_path: Path) -> None:
     assert all(item.code == "UNREADABLE_OBJECT" for item in result.diagnostics)
 
 
-@pytest.mark.parametrize("target_name", ["metadata", "oci-layout", "index.json"])
+@pytest.mark.parametrize(
+    "target_name", ["metadata", "oci-layout", "index.json", "directory", "ancestor"]
+)
 def test_changed_during_metadata_read_is_not_reused(
     tmp_path: Path, target_name: str
 ) -> None:
-    """Witnessed root removal has no tree; changed descendants are not reused."""
-    path, manifest, _ = _tiny(tmp_path)
+    """Witnessed root removal/rename has no tree; changed descendants are not reused."""
+    parent = tmp_path
+    if target_name == "ancestor":
+        parent = tmp_path / "ancestor"
+        parent.mkdir()
+    path, manifest, _ = _tiny(parent)
     (path / "index.json").write_bytes(_index([edge(manifest, OCI_MANIFEST)] * 2))
     read_file = SafeDirectory.read_file
-    filename = (
-        address(manifest).split(":")[1] if target_name == "metadata" else target_name
-    )
-    target = (
-        path / "blobs" / address(manifest).replace(":", "/")
-        if target_name == "metadata"
-        else path / target_name
-    )
+    filename, target = {
+        "metadata": (
+            address(manifest).split(":")[1],
+            path / "blobs" / address(manifest).replace(":", "/"),
+        ),
+        "oci-layout": ("oci-layout", path / "oci-layout"),
+        "index.json": ("index.json", path / "index.json"),
+        "directory": ("oci-layout", path),
+        "ancestor": ("oci-layout", parent),
+    }[target_name]
 
     class ChangedStream:
         """Borrow a real safe stream and mutate source metadata after its bounded read."""
@@ -799,6 +835,8 @@ def test_changed_during_metadata_read_is_not_reused(
             if data:
                 if target_name == "metadata":
                     target.write_bytes(manifest + b" ")
+                elif target_name in ("directory", "ancestor"):
+                    target.rename(target.with_name(target.name + "-moved"))
                 else:
                     target.unlink()
             return data
@@ -822,7 +860,7 @@ def test_changed_during_metadata_read_is_not_reused(
                 "INVALID_LAYOUT",
                 "CHANGED_DURING_READ",
             ]
-            assert caught.value.diagnostics[-1].source.document == target_name
+            assert caught.value.diagnostics[-1].source.document == filename
             return
     assert [item.code for item in result.diagnostics] == ["CHANGED_DURING_READ"] * 2
     assert all(item.schema_version is None for item in result.root.children[0].children)
