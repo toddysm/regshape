@@ -71,6 +71,8 @@ totals merely because it is a subject. Reverse referrers are never discovered.
 SHA-256 tags identify their full declared subject. SHA-512 prefixes resolve
 only from a unique matching full digest in reachable descriptor/subject
 metadata; zero or multiple candidates remain unresolved, not corrupted.
+Intrinsically malformed documents supply no candidates, so rejected metadata
+cannot resolve a prefix or make valid evidence ambiguous.
 An explicit member subject conflicting with a resolved declaration is an
 error, never rewritten. Recognition does not invent absent member subjects
 or add hidden expanded JSON fields.

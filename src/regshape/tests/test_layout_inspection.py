@@ -472,6 +472,55 @@ def test_sha512_prefix_uses_unique_reachable_full_metadata_candidates(
     assert len(result._storage.sizes) == 1
 
 
+@pytest.mark.parametrize("slot", ["manifests", "config", "layers", "subject"])
+@pytest.mark.parametrize("trusted_candidate", [False, True])
+def test_sha512_candidates_exclude_intrinsically_malformed_documents(
+    tmp_path: Path, slot: str, trusted_candidate: bool
+) -> None:
+    """Rejected metadata cannot resolve a prefix or make valid evidence ambiguous."""
+    prefix = "a" * 64
+    trusted_digest = "sha512:" + prefix + "b" * 64
+    untrusted = {
+        "mediaType": OCI_MANIFEST,
+        "digest": "sha512:" + prefix + "c" * 64,
+        "size": 0,
+    }
+    parsed = json.loads(_index([]) if slot == "manifests" else _manifest(layers=[]))
+    parsed["schemaVersion"] = 1
+    parsed[slot] = [untrusted] if slot in ("manifests", "layers") else untrusted
+    malformed = _raw(parsed)
+    tagged = _index([])
+    entry = _index(
+        [
+            edge(tagged, OCI_INDEX, annotations={REF_NAME: "sha512-" + prefix}),
+            edge(malformed, OCI_INDEX if slot == "manifests" else OCI_MANIFEST),
+        ],
+        **(
+            {
+                "subject": {
+                    "mediaType": OCI_MANIFEST,
+                    "digest": trusted_digest,
+                    "size": 0,
+                }
+            }
+            if trusted_candidate
+            else {}
+        ),
+    )
+    path = _layout(
+        tmp_path, entry, {address(value): value for value in (tagged, malformed)}
+    )
+    result = inspect_layout(path)
+    list_node, malformed_node = result.root.children[0].children
+    evidence = list_node.referrer_list
+    assert evidence.status == ("resolved" if trusted_candidate else "unresolved")
+    assert evidence.digest == (trusted_digest if trusted_candidate else None)
+    assert not result.complete
+    assert malformed_node.errors[0].code == "MALFORMED_DOCUMENT"
+    assert len(result._storage.sizes) == 2
+    _validate(result.to_dict())
+
+
 @pytest.mark.parametrize("subject", [None, "a", "b"])
 def test_tag_association_is_occurrence_local_and_never_invents_member_subject(
     tmp_path: Path, subject: str | None

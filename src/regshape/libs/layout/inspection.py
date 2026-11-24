@@ -16,6 +16,7 @@ import sys
 from collections.abc import Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
+from itertools import chain
 from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, TypedDict, cast
@@ -659,6 +660,7 @@ class _Inspector:
                 parsed = _json(raw, self.limits, source)
                 self._reserve_descriptors(parsed, source)
                 observation.document = _document(parsed, source)
+                self._collect_candidates(observation.document)
                 self.object_references += (
                     len(observation.document.manifests or ())
                     + len(observation.document.layers or ())
@@ -691,21 +693,20 @@ class _Inspector:
         if self.descriptors + count > self.limits.max_descriptors:
             raise _InputFailure(self._limit("max_descriptors", source))
         self.descriptors += count
-        # Candidates include explicit subject metadata, never subject-target IO.
-        for key in ("manifests", "layers", "config", "subject"):
-            values = parsed.get(key)
-            slots = (
-                values
-                if isinstance(values, list)
-                else [values]
-                if key in ("config", "subject") and key in parsed
-                else []
-            )
-            for item in slots:
-                if isinstance(item, dict):
-                    digest = _valid_digest(item.get("digest"))
-                    if digest is not None:
-                        self.candidates.add(digest)
+
+    def _collect_candidates(self, document: _Document) -> None:
+        """Harvest valid digest fields only after intrinsic document validation.
+
+        Subjects contribute source evidence without any subject-target IO.
+        """
+        for descriptor in chain(
+            document.manifests or (),
+            document.layers or (),
+            (document.config,) if document.config is not None else (),
+            (document.subject,) if document.subject is not None else (),
+        ):
+            if descriptor.digest is not None:
+                self.candidates.add(descriptor.digest)
 
     def _prepare(self, pending: _Pending, document: _Document) -> None:
         """Install shared fields and source slots, activating only this owner's errors."""
@@ -1089,6 +1090,7 @@ def inspect_layout(
                 raise _InputFailure(
                     _Problem("INVALID_LAYOUT", "Entry point must be an index", source)
                 )
+            inspector._collect_candidates(entry)
             containment = len(entry.manifests or ())
             inspector.object_references += containment
             inspector.subject_references += int(entry.subject is not None)
