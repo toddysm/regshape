@@ -37,7 +37,8 @@
     },
     "digest": {
       "type": "string",
-      "pattern": "^(sha256:[0-9a-f]{64}|sha512:[0-9a-f]{128})$"
+      "$comment": "Use a portable absolute end assertion; $ can match before a final newline.",
+      "pattern": "^(sha256:[0-9a-f]{64}|sha512:[0-9a-f]{128})(?![\\s\\S])"
     },
     "annotations": {
       "type": "object",
@@ -116,7 +117,7 @@
         "status": {"enum": ["resolved", "unresolved"]},
         "digest": {"$ref": "#/$defs/digest"},
         "algorithm": {"const": "sha512"},
-        "prefix": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        "prefix": {"type": "string", "pattern": "^[0-9a-f]{64}(?![\\s\\S])"}
       },
       "allOf": [{
         "if": {"properties": {"status": {"const": "resolved"}}},
@@ -171,7 +172,7 @@
           "properties": {
             "location": {
               "type": "string",
-              "pattern": "^blobs/(sha256/[0-9a-f]{64}|sha512/[0-9a-f]{128})$"
+              "pattern": "^blobs/(sha256/[0-9a-f]{64}|sha512/[0-9a-f]{128})(?![\\s\\S])"
             }
           }
         }
@@ -300,7 +301,7 @@
           "type": "object",
           "minProperties": 1,
           "patternProperties": {
-            "^(0|[1-9][0-9]*)$": {"type": "integer", "minimum": 1}
+            "^(0|[1-9][0-9]*)(?![\\s\\S])": {"type": "integer", "minimum": 1}
           },
           "additionalProperties": false
         },
