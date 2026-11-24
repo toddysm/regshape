@@ -9,7 +9,8 @@
    :synopsis: Library-level functions for creating and managing OCI Image
               Layout directories on the local filesystem, including layer
               compression preparation, media-type selection and config-update
-              manifest staleness reporting and bounded read-only inspection.
+              manifest staleness reporting, bounded read-only inspection
+              and evidence-based summaries.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
 """
@@ -23,12 +24,19 @@ from regshape.libs.layout.inspection_models import (
     InspectionLimits,
     LayoutInspectionResult,
     LayoutNode,
+    LayoutSummaryResult,
     ManifestNode,
     OpaqueNode,
     ReferrerListEvidence,
     SourceLocation,
+    SummaryCategory,
+    SummaryGroup,
+    SummaryIndexNode,
+    SummaryLayoutNode,
+    SummaryStatistics,
     UnknownNode,
 )
+from regshape.libs.layout.summary import summarize_layout
 from regshape.libs.layout.operations import (
     add_blob,
     add_manifest,
@@ -87,6 +95,13 @@ __all__ = [
     "SourceLocation",
     "InspectionDiagnostic",
     "ReferrerListEvidence",
+    "summarize_layout",
+    "LayoutSummaryResult",
+    "SummaryCategory",
+    "SummaryGroup",
+    "SummaryIndexNode",
+    "SummaryLayoutNode",
+    "SummaryStatistics",
     # Push
     "push_layout",
     "BlobPushReport",

@@ -139,5 +139,73 @@ Output implements the expanded branch of the
 
 The API does not print or log metadata; the example explicitly chooses to print.
 Annotations can be sensitive, so choose output retention deliberately.
-Summary APIs and the inspect CLI are separate delivery items, not capabilities
-introduced by this SDK slice.
+The inspect CLI is a separate delivery item.
+
+## `summarize_layout`
+
+```python
+from regshape.libs.layout import inspect_layout, summarize_layout
+
+inspection = inspect_layout("./layout")
+summary = summarize_layout(inspection)
+print(summary.to_json(), end="")
+```
+
+Signature: `summarize_layout(result: LayoutInspectionResult) ->
+LayoutSummaryResult`. Invalid argument types raise `ValueError`.
+This is a pure in-memory operation over inspection facts: no filesystem
+rescan, config/layer decoding, registry discovery, printing or Click imports.
+It does not first materialize expanded output.
+
+`summary.root` is a `SummaryLayoutNode`. Its `SummaryIndexNode` descendants
+retain **every index occurrence**, intrinsic metadata, source descriptor
+blocks, errors and occurrence-local referrers evidence. At each index,
+contiguous complete manifest occurrences of the same evidence-based category
+become `SummaryGroup` values. Generic artifacts additionally require exactly
+the same own `artifactType`. A different category/type, index or incomplete
+manifest ends a run; errors and unknown documents stay expanded.
+The original inspection is unchanged.
+
+Categories are `platform-images`, `attestations`, `signatures`, `lifecycle`,
+`artifacts`, and `unclassified`. Exact own artifact types and source descriptor
+attestation annotations provide artifact evidence; another own artifact type
+cannot be overridden by an attestation annotation. Other nonempty own types
+remain literal artifacts, not guessed SBOMs or signatures. Platform images
+require a compatible OCI/Docker image-manifest/config pair and source platform
+with nonempty, non-`unknown` OS/architecture. Unknown/unknown alone is **not**
+attestation evidence; absent platform fields are never invented.
+Classification asserts neither authenticity nor payload validity.
+
+Groups expose `positions`, `references`, `unique_manifests`,
+`config_references`, `layer_references`, `layer_count_distribution`,
+`unique_objects`, `stored_bytes`, and optional `artifact_type`.
+`members` borrows complete `ManifestNode` occurrences for full source evidence,
+including explicit subjects and each incoming descriptor; it is SDK-only,
+not a hidden expanded tree in JSON. Mixed attestation evidence retains its
+individual own types in members; a group-level artifact type is emitted only
+when uniform. Layer-count distributions count every displayed occurrence:
+`{"1": 1, "2": 1}` is not “each has one layer.” Shared content means group
+unique totals are **not additive**.
+
+`summary.root.statistics` is a frozen `SummaryStatistics`:
+
+| SDK field | JSON key | Meaning |
+| --- | --- | --- |
+| `unique_objects` | `uniqueObjects` | Distinct existing contained digest addresses; excludes marker, entry point, missing/unlisted/subject-only targets. |
+| `object_references` | `objectReferences` | Config/layer/manifest slots in distinct successfully parsed source documents, including repeated or missing targets. |
+| `subject_references` | `subjectReferences` | Separate subject slots from those documents, never containment references. |
+| `stored_bytes` | `storedBytes` | Observed stat sizes once per existing contained address, not descriptor-declared sizes. |
+
+`summary.diagnostics`, `.complete` and `.limits` preserve the inspection's
+structural failures and budgets. Incomplete results have observed totals and
+`statisticsComplete: false`; grouping cannot repair them. Even complete totals
+do not prove cryptographic integrity or registry-wide referrer completeness.
+
+`summary.to_dict()` and `.to_json()` follow the same independent-copy,
+ASCII/LF and preflight contracts as expanded serialization, using **only the
+summary view's** byte budget. They implement the summary branch of the
+[version-1 schema](../../specs/layout/layout-inspect.schema.json).
+Summary JSON adds root statistics and, only on recognized tagged index
+occurrences, an `association` block with source/tag/status and either a full
+resolved digest or unresolved SHA-512 algorithm/prefix. This does not invent
+an OCI subject, reverse subject direction or imply complete registry discovery.

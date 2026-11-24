@@ -1,7 +1,7 @@
 """Immutable local-layout occurrences, provenance, budgets and bounded JSON views.
 
 Source metadata is shared read-only between occurrences. Serialization emits
-only the version-1 expanded display, not SDK provenance or storage accounting,
+the selected version-1 expanded or summary display, not SDK-only provenance,
 and preflights ASCII JSON bytes before allocating an independent result.
 """
 
@@ -140,8 +140,8 @@ class _Node:
 
 
 @dataclass(frozen=True, kw_only=True)
-class IndexNode(_Node):
-    """One entry-point/stored index occurrence; None fields denote unparsed input."""
+class _IndexNode(_Node):
+    """Source-owned index fields shared by expanded and summarized occurrences."""
 
     kind: Literal["index"] = field(default="index", init=False)
     schema_version: int | None = None
@@ -150,8 +150,14 @@ class IndexNode(_Node):
     subject: DescriptorView | None = None
     annotations: Mapping[str, JsonValue] | None = None
     manifests: tuple[DescriptorView, ...] | None = None
-    children: tuple[ObjectNode, ...] | None = None
     referrer_list: ReferrerListEvidence | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class IndexNode(_IndexNode):
+    """One entry-point/stored index occurrence; None children denote unparsed input."""
+
+    children: tuple[ObjectNode, ...] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -198,6 +204,83 @@ class LayoutNode:
     kind: Literal["layout"] = field(default="layout", init=False)
 
 
+SummaryCategory: TypeAlias = Literal[
+    "platform-images",
+    "attestations",
+    "signatures",
+    "lifecycle",
+    "artifacts",
+    "unclassified",
+]
+
+
+@dataclass(frozen=True)
+class SummaryGroup:
+    """A contiguous run of complete manifests, retaining borrowed source evidence.
+
+    Members retain their own metadata, incoming descriptors and explicit subjects;
+    they are not serialized as a hidden expanded tree. Counts describe displayed
+    occurrences except unique totals, which are not additive across groups.
+    """
+
+    category: SummaryCategory
+    positions: tuple[int, ...]
+    members: tuple[ManifestNode, ...]
+    unique_manifests: int
+    config_references: int
+    layer_references: int
+    layer_count_distribution: Mapping[str, int]
+    unique_objects: int
+    stored_bytes: int
+    artifact_type: str | None = None
+    kind: Literal["group"] = field(default="group", init=False)
+
+    @property
+    def references(self) -> int:
+        """Number of displayed manifest occurrences, not distinct stored files."""
+        return len(self.members)
+
+
+@dataclass(frozen=True, kw_only=True)
+class SummaryIndexNode(_IndexNode):
+    """An unchanged index owner with ordered grouped or expanded child occurrences."""
+
+    children: (
+        tuple[
+            SummaryIndexNode | ManifestNode | OpaqueNode | UnknownNode | SummaryGroup,
+            ...,
+        ]
+        | None
+    ) = None
+
+
+@dataclass(frozen=True)
+class SummaryStatistics:
+    """Observed containment storage and distinct-document slot counts.
+
+    Subjects are separate reference facts, never additional contained objects.
+    Completeness is supplied by the owning result, not inferred from these totals.
+    """
+
+    unique_objects: int
+    object_references: int
+    subject_references: int
+    stored_bytes: int
+
+
+@dataclass(frozen=True)
+class SummaryLayoutNode:
+    """Selected layout and all index ancestry, plus observed summary-only statistics."""
+
+    location: str
+    image_layout_version: str
+    statistics: SummaryStatistics
+    statistics_complete: bool
+    children: tuple[SummaryIndexNode, ...]
+    errors: tuple[InspectionDiagnostic, ...] = ()
+    kind: Literal["layout"] = field(default="layout", init=False)
+
+
 @dataclass(frozen=True)
 class _StorageFacts:
     """Call-local observed address sizes and source-slot counts for SDK summaries.
@@ -235,24 +318,7 @@ class LayoutInspectionResult:
         :raises LayoutInspectionError: When the complete encoded view exceeds
             max_output_bytes; no partial copy is returned.
         """
-        _preflight(self.root, self.limits.max_output_bytes)
-        result: dict[str, object] = {}
-        stack: list[tuple[object, object]] = [(_Projection(self.root), result)]
-        while stack:
-            source, target = stack.pop()
-            if isinstance(source, Mapping) and isinstance(target, dict):
-                items = (
-                    source._items()
-                    if isinstance(source, _Projection)
-                    else source.items()
-                )
-                for key, value in items:
-                    target[key] = _copy_slot(value, stack)
-            elif isinstance(source, (tuple, _ViewSequence)) and isinstance(
-                target, list
-            ):
-                target.extend(_copy_slot(value, stack) for value in source)
-        return result
+        return _view_dict(self.root, self.limits.max_output_bytes)
 
     def to_json(self) -> str:
         """Return two-space ASCII JSON plus LF, preflighted before string allocation.
@@ -261,6 +327,53 @@ class LayoutInspectionResult:
         """
         _preflight(self.root, self.limits.max_output_bytes)
         return "".join(_json_chunks(_Projection(self.root))) + "\n"
+
+
+@dataclass(frozen=True)
+class LayoutSummaryResult:
+    """Immutable selected summary; inspection errors and limits remain authoritative."""
+
+    root: SummaryLayoutNode
+    diagnostics: tuple[InspectionDiagnostic, ...]
+    limits: InspectionLimits
+
+    @property
+    def complete(self) -> bool:
+        """Whether the source inspection found no structural errors or limits."""
+        return not self.diagnostics
+
+    def to_dict(self) -> dict[str, object]:
+        """Return independent summary JSON fields, preflighting only the selected view.
+
+        :raises LayoutInspectionError: If encoded summary bytes exceed the output cap.
+        """
+        return _view_dict(self.root, self.limits.max_output_bytes)
+
+    def to_json(self) -> str:
+        """Return two-space ASCII summary JSON and LF, never a partial document.
+
+        :raises LayoutInspectionError: If encoded summary bytes exceed the output cap.
+        """
+        _preflight(self.root, self.limits.max_output_bytes)
+        return "".join(_json_chunks(_Projection(self.root))) + "\n"
+
+
+def _view_dict(root: LayoutNode | SummaryLayoutNode, cap: int) -> dict[str, object]:
+    """Preflight a selected view before iteratively allocating its independent copy."""
+    _preflight(root, cap)
+    result: dict[str, object] = {}
+    stack: list[tuple[object, object]] = [(_Projection(root), result)]
+    while stack:
+        source, target = stack.pop()
+        if isinstance(source, Mapping) and isinstance(target, dict):
+            items = (
+                source._items() if isinstance(source, _Projection) else source.items()
+            )
+            for key, value in items:
+                target[key] = _copy_slot(value, stack)
+        elif isinstance(source, (tuple, _ViewSequence)) and isinstance(target, list):
+            target.extend(_copy_slot(value, stack) for value in source)
+    return result
 
 
 def _copy_slot(value: object, stack: list[tuple[object, object]]) -> object:
@@ -295,13 +408,35 @@ def _error_items(
 class _Projection(Mapping[str, object]):
     """Lazy ordered display mapping; expanding it never copies a descendant tree."""
 
-    def __init__(self, value: LayoutNode | ObjectNode | DescriptorView) -> None:
+    def __init__(
+        self,
+        value: LayoutNode
+        | ObjectNode
+        | DescriptorView
+        | SummaryLayoutNode
+        | SummaryIndexNode
+        | SummaryGroup,
+    ) -> None:
         """Borrow an immutable occurrence/descriptor for its wire-field projection."""
         self.value = value
 
     def _items(self) -> Iterator[tuple[str, object]]:
         """Yield version-1 keys in fixed order, retaining source map/array ordering."""
         value = self.value
+        if isinstance(value, SummaryGroup):
+            yield "kind", value.kind
+            yield "category", value.category
+            if value.artifact_type is not None:
+                yield "artifactType", value.artifact_type
+            yield "positions", value.positions
+            yield "references", value.references
+            yield "uniqueManifests", value.unique_manifests
+            yield "configReferences", value.config_references
+            yield "layerReferences", value.layer_references
+            yield "layerCountDistribution", value.layer_count_distribution
+            yield "uniqueObjects", value.unique_objects
+            yield "storedBytes", value.stored_bytes
+            return
         if isinstance(value, DescriptorView):
             if value.digest is not None:
                 yield "digest", value.digest
@@ -313,12 +448,27 @@ class _Projection(Mapping[str, object]):
             yield "kind", value.kind
             if isinstance(value, OpaqueNode) and value.position is not None:
                 yield "position", value.position
-            if not isinstance(value, LayoutNode) and value.digest is not None:
+            if (
+                not isinstance(value, (LayoutNode, SummaryLayoutNode))
+                and value.digest is not None
+            ):
                 yield "digest", value.digest
             yield "location", value.location
-            if isinstance(value, LayoutNode):
+            if isinstance(value, (LayoutNode, SummaryLayoutNode)):
                 yield "imageLayoutVersion", value.image_layout_version
-            if isinstance(value, (IndexNode, ManifestNode)):
+            if isinstance(value, SummaryLayoutNode):
+                stats = value.statistics
+                yield (
+                    "statistics",
+                    {
+                        "uniqueObjects": stats.unique_objects,
+                        "objectReferences": stats.object_references,
+                        "subjectReferences": stats.subject_references,
+                        "storedBytes": stats.stored_bytes,
+                    },
+                )
+                yield "statisticsComplete", value.statistics_complete
+            if isinstance(value, (_IndexNode, ManifestNode)):
                 for key, item in (
                     ("schemaVersion", value.schema_version),
                     ("mediaType", value.media_type),
@@ -330,15 +480,40 @@ class _Projection(Mapping[str, object]):
                     yield "subject", _Projection(value.subject)
                 if value.annotations is not None:
                     yield "annotations", value.annotations
-                if isinstance(value, IndexNode) and value.manifests is not None:
+                if isinstance(value, _IndexNode) and value.manifests is not None:
                     yield "manifests", _ViewSequence(value.manifests)
+                if (
+                    isinstance(value, SummaryIndexNode)
+                    and value.referrer_list is not None
+                ):
+                    evidence = value.referrer_list
+                    association = {
+                        "tag": evidence.tag,
+                        "source": str(evidence.source),
+                        "status": evidence.status,
+                    }
+                    if evidence.digest is not None:
+                        association["digest"] = evidence.digest
+                    else:
+                        association["algorithm"] = evidence.algorithm
+                        association["prefix"] = evidence.prefix
+                    yield "association", association
                 if isinstance(value, ManifestNode):
                     if value.config is not None:
                         yield "config", _Projection(value.config)
                     if value.layers is not None:
                         yield "layers", _ViewSequence(value.layers)
             if (
-                isinstance(value, (LayoutNode, IndexNode, ManifestNode))
+                isinstance(
+                    value,
+                    (
+                        LayoutNode,
+                        IndexNode,
+                        ManifestNode,
+                        SummaryLayoutNode,
+                        SummaryIndexNode,
+                    ),
+                )
                 and value.children is not None
             ):
                 yield "children", _ViewSequence(value.children)
@@ -365,7 +540,9 @@ class _ViewSequence:
     """Borrow an occurrence tuple; projection wrappers are allocated only as visited."""
 
     def __init__(
-        self, values: tuple[DescriptorView, ...] | tuple[ObjectNode, ...]
+        self,
+        values: tuple[DescriptorView, ...]
+        | tuple[ObjectNode | SummaryIndexNode | SummaryGroup, ...],
     ) -> None:
         """Retain immutable local values without copying a wide array."""
         self.values = values
@@ -450,7 +627,7 @@ def _json_chunks(value: object) -> Iterator[str]:
 _END = object()
 
 
-def _preflight(root: LayoutNode, cap: int) -> None:
+def _preflight(root: LayoutNode | SummaryLayoutNode, cap: int) -> None:
     """Count final ASCII bytes including LF, stopping at the first over-cap chunk."""
     count = 1
     for chunk in _json_chunks(_Projection(root)):
