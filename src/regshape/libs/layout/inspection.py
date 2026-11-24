@@ -529,7 +529,7 @@ class _Inspector:
         source: SourceLocation,
         expected: os.stat_result | None = None,
     ) -> bytes:
-        """Read cap-plus-one metadata bytes and compare entry/handle identity around IO."""
+        """Charge every returned chunk, even on IO failure, and check read-time identity."""
         cap = getattr(self.limits, budget)
         remaining = self.limits.max_total_metadata_bytes - self.metadata_bytes
         selected_budget = "max_total_metadata_bytes" if remaining < cap else budget
@@ -552,12 +552,21 @@ class _Inspector:
                     chunk = stream.read(min(65_536, cap + 1 - len(raw)))
                     if not chunk:
                         break
+                    self.metadata_bytes += len(chunk)
                     raw.extend(chunk)
-                self.metadata_bytes += len(raw)
                 if len(raw) > cap:
                     raise _InputFailure(self._limit(selected_budget, source))
                 after = os.fstat(stream.fileno())
-                entry = os.stat(name, dir_fd=directory.fd, follow_symlinks=False)
+                try:
+                    entry = os.stat(name, dir_fd=directory.fd, follow_symlinks=False)
+                except FileNotFoundError as error:
+                    raise _InputFailure(
+                        _Problem(
+                            "CHANGED_DURING_READ",
+                            "Metadata disappeared during read",
+                            source,
+                        )
+                    ) from error
                 try:
                     directory.verify()
                 except ArtifactError as error:

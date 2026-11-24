@@ -44,6 +44,9 @@ layers and content stay opaque: only their existence and stat size are observed.
 Each valid target address is observed once, including cached failures; each
 distinct supported metadata document is read/parsed once. Repeated occurrences
 still expand in source order and retain their own descriptor comparisons.
+Bytes returned before a stream failure still spend the aggregate metadata
+budget. Required files disappearing after their read are reported as
+`CHANGED_DURING_READ`, distinct from files missing at initial acquisition.
 `read_index`, authoring and recursive verification APIs remain unchanged.
 
 ## Results and source ownership

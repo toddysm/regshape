@@ -9,8 +9,10 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import contextmanager
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -758,12 +760,22 @@ def test_nonregular_input_does_not_block_on_fifo(tmp_path: Path) -> None:
     assert all(item.code == "UNREADABLE_OBJECT" for item in result.diagnostics)
 
 
-def test_changed_during_metadata_read_is_not_reused(tmp_path: Path) -> None:
-    """Changing an open document creates explicit unstable-metadata failures on both occurrences."""
+@pytest.mark.parametrize("target_name", ["metadata", "oci-layout", "index.json"])
+def test_changed_during_metadata_read_is_not_reused(
+    tmp_path: Path, target_name: str
+) -> None:
+    """Witnessed root removal has no tree; changed descendants are not reused."""
     path, manifest, _ = _tiny(tmp_path)
     (path / "index.json").write_bytes(_index([edge(manifest, OCI_MANIFEST)] * 2))
     read_file = SafeDirectory.read_file
-    target = path / "blobs" / address(manifest).replace(":", "/")
+    filename = (
+        address(manifest).split(":")[1] if target_name == "metadata" else target_name
+    )
+    target = (
+        path / "blobs" / address(manifest).replace(":", "/")
+        if target_name == "metadata"
+        else path / target_name
+    )
 
     class ChangedStream:
         """Borrow a real safe stream and mutate source metadata after its bounded read."""
@@ -785,7 +797,10 @@ def test_changed_during_metadata_read_is_not_reused(tmp_path: Path) -> None:
             """Modify on the first actual read, not by replacing production stat results."""
             data = self.stream.read(size)
             if data:
-                target.write_bytes(manifest + b" ")
+                if target_name == "metadata":
+                    target.write_bytes(manifest + b" ")
+                else:
+                    target.unlink()
             return data
 
         def __exit__(self, *args):
@@ -793,18 +808,78 @@ def test_changed_during_metadata_read_is_not_reused(tmp_path: Path) -> None:
             return self.context.__exit__(*args)
 
     def read(directory, name):
-        """Instrument only the contained manifest, leaving marker/index stable."""
+        """Instrument exactly the selected source after its actual bounded read."""
         context = read_file(directory, name)
-        return (
-            ChangedStream(context)
-            if name == address(manifest).split(":")[1]
-            else context
-        )
+        return ChangedStream(context) if name == filename else context
 
     with patch.object(SafeDirectory, "read_file", read):
-        result = inspect_layout(path)
+        if target_name == "metadata":
+            result = inspect_layout(path)
+        else:
+            with pytest.raises(LayoutInspectionError) as caught:
+                inspect_layout(path)
+            assert [item.code for item in caught.value.diagnostics] == [
+                "INVALID_LAYOUT",
+                "CHANGED_DURING_READ",
+            ]
+            assert caught.value.diagnostics[-1].source.document == target_name
+            return
     assert [item.code for item in result.diagnostics] == ["CHANGED_DURING_READ"] * 2
     assert all(item.schema_version is None for item in result.root.children[0].children)
+
+
+def test_partial_metadata_read_failures_spend_aggregate_byte_budget(
+    tmp_path: Path,
+) -> None:
+    """Bytes returned before IO failure still bound subsequent distinct document reads."""
+    documents = [
+        _manifest(layers=[], annotations={"fixture": str(position)})
+        for position in range(4)
+    ]
+    entry = _index([edge(value, OCI_MANIFEST) for value in documents])
+    path = _layout(tmp_path, entry, {address(value): value for value in documents})
+    names = {address(value).split(":")[1] for value in documents}
+    consumed: list[bytes] = []
+    opened: list[str] = []
+    real_read = SafeDirectory.read_file
+
+    @contextmanager
+    def read(directory, name):
+        """Own real safe streams; fail after one bounded chunk for each contained input."""
+        with real_read(directory, name) as stream:
+            if name not in names:
+                yield stream
+                return
+            opened.append(name)
+            read_once = False
+
+            def partial(size: int) -> bytes:
+                """Record returned bytes, then raise on the next read of this stream."""
+                nonlocal read_once
+                if read_once:
+                    raise OSError("fixture IO failure after partial read")
+                read_once = True
+                data = stream.read(min(size, 16))
+                consumed.append(data)
+                return data
+
+            yield SimpleNamespace(fileno=stream.fileno, read=partial)
+
+    root_bytes = (path / "oci-layout").stat().st_size + len(entry)
+    with patch.object(SafeDirectory, "read_file", read):
+        result = inspect_layout(
+            path, limits=InspectionLimits(max_total_metadata_bytes=root_bytes + 32)
+        )
+    assert [item.code for item in result.diagnostics] == [
+        "UNREADABLE_OBJECT",
+        "UNREADABLE_OBJECT",
+        "LIMIT_REACHED",
+    ]
+    assert "max_total_metadata_bytes" in result.diagnostics[-1].message
+    assert sum(map(len, consumed)) == 33
+    assert len(opened) == 3
+    assert not result.complete
+    _validate(result.to_dict())
 
 
 @pytest.mark.parametrize(
