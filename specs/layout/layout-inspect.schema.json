@@ -163,6 +163,20 @@
       },
       "additionalProperties": false
     },
+    "storedIndex": {
+      "allOf": [
+        {"$ref": "#/$defs/index"},
+        {
+          "required": ["digest"],
+          "properties": {
+            "location": {
+              "type": "string",
+              "pattern": "^blobs/(sha256/[0-9a-f]{64}|sha512/[0-9a-f]{128})$"
+            }
+          }
+        }
+      ]
+    },
     "index": {
       "type": "object",
       "required": ["kind", "location"],
@@ -184,7 +198,7 @@
           "type": "array",
           "items": {
             "oneOf": [
-              {"$ref": "#/$defs/index"},
+              {"$ref": "#/$defs/storedIndex"},
               {"$ref": "#/$defs/manifest"},
               {"$ref": "#/$defs/unknown"},
               {"$ref": "#/$defs/group"}
@@ -293,6 +307,15 @@
         "uniqueObjects": {"type": "integer", "minimum": 1},
         "storedBytes": {"type": "integer", "minimum": 0}
       },
+      "allOf": [{
+        "if": {
+          "properties": {
+            "category": {"enum": ["artifacts", "signatures", "lifecycle"]}
+          },
+          "required": ["category"]
+        },
+        "then": {"required": ["artifactType"]}
+      }],
       "additionalProperties": false
     }
   }
