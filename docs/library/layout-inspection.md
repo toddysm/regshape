@@ -73,6 +73,9 @@ only from a unique matching full digest in reachable descriptor/subject
 metadata; zero or multiple candidates remain unresolved, not corrupted.
 Intrinsically malformed documents supply no candidates, so rejected metadata
 cannot resolve a prefix or make valid evidence ambiguous.
+Invalid list-valued `config`/`subject` slots likewise supply no candidates.
+Prefix uniqueness is cached once per source candidate, not rescanned for each
+repeated tagged occurrence.
 An explicit member subject conflicting with a resolved declaration is an
 error, never rewritten. Recognition does not invent absent member subjects
 or add hidden expanded JSON fields.
@@ -100,6 +103,9 @@ diagnostics and encoded output bytes. The final diagnostic slot is reserved
 for an explicit diagnostic-budget `LIMIT_REACHED` marker. Traversal limits
 leave a marked partial result, not empty-success metadata; root budget
 failures can prevent any result.
+No-tree root failures obey the same diagnostic reservation. With a cap of one,
+the sole diagnostic is `LIMIT_REACHED`, whose message includes the suppressed
+root cause.
 
 See the [approved budget table](../../specs/layout/layout-inspect.md#d5-proposed-measurable-limits-and-support)
 for all names, defaults and accounting. To inspect deliberately larger input,

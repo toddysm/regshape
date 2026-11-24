@@ -521,6 +521,98 @@ def test_sha512_candidates_exclude_intrinsically_malformed_documents(
     _validate(result.to_dict())
 
 
+@pytest.mark.parametrize("slot", ["subject", "config"])
+def test_sha512_candidates_exclude_list_valued_scalar_slots(
+    tmp_path: Path, slot: str
+) -> None:
+    """Invalid scalar-slot arrays cannot supply evidence absent from descriptor views."""
+    prefix = "a" * 64
+    descriptor = {
+        "mediaType": OCI_MANIFEST,
+        "digest": "sha512:" + prefix + "b" * 64,
+        "size": 0,
+    }
+    tagged = _index([])
+    parsed = json.loads(_manifest(layers=[]))
+    parsed[slot] = [descriptor]
+    malformed = _raw(parsed)
+    path = _layout(
+        tmp_path,
+        _index(
+            [
+                edge(tagged, OCI_INDEX, annotations={REF_NAME: "sha512-" + prefix}),
+                edge(malformed, OCI_MANIFEST),
+            ]
+        ),
+        {address(value): value for value in (tagged, malformed)},
+    )
+    result = inspect_layout(path)
+    list_node, member = result.root.children[0].children
+    assert list_node.referrer_list.status == "unresolved"
+    assert getattr(member, slot).digest is None
+    assert getattr(member, slot).errors[0].code == "INVALID_DESCRIPTOR"
+    assert not result.complete
+    _validate(result.to_dict())
+
+
+def test_repeated_sha512_tags_use_linear_candidate_prefix_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repeated cached indexes must not multiply full-candidate prefix scans."""
+    count = 100
+    prefix_checks = 0
+    original = inspection._valid_digest
+
+    class CountedDigest(str):
+        """Instrument candidate-prefix comparisons without changing digest values."""
+
+        def startswith(self, prefix, *args) -> bool:
+            """Count each prefix comparison performed by inspection."""
+            nonlocal prefix_checks
+            prefix_checks += 1
+            return super().startswith(prefix, *args)
+
+    def counted_digest(value: object) -> str | None:
+        """Wrap validated SHA-512 candidates while leaving other metadata untouched."""
+        digest = original(value)
+        if digest is not None and digest.startswith("sha512:"):
+            return CountedDigest(digest)
+        return digest
+
+    documents = [
+        _index(
+            [],
+            subject={
+                "mediaType": OCI_MANIFEST,
+                "digest": "sha512:" + f"{position:064x}" + "b" * 64,
+                "size": 0,
+            },
+        )
+        for position in range(count)
+    ]
+    path = _layout(
+        tmp_path,
+        _index(
+            [
+                edge(
+                    documents[0],
+                    OCI_INDEX,
+                    annotations={REF_NAME: "sha512-" + "0" * 64},
+                )
+            ]
+            * count
+            + [edge(value, OCI_INDEX) for value in documents[1:]]
+        ),
+        {address(value): value for value in documents},
+    )
+    monkeypatch.setattr(inspection, "_valid_digest", counted_digest)
+    result = inspect_layout(path)
+    assert result.complete
+    for node in result.root.children[0].children[:count]:
+        assert node.referrer_list.digest == "sha512:" + "0" * 64 + "b" * 64
+    assert prefix_checks <= count * 2
+
+
 @pytest.mark.parametrize("subject", [None, "a", "b"])
 def test_tag_association_is_occurrence_local_and_never_invents_member_subject(
     tmp_path: Path, subject: str | None
@@ -792,6 +884,29 @@ def test_diagnostic_limit_reserves_final_explicit_marker(tmp_path: Path) -> None
     _validate(one.to_dict())
 
 
+@pytest.mark.parametrize("cap", [1, 2, 3])
+def test_root_failure_diagnostic_cap_reserves_limit_marker(
+    tmp_path: Path, cap: int
+) -> None:
+    """No-tree failures obey the same inclusive cap and final-slot reservation."""
+    path = _layout(tmp_path, b"invalid JSON", {})
+    with pytest.raises(LayoutInspectionError) as caught:
+        inspect_layout(path, limits=InspectionLimits(max_diagnostics=cap))
+    diagnostics = caught.value.diagnostics
+    assert len(diagnostics) <= cap
+    expected = (
+        ["INVALID_LAYOUT", "MALFORMED_DOCUMENT"]
+        if cap == 3
+        else ["INVALID_LAYOUT", "LIMIT_REACHED"]
+        if cap == 2
+        else ["LIMIT_REACHED"]
+    )
+    assert [item.code for item in diagnostics] == expected
+    assert all(item.source.document == "index.json" for item in diagnostics)
+    if cap < 3:
+        assert f"max_diagnostics cap {cap}" in diagnostics[-1].message
+
+
 def test_output_byte_budget_includes_escaping_indentation_lf_and_preflights_copy(
     tmp_path: Path,
 ) -> None:
@@ -835,9 +950,14 @@ def test_unsupported_platform_rejected_before_io(tmp_path: Path) -> None:
         patch.object(inspection.sys, "platform", "win32"),
         patch.object(os, "open") as opened,
     ):
-        with pytest.raises(LayoutInspectionError) as caught:
-            inspect_layout(tmp_path)
-        assert caught.value.diagnostics[0].code == "UNSUPPORTED_PLATFORM"
+        for limits, code in (
+            (InspectionLimits(), "UNSUPPORTED_PLATFORM"),
+            (InspectionLimits(max_diagnostics=1), "LIMIT_REACHED"),
+        ):
+            with pytest.raises(LayoutInspectionError) as caught:
+                inspect_layout(tmp_path, limits=limits)
+            assert caught.value.diagnostics[0].code == code
+            assert len(caught.value.diagnostics) == 1
         opened.assert_not_called()
 
 

@@ -417,6 +417,23 @@ def _document(value: dict[str, object], source: SourceLocation) -> _Document:
     )
 
 
+def _root_diagnostics(
+    diagnostics: tuple[InspectionDiagnostic, ...], limits: InspectionLimits
+) -> tuple[InspectionDiagnostic, ...]:
+    """Bound nonempty no-tree failures, reserving the final slot like traversal errors."""
+    cap = limits.max_diagnostics
+    if len(diagnostics) < cap:
+        return diagnostics
+    omitted = diagnostics[cap - 1]
+    return diagnostics[: cap - 1] + (
+        InspectionDiagnostic(
+            "LIMIT_REACHED",
+            f"max_diagnostics cap {cap} exceeded while reporting {omitted.code}: {omitted.message}",
+            omitted.source,
+        ),
+    )
+
+
 def _project_diagnostics(root: LayoutNode) -> tuple[InspectionDiagnostic, ...]:
     """Project existing owner-local errors in occurrence preorder, without rediscovery.
 
@@ -467,7 +484,7 @@ class _Inspector:
         self.subject_references = 0
         self.occurrences = 2
         self.stopped = False
-        self.candidates: set[str] = set()
+        self.sha512_candidates: dict[str, str | None] = {}
 
     def _limit(self, budget: str, source: SourceLocation) -> _Problem:
         """Name the exact first over-cap attempted unit."""
@@ -695,9 +712,10 @@ class _Inspector:
         self.descriptors += count
 
     def _collect_candidates(self, document: _Document) -> None:
-        """Harvest valid digest fields only after intrinsic document validation.
+        """Cache SHA-512 prefix uniqueness only after intrinsic document validation.
 
         Subjects contribute source evidence without any subject-target IO.
+        Repeated identical candidates retain uniqueness; collisions stay ambiguous.
         """
         for descriptor in chain(
             document.manifests or (),
@@ -705,8 +723,13 @@ class _Inspector:
             (document.config,) if document.config is not None else (),
             (document.subject,) if document.subject is not None else (),
         ):
-            if descriptor.digest is not None:
-                self.candidates.add(descriptor.digest)
+            digest = descriptor.digest
+            if digest is not None and digest.startswith("sha512:"):
+                prefix = digest[7:71]
+                if prefix not in self.sha512_candidates:
+                    self.sha512_candidates[prefix] = digest
+                elif self.sha512_candidates[prefix] != digest:
+                    self.sha512_candidates[prefix] = None
 
     def _prepare(self, pending: _Pending, document: _Document) -> None:
         """Install shared fields and source slots, activating only this owner's errors."""
@@ -995,11 +1018,7 @@ class _Inspector:
         algorithm, prefix = match.groups()
         digest = f"sha256:{prefix}" if algorithm == "sha256" else None
         if algorithm == "sha512":
-            candidates = [
-                item for item in self.candidates if item.startswith(f"sha512:{prefix}")
-            ]
-            if len(candidates) == 1:
-                digest = candidates[0]
+            digest = self.sha512_candidates.get(prefix)
         return ReferrerListEvidence(
             cast(str, tag),
             SourceLocation(
@@ -1041,7 +1060,10 @@ def inspect_layout(
         require_readonly_filesystem()
     except ArtifactError as error:
         raise LayoutInspectionError(
-            (InspectionDiagnostic("UNSUPPORTED_PLATFORM", str(error), source),)
+            _root_diagnostics(
+                (InspectionDiagnostic("UNSUPPORTED_PLATFORM", str(error), source),),
+                policy,
+            )
         ) from error
     try:
         with ExitStack() as handles:
@@ -1105,12 +1127,17 @@ def inspect_layout(
             diagnostics += (
                 InspectionDiagnostic(problem.code, problem.message, problem.source),
             )
-        raise LayoutInspectionError(diagnostics) from error
+        raise LayoutInspectionError(_root_diagnostics(diagnostics, policy)) from error
     except (OSError, ArtifactError) as error:
         raise LayoutInspectionError(
-            (
-                InspectionDiagnostic(
-                    "INVALID_LAYOUT", f"Cannot safely inspect layout: {error}", source
+            _root_diagnostics(
+                (
+                    InspectionDiagnostic(
+                        "INVALID_LAYOUT",
+                        f"Cannot safely inspect layout: {error}",
+                        source,
+                    ),
                 ),
+                policy,
             )
         ) from error
