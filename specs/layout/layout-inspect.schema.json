@@ -43,11 +43,24 @@
       "type": "object",
       "additionalProperties": {"type": "string"}
     },
+    "platform": {
+      "type": "object",
+      "required": ["architecture", "os"],
+      "properties": {
+        "architecture": {"type": "string"},
+        "os": {"type": "string"},
+        "os.version": {"type": "string"},
+        "os.features": {"type": "array", "items": {"type": "string"}},
+        "variant": {"type": "string"},
+        "features": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": true
+    },
     "descriptor": {
       "type": "object",
       "properties": {
         "digest": {"$ref": "#/$defs/digest"},
-        "platform": {"type": "object"},
+        "platform": {"$ref": "#/$defs/platform"},
         "annotations": {"$ref": "#/$defs/annotations"},
         "errors": {"$ref": "#/$defs/errors"}
       },

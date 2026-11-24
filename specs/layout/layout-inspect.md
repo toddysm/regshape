@@ -451,7 +451,7 @@ summarize_layout(result: LayoutInspectionResult) -> LayoutSummaryResult
 | `LayoutInspectionResult.complete` | False when any structural error or traversal limit exists; not a verification/trust/completeness-of-registry claim. |
 | `LayoutSummaryResult.root` | Same layout/index ancestry and index metadata, replacing eligible contiguous manifest runs with typed `SummaryGroup` values. |
 | `LayoutSummaryResult.diagnostics`, `.complete` | Preserve inspection errors/completeness; grouping never heals a partial result. |
-| Both result types: `.to_dict()` | Independent JSON-compatible recursive projection validated by the applicable schema branch; absent fields omitted, no terminal escaping. |
+| Both result types: `.to_dict()` | Independent JSON-compatible recursive projection validated by the applicable schema branch; absent fields omitted, no terminal escaping. Preflight the JSON byte budget before allocating the independent copy. |
 | Both result types: `.to_json()` | Two-space, ASCII-safe JSON plus a final LF; preserves insertion/source order, refuses nonfinite values, enforces output budget. |
 
 SDK-only typed provenance, structural validation facts and referrers evidence
@@ -501,6 +501,12 @@ not absence. Preserve present empty annotation maps, strings and arrays where
 their OCI field permits them, including empty indexes/layer arrays. Unsupported
 descriptor/extension fields are not dumped. Structural validation may inspect
 mediaType/size without adding either field to a descriptor's display.
+
+A present platform requires string architecture and os. Known optional
+os.version/variant values are strings and os.features/features are string
+arrays. Preserve other platform keys in its compact source JSON rather than
+mistaking their presence for classification evidence. A malformed platform
+produces an INVALID_DESCRIPTOR diagnostic, not a schema-valid arbitrary object.
 
 Known JSON keys use the schema's stable order; original annotation/platform
 key order and manifests/layers array order are preserved. A JSON parser may
@@ -568,7 +574,12 @@ the last representable owner, naming budget, cap and source at which traversal
 stopped. Do not claim that its unvisited descendants are empty or count them as
 inspected. Reserve diagnostic space before expanding children.
 
-Preflight serialization/rendering against the output cap before writing stdout.
+Share immutable parsed field views between occurrences rather than copying a
+large index's fields once per reference. Preflight serialization/rendering with
+a bounded counting sink before allocating the full string or `.to_dict()` copy
+and before writing stdout; stop counting immediately above the cap. This
+prevents repeated large metadata or escaping amplification from bypassing the
+budget during materialization.
 If the selected view cannot fit, emit no stdout and OUTPUT_LIMIT on stderr,
 exit 1; do not emit a cut-off JSON document or silently substitute summary.
 An external broken pipe/write failure can interrupt an already-started write;
