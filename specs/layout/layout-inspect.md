@@ -1,6 +1,6 @@
 # Local layout inspection: product requirements and engineering design
 
-- **Status:** Proposed contracts, awaiting owner approval; not implemented.
+- **Status:** Design merge authorized after review/checks; not implemented.
 - **Tracking:** [#130](https://github.com/toddysm/regshape/issues/130).
 - **Design item:** [#211](https://github.com/toddysm/regshape/issues/211).
 - **Updated:** 2026-11-24.
@@ -22,10 +22,13 @@ The owner agreed to these additional requirements during #211:
 4. Incomplete layouts expose trustworthy partial results and explicit errors,
    stderr diagnostics and exit 1. An invalid layout root produces no tree.
 
-The concrete types, schema, classification rules, limits, platform policy and
-examples below are **proposals**, not approvals inferred from those agreements.
-Approve this document and the current delivery breakdown before implementation.
-Merging a design requires separate authorization; no release is authorized.
+The owner subsequently authorized addressing review feedback and merging this
+design PR once review/checks pass. Review also confirmed owner-driven demand,
+a readiness-based release without a fixed date, and measured/owner-approved
+performance thresholds before release. The concrete types, schema,
+classification rules, limits, platform policy and examples below are the
+contracts for that gated design merge, not implemented capabilities.
+Implementation requires separate Build authorization; no release is authorized.
 The existing human-output document and its complete real BusyBox baseline are
 unchanged. This document supplies its remaining contracts, not a replacement
 expanded display.
@@ -55,30 +58,59 @@ Neither example is a hard-coded product shape.
 > have not been supplied. These examples establish the owner's functional need,
 > not evidence of three customers or a market-wide demand claim.
 
+The owner reconfirmed during review that there is no additional verified demand
+evidence. #130 is the motivating user request; the BusyBox snapshot is validation
+evidence, not a second customer. Existing artifact-download work (#91/#112)
+provides adjacent capabilities, not independent evidence of inspection demand.
+Treat this as an owner-driven capability and track the product-fit risk in
+section 13 rather than implying a known request frequency.
+
 ### 3. Customer scenarios
 
-**Inspecting a download.** A registry developer receives a layout and wants to
+**1. Inspecting a download.** The #130 requester represents the registry-developer
+persona: a developer receives a layout and wants to
 understand which index owns its descriptors. Previously they opened index.json,
 followed digests by hand and risked attributing descriptor annotations to the
 wrong file. They run `layout inspect -p DIR`, see every index and its own
 metadata, and follow the connected image/config/content hierarchy. A second
 reference to a digest remains a separate occurrence, not a second stored file.
 
-**Automating the same investigation.** A Python consumer calls `inspect_layout`
-and serializes the result, or a script adds `--json`. Both receive the same
+**2. Automating the same investigation.** After a download or a registry-test
+job produces a local layout, a Python consumer needs to attach an interpretable
+structure report to that job. Today the consumer must write its own recursive
+JSON/file traversal and reconcile shared targets, subjects and failures. This
+is a proposed extension of the #130 workflow, not another observed customer.
+The consumer calls `inspect_layout` and serializes the result, or a script adds
+`--json`. Both receive the same
 ordered hierarchy the developer sees, not a graph requiring a separate join
 between node and edge tables. Absent optional text properties remain absent
 in JSON. A consumer requesting a summary gets the same condensed information
 as `--summary`, including mixed groups and the distinction between references
 and distinct stored objects.
 
-**Investigating damage and old referrers.** A registry implementer inspects an
+**3. Investigating damage and old referrers.** After a registry test or transfer
+leaves missing content, a registry implementer currently follows descriptor
+paths and compares files manually; a failed recursive verification alone is
+not the requested partial hierarchy. This is a proposed failure scenario,
+not independent demand evidence. The implementer inspects an
 incomplete layout containing a tagged referrers-list index. The tool preserves
 valid siblings, marks missing content explicitly, and exits nonzero. It
 recognizes the locally declared list without claiming that every listed
 manifest actually has that subject or that the registry's referrers set is
 complete. The developer repairs the missing file and repeats the read-only
 inspection; there is no automated repair or network fallback.
+
+**4. Summarizing the motivating Debian layout.** The same #130 developer faces
+an original Debian index with eight platform images and seven attestations,
+possibly beneath a layout entry-point wrapper. Manually enumerating those
+branches obscures which indexes and groups are present. They explicitly run
+`layout inspect -p DIR --summary`: every index and its own metadata remains
+visible, while eligible contiguous manifest runs show evidence-based platform
+and attestation groups. Counts of eight and seven appear only if the inspected
+metadata supports them; intervening indexes/categories split runs, and mixed
+layer shapes get a distribution, not a false "Each" statement. `--summary
+--json` exposes the same hierarchy for their report. Summary still traverses
+bounded metadata; it is not a cheap directory listing or a limit bypass.
 
 ### 4. Outcomes, priorities and scope
 
@@ -96,6 +128,14 @@ All of R1-R10 are required for the 0.2 feature:
 | R8 | Recognize local tag-schema referrers lists without network access or guessed subjects. |
 | R9 | Keep inspection read-only, Click-independent and usable without credentials, a daemon or payload reads. |
 | R10 | Preserve the 0.2 show-warning / 0.3 show-removal schedule and document migration. |
+
+Delivery priority is P0: R1/R3/R4/R6/R7/R9 (safe, bounded, truthful SDK and
+failure semantics); P1: R2/R5/R8 (the approved display, summary and tag-list
+experience); P2: R10 (migration and final documentation). These are sequencing
+tiers, not optionality: every tier is a 0.2 release gate. If capacity slips,
+delay the readiness-based release; do not silently drop a requirement, weaken
+safety or ship the warning before inspect exists. Scope deferral needs renewed
+owner approval.
 
 Non-goals: archives as inspection input; directory scans for unlisted blobs;
 registry-wide referrers discovery; fetching descriptor URLs; decoding embedded
@@ -115,9 +155,18 @@ Reuse applicable primitives, **not** its full verifier as the inspector.
 
 ### 6. External alternatives
 
-Manual JSON/file inspection remains a workaround. No competitive superiority
-claim is made; this proposal solves the concrete SDK/CLI interpretation problem
-in #130 rather than attempting a market comparison.
+Manual JSON/file inspection remains a workaround, but existing OCI tools also
+read local layouts:
+
+| Documented alternative | Useful overlap and boundary |
+| --- | --- |
+| [ORAS manifest fetch](https://oras.land/docs/commands/oras_manifest_fetch/), documented 1.4 command | `oras manifest fetch --oci-layout layout-dir:v1` retrieves a selected manifest. Raw metadata remains useful without adopting RegShape's recursive occurrence/partial-result contract. |
+| [ORAS discover](https://oras.land/docs/commands/oras_discover/), documented 1.4 command | `oras discover --oci-layout layout-dir:v1` displays referrers, including a tree view. Referrers discovery is a different traversal from this design's containment-only, no-reverse-scan inspection. |
+| [Skopeo inspect](https://github.com/containers/skopeo/blob/main/docs/skopeo-inspect.1.md) with the [OCI transport](https://github.com/containers/image/blob/main/docs/containers-transports.5.md) | `skopeo inspect --raw oci:layout-dir:v1` retrieves raw manifest data; ordinary inspect reports selected-image information. This proposal instead fixes RegShape's all-index metadata ownership and matching expanded/summary SDK/CLI views. |
+
+These are documentation-based comparisons, not executed interoperability tests
+or claims that another tool cannot meet additional needs. No competitive
+superiority or market-demand claim is made.
 
 ### 7. Desired experience
 
@@ -142,6 +191,15 @@ are distinguished from absence; do not recommend privilege escalation as a
 generic remedy. A limit diagnostic identifies the precise budget and boundary.
 SDK callers may explicitly supply larger validated budgets; there is no
 unlimited mode or automatic retry.
+
+The 0.2 inspect CLI exposes **no budget-override flags**; D5 defaults apply.
+After LIMIT_REACHED, use a separately prepared smaller valid layout or the SDK
+with an explicitly raised named `InspectionLimits` budget. Do not edit the
+original layout or suggest a nonexistent CLI flag. After OUTPUT_LIMIT,
+explicitly choosing `--summary` may fit if expanded output was the problem;
+it does not relax traversal limits or guarantee success. Otherwise use the SDK
+with a deliberately reviewed `max_output_bytes` increase. #217 documents these
+paths; a CLI override would be a separately approved interface change.
 
 ### 7A. Output examples
 
@@ -287,6 +345,52 @@ MISSING_OBJECT: Referenced file is missing; Location: blobs/sha256/44136fa355b36
 INVALID_LAYOUT: Required layout marker oci-layout is missing
 ```
 
+**Recognized tag-schema list, summary stdout, exit 0.** Suppose entry-point
+descriptor 0 targets a valid OCI index and its actual
+`org.opencontainers.image.ref.name` annotation is
+`sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`.
+The member list may be empty; its absence of explicit subjects is not an error.
+The index's normal metadata remains visible, followed by this derived fragment:
+
+```text
+Tag-schema association
+  Tag: sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  Source: index.json#/manifests/0/annotations/org.opencontainers.image.ref.name
+  Status: resolved
+  Digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+```
+
+In `--summary --json`, that same index has this `association` value, not a new
+intrinsic `subject` or an edge table:
+
+<!-- inspect-example: resolved-association -->
+```json
+{
+  "tag": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "source": "index.json#/manifests/0/annotations/org.opencontainers.image.ref.name",
+  "status": "resolved",
+  "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+```
+
+This confirms the tag declaration only, not subject availability, member
+subjects or registry completeness. Expanded mode shows the literal annotation
+instead of the derived fragment. The earlier partial example supplies the
+damage behavior; recognition does not suppress those errors.
+
+**Legacy show after #208 ships with inspect in 0.2.** For
+`regshape layout show -p ./layout`, stdout remains the legacy entry-point JSON,
+byte-for-byte, and the previous exit behavior is preserved. Stderr adds exactly
+this warning line, followed by LF:
+
+```text
+Warning: 'layout show' is deprecated in 0.2 and will be removed in 0.3; use 'layout inspect'.
+```
+
+There is no new `show --json` flag. `inspect --json` is hierarchical, not the
+legacy show schema. This is proposed #208 behavior, not a warning implemented
+by the present design-only PR; help/usage failures retain existing semantics.
+
 ### 8. Success measures and guardrails
 
 Before 0.2 delivery: exact baseline reproduction; text/JSON semantic parity for
@@ -298,6 +402,17 @@ Before release, #216 records metadata bytes, elapsed time and peak memory for
 the real baseline and bounded stress fixtures on Linux and the local Mac.
 No unmeasured latency percentile, availability SLA or market metric is promised.
 
+After 0.2, the owner records a manual follow-up on #130 at 7 and 30 days:
+whether the actual motivating Debian layout can be understood in expanded,
+summary and JSON views without a manual digest-file walk; whether the owner
+used inspection again; and the number/outcome of voluntary independent reports.
+Record unknown/unavailable outcomes explicitly. No reports means unknown
+adoption, not zero users or proof of product fit. #217 supplies a feedback path;
+no user identifier, customer names or automatic usage upload is introduced.
+The owner evaluates that evidence before expanding scope or claiming broader
+demand. This is an evaluation plan, not a forecast or a release-blocking
+requirement to recruit a particular number of customers.
+
 ### 9. Pricing
 
 No pricing/billing impact: this is a local Python package capability, not a
@@ -305,7 +420,9 @@ metered service.
 
 ### 10. Performance and scale
 
-Expected examples range from one manifest to the pinned 15-object snapshot.
+Observed examples range from one manifest to the pinned 15-object snapshot;
+the motivating Debian shape additionally has fifteen manifest occurrences.
+That observation is not the supported scale ceiling.
 The supported ceiling is the independent limits in D5, not a promise that all
 ceilings can be saturated simultaneously. Metadata reads and stat calls scale
 with distinct reachable objects; expansion and output scale with occurrences.
@@ -313,12 +430,37 @@ No layer-size-dependent read/hashing cost is allowed. Filesystem latency is
 caller/environment dependent; unsupported or stalled filesystems do not gain
 a fabricated timeout or performance guarantee.
 
+The owner selected a **baseline-first performance release gate**. #216 must
+measure expanded text, expanded JSON, summary text and summary JSON for the
+pinned baseline and these deterministic stress shapes:
+
+| Shape | Exact structural checks before timing |
+| --- | --- |
+| Wide | Entry point references 1,024 distinct one-layer manifests sharing one opaque config/layer file: 1,025 unique stored objects, 3,072 source containment references, 3,074 display nodes. Give each manifest a distinct fixture annotation; do not duplicate identical bytes and call them distinct. |
+| Reused index | Entry point references the same stored index 100 times; it contains 64 distinct one-layer manifests sharing one opaque config/layer file: 66 unique stored objects, 292 source containment references, 19,302 display nodes. Repetition must not multiply metadata reads or opaque-target stats. |
+
+Use stable local files, one warm-up per view and five measured runs, each in a
+fresh process. Record fixture revision, Python/OS/hardware/filesystem, cache conditions,
+metadata/output bytes, safe-open/stat/read counts, elapsed-time median/maximum
+and peak RSS in bytes. Report cold-cache results separately if measured; do not
+silently compare different cache conditions. Linux and local macOS reports are
+separate, not a cross-machine speed ranking.
+
+The hard correctness gates already apply: no payload reads, one parse/read per
+distinct metadata document, cached per-address observations, truthful counts,
+and D5's exact caps/failures. Recording time/RSS alone does **not** pass the
+performance gate: #216 must propose quantitative time/memory thresholds from
+these measurements and obtain recorded owner approval before gate 3/release.
+Rerun the same fixtures against the accepted thresholds; exceeding one blocks
+release or requires an explicitly approved target/scope revision. No numerical
+threshold or performance pass is claimed by this design-only PR.
+
 ### 11. Observability and troubleshooting
 
 The customer surfaces are exit status, node-local errors, stderr and structured
 SDK diagnostics. Use the taxonomy in PM-5: restore missing files, correct
 permissions, replace malformed metadata, resolve conflicting descriptors, or
-increase a named budget deliberately. Structural success says nothing about
+use section 7's SDK-only named-budget recovery. Structural success says nothing about
 signature trust, digest authenticity or registry completeness. There is no
 new remote logging, health service or automatic telemetry upload.
 
@@ -343,13 +485,18 @@ cross-region storage or compliance certification is introduced.
 | Tag conventions are mistaken for authenticated subjects | Source-labeled association evidence; preserve actual subject, #212/#213. |
 | Hostile annotations change terminal state | Reversible escaping before color; ANSI span tests, #214. |
 | Platform-specific safety primitives are unavailable | Fail closed before reads; explicit Linux/macOS matrix, #212/#216. |
+| Owner-driven demand does not generalize or inspection goes unused | Owner owns the #130 7/30-day outcome and voluntary-feedback review in section 8; #217 documents feedback. Reassess investment, do not claim customer validation from fixtures. |
 
 ### 14. Rollout and milestones
 
 Design approval is gate 1, authorized implementation is gate 2, reviewed/checked
 delivery of all required 0.2 items and documentation is gate 3, and owner release
-authorization is gate 4. No dated delivery commitment or preview customer cohort
-has been supplied. Deliver SDK inspection, SDK summaries/expanded CLI, summary
+authorization is gate 4. The owner confirmed a readiness-based 0.2 release with
+no fixed date or preview cohort; the milestone has no due date. Gate 3 includes
+the measured/owner-approved performance thresholds in section 10. PM-6's effort
+ranges are not calendar commitments. Re-estimate after #212; a dated commitment
+requires explicit owner agreement rather than an inferred date.
+Deliver SDK inspection, SDK summaries/expanded CLI, summary
 CLI and show warning, integrated regressions, then final docs in dependency
 order. 0.3 removal follows an actual 0.2 warning release, not merely its PR merge.
 Inventory remains Planned during this design gate.
@@ -526,7 +673,14 @@ config and ordered layers. A nonempty own artifactType selects `Content N`
 rather than `Layer N`, without asserting a semantic artifact classification.
 Resolve digest paths using validated lowercase sha256/sha512 syntax only.
 Parse each distinct metadata document once; validate each incoming descriptor
-occurrence and stat its target without reading opaque bytes.
+occurrence against cached target facts without reading opaque bytes.
+Observe each distinct valid target address once, caching successful and failed
+observations for the call, including an opaque target's no-follow stat.
+Repeated descriptors still get their own size/type comparisons, provenance and
+errors, but do not cause repeated target IO. Metadata safe reads retain their
+before/after identity checks; those constant per-document checks are distinct
+from descriptor validation. The cache is a bounded observation of this call,
+not an atomic-snapshot guarantee or a promise to detect later opaque-file changes.
 
 Compare descriptor size with observed file size and supported document type
 with the document's own mediaType when present. Conflicts produce errors on the
@@ -582,6 +736,8 @@ prevents repeated large metadata or escaping amplification from bypassing the
 budget during materialization.
 If the selected view cannot fit, emit no stdout and OUTPUT_LIMIT on stderr,
 exit 1; do not emit a cut-off JSON document or silently substitute summary.
+Selecting summary does not first serialize/materialize expanded output; only
+the selected representation spends its output-byte budget.
 An external broken pipe/write failure can interrupt an already-started write;
 report failure, not successful JSON delivery. The cap bounds emitted bytes, not
 Python heap size or filesystem latency; memory/time evidence is a #216 gate.
@@ -820,7 +976,8 @@ The original #130 acceptance criteria map in their source order as follows:
 | 15: interpretation/migration docs | R10, F/PM-6 | #208/#217; required final docs and show compatibility. |
 
 Scenario 1 maps to D3/D4 and #212/#214; scenario 2 to D2/D3/D6 and
-#212-#215; scenario 3 to D7/PM-5 and #212/#213/#216. Tag recognition extends
+#212-#215; scenario 3 to D7/PM-5 and #212/#213/#216; scenario 4 to D6/D7 and
+#213/#215/#216. Tag recognition extends
 R8 through explicit owner direction; no other feature scope is introduced.
 
 ### PM-2. APIs, versioning and compatibility
@@ -835,10 +992,12 @@ does not mean its layout mirrors Python private cache structures.
 
 This PR changes specifications only. The runtime design adds no usage backend,
 per-customer identifier, adoption/churn tracking or data upload: that would
-contradict local/no-network scope. Business/adoption measurement remains an
-explicit product-evidence gap, not invented telemetry. Correctness gates map
+contradict local/no-network scope. Section 8 defines owner-reported task success,
+repeat use and voluntary independent feedback; the lack of verified demand
+remains an explicit product risk, not invented telemetry. Correctness gates map
 to fixture outputs and IO instrumentation; cost maps to metadata bytes/stat
 calls, display occurrences, output bytes, elapsed time and peak memory in #216.
+Section 10 defines the stress fixtures and threshold-approval release gate.
 No resource depends on downloading or hashing layer bytes.
 
 ### PM-4. Authentication, authorization and networking
@@ -992,7 +1151,7 @@ association evidence/counting, and #214/#215 render the matching views.
 | CLI unit, #214/#215 | Exact locked baseline, exact selected-view JSON, errors/streams/exits, all text/JSON fields in parity, ANSI spans/resets, NO_COLOR/nonterminal, C0/C1/bidi/backslash injection, Unicode and forced/automatic ASCII. |
 | Compatibility, #208 | Legacy show stdout/exit unchanged, warning stderr only, read_index/status/validate unaffected. |
 | Offline integration, #216 | Stored-layout preservation; IO spies prove no writes, payload reads, hashing, credentials, daemon/network access; schema validation plus semantic counts; input mutation and unsupported-platform guards. |
-| Resource evidence, #216 | Bounded repeated-index expansion, aggregate metadata caps, escaped-output amplification, measured real-fixture metadata bytes/time/memory, Linux and local macOS. |
+| Resource evidence, #216 | Section 10's exact wide/reused-index counts and measurement protocol; repeated references do not multiply opaque stats/metadata reads; exact budget and escaped-output boundaries; owner-approved quantitative time/RSS thresholds and passing reruns on Linux/local macOS before release. |
 | Docs, #217 | SDK/CLI/how-to links, complete examples, subject/storage/count interpretation, migration warning/removal timing. |
 
 Tests belong in existing `src/regshape/tests` pytest suites and run via the
