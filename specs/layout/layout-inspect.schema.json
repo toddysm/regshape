@@ -1,0 +1,286 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:regshape:layout-inspect:1",
+  "title": "Proposed RegShape layout inspection view, version 1",
+  "description": "Recursive text-equivalent expanded or summary view. Cross-reference, accounting, ordering and view-selection invariants are specified in layout-inspect.md.",
+  "oneOf": [
+    {"$ref": "#/$defs/expanded"},
+    {"$ref": "#/$defs/summary"}
+  ],
+  "$defs": {
+    "expanded": {
+      "allOf": [
+        {"$ref": "#/$defs/layout"},
+        {"$ref": "#/$defs/expandedTree"},
+        {"not": {"required": ["statistics"]}}
+      ]
+    },
+    "summary": {
+      "allOf": [
+        {"$ref": "#/$defs/layout"},
+        {"required": ["statistics", "statisticsComplete"]}
+      ]
+    },
+    "expandedTree": {
+      "not": {
+        "anyOf": [
+          {"required": ["kind"], "properties": {"kind": {"const": "group"}}},
+          {"required": ["association"]}
+        ]
+      },
+      "properties": {
+        "children": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/expandedTree"}
+        }
+      }
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^(sha256:[0-9a-f]{64}|sha512:[0-9a-f]{128})$"
+    },
+    "annotations": {
+      "type": "object",
+      "additionalProperties": {"type": "string"}
+    },
+    "descriptor": {
+      "type": "object",
+      "properties": {
+        "digest": {"$ref": "#/$defs/digest"},
+        "platform": {"type": "object"},
+        "annotations": {"$ref": "#/$defs/annotations"},
+        "errors": {"$ref": "#/$defs/errors"}
+      },
+      "anyOf": [{"required": ["digest"]}, {"required": ["errors"]}],
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "message", "source"],
+      "properties": {
+        "code": {
+          "enum": [
+            "MISSING_OBJECT",
+            "UNREADABLE_OBJECT",
+            "MALFORMED_DOCUMENT",
+            "INVALID_DESCRIPTOR",
+            "UNSUPPORTED_TYPE",
+            "CONFLICTING_DESCRIPTOR",
+            "CYCLE",
+            "LIMIT_REACHED",
+            "CHANGED_DURING_READ"
+          ]
+        },
+        "message": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "errors": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/error"}
+    },
+    "statistics": {
+      "type": "object",
+      "required": [
+        "uniqueObjects", "objectReferences", "subjectReferences", "storedBytes"
+      ],
+      "properties": {
+        "uniqueObjects": {"type": "integer", "minimum": 0},
+        "objectReferences": {"type": "integer", "minimum": 0},
+        "subjectReferences": {"type": "integer", "minimum": 0},
+        "storedBytes": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "association": {
+      "type": "object",
+      "required": ["tag", "source", "status"],
+      "properties": {
+        "tag": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "minLength": 1},
+        "status": {"enum": ["resolved", "unresolved"]},
+        "digest": {"$ref": "#/$defs/digest"},
+        "algorithm": {"const": "sha512"},
+        "prefix": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "allOf": [{
+        "if": {"properties": {"status": {"const": "resolved"}}},
+        "then": {
+          "required": ["digest"],
+          "not": {"anyOf": [{"required": ["algorithm"]}, {"required": ["prefix"]}]}
+        },
+        "else": {
+          "required": ["algorithm", "prefix"],
+          "not": {"required": ["digest"]}
+        }
+      }],
+      "additionalProperties": false
+    },
+    "layout": {
+      "type": "object",
+      "required": ["kind", "location", "imageLayoutVersion", "children"],
+      "properties": {
+        "kind": {"const": "layout"},
+        "location": {"type": "string", "pattern": "^/"},
+        "imageLayoutVersion": {"const": "1.0.0"},
+        "statistics": {"$ref": "#/$defs/statistics"},
+        "statisticsComplete": {"type": "boolean"},
+        "children": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "allOf": [
+              {"$ref": "#/$defs/index"},
+              {
+                "properties": {"location": {"const": "index.json"}},
+                "required": ["schemaVersion", "manifests", "children"],
+                "not": {"required": ["digest"]}
+              }
+            ]
+          }
+        },
+        "errors": {"$ref": "#/$defs/errors"}
+      },
+      "dependentRequired": {
+        "statistics": ["statisticsComplete"],
+        "statisticsComplete": ["statistics"]
+      },
+      "additionalProperties": false
+    },
+    "index": {
+      "type": "object",
+      "required": ["kind", "location"],
+      "properties": {
+        "kind": {"const": "index"},
+        "digest": {"$ref": "#/$defs/digest"},
+        "location": {"type": "string", "minLength": 1},
+        "schemaVersion": {"const": 2},
+        "mediaType": {"type": "string", "minLength": 1},
+        "artifactType": {"type": "string", "minLength": 1},
+        "subject": {"$ref": "#/$defs/descriptor"},
+        "annotations": {"$ref": "#/$defs/annotations"},
+        "manifests": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/descriptor"}
+        },
+        "association": {"$ref": "#/$defs/association"},
+        "children": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {"$ref": "#/$defs/index"},
+              {"$ref": "#/$defs/manifest"},
+              {"$ref": "#/$defs/unknown"},
+              {"$ref": "#/$defs/group"}
+            ]
+          }
+        },
+        "errors": {"$ref": "#/$defs/errors"}
+      },
+      "anyOf": [
+        {"required": ["schemaVersion", "manifests", "children"]},
+        {"required": ["errors"]}
+      ],
+      "additionalProperties": false
+    },
+    "manifest": {
+      "type": "object",
+      "required": ["kind", "digest", "location"],
+      "properties": {
+        "kind": {"const": "manifest"},
+        "digest": {"$ref": "#/$defs/digest"},
+        "location": {"type": "string", "minLength": 1},
+        "schemaVersion": {"const": 2},
+        "mediaType": {"type": "string", "minLength": 1},
+        "artifactType": {"type": "string", "minLength": 1},
+        "subject": {"$ref": "#/$defs/descriptor"},
+        "annotations": {"$ref": "#/$defs/annotations"},
+        "config": {"$ref": "#/$defs/descriptor"},
+        "layers": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/descriptor"}
+        },
+        "children": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/opaque"}
+        },
+        "errors": {"$ref": "#/$defs/errors"}
+      },
+      "anyOf": [
+        {"required": ["schemaVersion", "config", "layers", "children"]},
+        {"required": ["errors"]}
+      ],
+      "additionalProperties": false
+    },
+    "opaque": {
+      "type": "object",
+      "required": ["kind", "digest", "location"],
+      "properties": {
+        "kind": {"enum": ["config", "layer", "content"]},
+        "position": {"type": "integer", "minimum": 0},
+        "digest": {"$ref": "#/$defs/digest"},
+        "location": {"type": "string", "minLength": 1},
+        "errors": {"$ref": "#/$defs/errors"}
+      },
+      "allOf": [{
+        "if": {"properties": {"kind": {"const": "config"}}},
+        "then": {"not": {"required": ["position"]}},
+        "else": {"required": ["position"]}
+      }],
+      "additionalProperties": false
+    },
+    "unknown": {
+      "type": "object",
+      "required": ["kind", "digest", "location", "errors"],
+      "properties": {
+        "kind": {"const": "unknown"},
+        "digest": {"$ref": "#/$defs/digest"},
+        "location": {"type": "string", "minLength": 1},
+        "errors": {"$ref": "#/$defs/errors"}
+      },
+      "additionalProperties": false
+    },
+    "group": {
+      "type": "object",
+      "required": [
+        "kind", "category", "positions", "references", "uniqueManifests",
+        "configReferences", "layerReferences", "layerCountDistribution",
+        "uniqueObjects", "storedBytes"
+      ],
+      "properties": {
+        "kind": {"const": "group"},
+        "category": {
+          "enum": [
+            "platform-images", "attestations", "signatures",
+            "lifecycle", "artifacts", "unclassified"
+          ]
+        },
+        "artifactType": {"type": "string", "minLength": 1},
+        "positions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "integer", "minimum": 0}
+        },
+        "references": {"type": "integer", "minimum": 1},
+        "uniqueManifests": {"type": "integer", "minimum": 1},
+        "configReferences": {"type": "integer", "minimum": 0},
+        "layerReferences": {"type": "integer", "minimum": 0},
+        "layerCountDistribution": {
+          "type": "object",
+          "minProperties": 1,
+          "patternProperties": {
+            "^(0|[1-9][0-9]*)$": {"type": "integer", "minimum": 1}
+          },
+          "additionalProperties": false
+        },
+        "uniqueObjects": {"type": "integer", "minimum": 1},
+        "storedBytes": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    }
+  }
+}
