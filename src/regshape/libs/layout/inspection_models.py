@@ -2,11 +2,12 @@
 
 Source metadata is shared read-only between occurrences. Serialization emits
 the selected version-1 expanded or summary display, not SDK-only provenance,
-and preflights ASCII JSON bytes before allocating an independent result.
+and preflights destination-encoded JSON bytes before allocating an independent result.
 """
 
 from __future__ import annotations
 
+import codecs
 import json
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, fields
@@ -46,7 +47,8 @@ class InspectionLimits:
 
     Metadata counts distinct raw documents plus the marker, descriptors count
     source slots, and occurrences include layout/entry point and repeated nodes.
-    Depth starts at zero for the layout. Output counts two-space ASCII JSON and LF.
+    Depth starts at zero for the layout. Output counts the selected encoded
+    representation, including escapes, indentation, LF and generated ANSI.
     """
 
     max_layout_marker_bytes: int = 65_536
@@ -320,12 +322,15 @@ class LayoutInspectionResult:
         """
         return _view_dict(self.root, self.limits.max_output_bytes)
 
-    def to_json(self) -> str:
+    def to_json(self, *, encoding: str = "ascii") -> str:
         """Return two-space ASCII JSON plus LF, preflighted before string allocation.
 
+        :param encoding: Destination text encoding for byte-budget accounting only;
+            the returned JSON string remains ASCII-safe. Includes encoding state/BOM.
+        :raises ValueError: If encoding does not name a text-to-bytes codec.
         :raises LayoutInspectionError: When the encoded output exceeds its cap.
         """
-        _preflight(self.root, self.limits.max_output_bytes)
+        _preflight(self.root, self.limits.max_output_bytes, encoding)
         return "".join(_json_chunks(_Projection(self.root))) + "\n"
 
 
@@ -349,12 +354,15 @@ class LayoutSummaryResult:
         """
         return _view_dict(self.root, self.limits.max_output_bytes)
 
-    def to_json(self) -> str:
+    def to_json(self, *, encoding: str = "ascii") -> str:
         """Return two-space ASCII summary JSON and LF, never a partial document.
 
+        :param encoding: Destination text encoding for byte-budget accounting only;
+            the returned JSON string remains ASCII-safe. Includes encoding state/BOM.
+        :raises ValueError: If encoding does not name a text-to-bytes codec.
         :raises LayoutInspectionError: If encoded summary bytes exceed the output cap.
         """
-        _preflight(self.root, self.limits.max_output_bytes)
+        _preflight(self.root, self.limits.max_output_bytes, encoding)
         return "".join(_json_chunks(_Projection(self.root))) + "\n"
 
 
@@ -627,10 +635,29 @@ def _json_chunks(value: object) -> Iterator[str]:
 _END = object()
 
 
-def _preflight(root: LayoutNode | SummaryLayoutNode, cap: int) -> None:
-    """Count final ASCII bytes including LF, stopping at the first over-cap chunk."""
-    count = 1
+def _encoded_chunks(
+    root: LayoutNode | SummaryLayoutNode, encoding: str
+) -> Iterator[bytes]:
+    """Incrementally encode SDK JSON/LF, validating the codec before visiting the tree."""
+    try:
+        encoder = codecs.getincrementalencoder(encoding)()
+        initial = encoder.encode("")
+    except (LookupError, TypeError) as error:
+        raise ValueError("encoding must name a text-to-bytes codec") from error
+    if not isinstance(initial, bytes):
+        raise ValueError("encoding must name a text-to-bytes codec")
+    yield initial
     for chunk in _json_chunks(_Projection(root)):
+        yield encoder.encode(chunk)
+    yield encoder.encode("\n", final=True)
+
+
+def _preflight(
+    root: LayoutNode | SummaryLayoutNode, cap: int, encoding: str = "ascii"
+) -> None:
+    """Count final encoded bytes including state/BOM and LF; stop before materialization."""
+    count = 0
+    for chunk in _encoded_chunks(root, encoding):
         count += len(chunk)
         if count > cap:
             raise LayoutInspectionError(

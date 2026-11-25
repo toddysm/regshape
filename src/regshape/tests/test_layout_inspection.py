@@ -35,6 +35,7 @@ from regshape.libs.layout import (
     SummaryIndexNode,
     inspect_layout,
     inspection,
+    inspection_models,
     summarize_layout,
 )
 from regshape.tests.artifact_fixtures import address, edge
@@ -119,6 +120,46 @@ def _validate(value: dict, view: str = "expanded") -> None:
     schema = json.loads(schema_path.read_text())
     schema["oneOf"] = [{"$ref": f"#/$defs/{view}"}]
     Draft202012Validator(schema).validate(value)
+
+
+@pytest.mark.parametrize("view", ["expanded", "summary"])
+@pytest.mark.parametrize("encoding", ["utf-16", "utf-8-sig", "utf-32"])
+def test_json_destination_encoding_budget_before_materialization(
+    tmp_path: Path, view: str, encoding: str,
+) -> None:
+    """Include actual BOM/state/LF bytes in both views and reject before the second JSON pass."""
+    path, _, _ = _tiny(tmp_path)
+    result = inspect_layout(path)
+    if view == "summary":
+        result = summarize_layout(result)
+    expected = result.to_json()
+    size = len(expected.encode(encoding))
+    exact = replace(result, limits=replace(result.limits, max_output_bytes=size))
+    assert exact.to_json(encoding=encoding) == expected
+    limited = replace(result, limits=replace(result.limits, max_output_bytes=size - 1))
+    with patch.object(
+        inspection_models, "_json_chunks", wraps=inspection_models._json_chunks
+    ) as chunks:
+        with pytest.raises(LayoutInspectionError) as error:
+            limited.to_json(encoding=encoding)
+    assert error.value.diagnostics[0].code == "OUTPUT_LIMIT"
+    assert chunks.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "encoding", [None, 42, "not-a-codec", "rot_13", "base64_codec"]
+)
+def test_json_invalid_encoding_rejected_before_projection(
+    tmp_path: Path,
+    encoding: object,
+) -> None:
+    """Bad/non-text codec arguments fail explicitly without traversing or allocating JSON."""
+    result = inspect_layout(_tiny(tmp_path)[0])
+    with patch.object(
+        inspection_models, "_json_chunks", side_effect=AssertionError("no projection")
+    ):
+        with pytest.raises(ValueError):
+            result.to_json(encoding=encoding)
 
 
 @pytest.mark.parametrize("mixed", [False, True])

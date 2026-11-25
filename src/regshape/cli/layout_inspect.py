@@ -8,10 +8,12 @@ JSON delegates its shape and serialization to the SDK.
 from __future__ import annotations
 
 import codecs
+import errno
 import json
 import os
 import unicodedata
 from collections.abc import Iterable, Iterator, Mapping
+from typing import NoReturn
 
 import click
 
@@ -324,12 +326,24 @@ def render_inspection(
     return "".join(tree.chunks(result.root))
 
 
+def _delivery_failure(error: OSError | UnicodeError) -> NoReturn:
+    """Let Click pacify EPIPE shutdown flushes; exit 1 for other reported delivery failures.
+
+    The standalone Click entry point wraps process stdout/stderr without closing
+    borrowed streams when EPIPE escapes its callback.
+    """
+    if isinstance(error, OSError) and error.errno == errno.EPIPE:
+        raise error
+    raise click.exceptions.Exit(1) from error
+
+
 def emit_inspection_diagnostics(
     diagnostics: tuple[InspectionDiagnostic, ...], *, details: bool = False
 ) -> None:
     """Write safe plain stderr in SDK discovery order; root errors omit occurrence details.
 
     :raises click.exceptions.Exit: With status 1 if stderr itself cannot be delivered.
+    :raises OSError: EPIPE is delegated to Click's shutdown-flush protection.
     """
     stream = click.get_text_stream("stderr")
     encoding = stream.encoding or "utf-8"
@@ -348,7 +362,7 @@ def emit_inspection_diagnostics(
                 raise OSError("Short diagnostic write")
         stream.flush()
     except (OSError, UnicodeError) as error:
-        raise click.exceptions.Exit(1) from error
+        _delivery_failure(error)
 
 
 def write_inspection(
@@ -361,16 +375,12 @@ def write_inspection(
 
     :raises LayoutInspectionError: If selected output exceeds its byte cap, before writing.
     :raises click.exceptions.Exit: With status 1 on output delivery failure.
+    :raises OSError: EPIPE is delegated to Click's shutdown-flush protection.
     """
     stream = click.get_text_stream("stdout")
     encoding = stream.encoding or "utf-8"
     if as_json:
-        content = result.to_json()
-        _preflight(
-            (content[start : start + 512] for start in range(0, len(content), 512)),
-            encoding,
-            result,
-        )
+        content = result.to_json(encoding=encoding)
     else:
         content = render_inspection(
             result,
@@ -389,6 +399,6 @@ def write_inspection(
             stderr.write(f"OUTPUT_WRITE_FAILED: {message}\n")
             stderr.flush()
         except (OSError, UnicodeError) as diagnostic_error:
-            raise click.exceptions.Exit(1) from diagnostic_error
-        raise click.exceptions.Exit(1) from error
+            _delivery_failure(diagnostic_error)
+        _delivery_failure(error)
     emit_inspection_diagnostics(result.diagnostics, details=True)

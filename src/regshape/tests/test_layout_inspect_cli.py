@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -912,6 +913,71 @@ def test_unwritable_stderr_still_returns_failure(
     )
     assert result.exit_code == 1
     assert result.stdout == result.stderr == ""
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_real_closed_pipe_exits_one_without_shutdown_diagnostic(
+    tmp_path: Path,
+    as_json: bool,
+) -> None:
+    """A closed real pipe must not retry buffered output at interpreter shutdown and exit 120."""
+    path = _tiny(tmp_path)
+    reader, writer = os.pipe()
+    os.close(reader)
+    with os.fdopen(writer, "wb") as stdout:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from regshape.cli.main import regshape; regshape()",
+                "layout",
+                "inspect",
+                "-p",
+                str(path),
+                *(["--json"] if as_json else []),
+            ],
+            stdout=stdout,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+            check=False,
+            env={**os.environ, "PYTHONPATH": str(Path(__file__).parents[2])},
+        )
+    assert completed.returncode == 1, completed.stderr
+    assert completed.stderr.startswith("OUTPUT_WRITE_FAILED:")
+    assert completed.stderr.count("\n") == 1
+    assert "Exception ignored" not in completed.stderr
+    assert "BrokenPipeError" not in completed.stderr
+
+
+def test_encoded_json_cap_precedes_sdk_string_materialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject UTF-16 amplification in the SDK counting pass, not after allocating ASCII JSON."""
+    sdk = inspect_layout(_tiny(tmp_path))
+    content = sdk.to_json()
+    cap = len(content.encode("utf-16")) - 1
+    assert len(content.encode("ascii")) < cap
+    limited = replace(sdk, limits=replace(sdk.limits, max_output_bytes=cap))
+    monkeypatch.setattr("regshape.cli.layout.inspect_layout", lambda path: limited)
+    output = _Output(encoding="utf-16", terminal=False)
+    _streams(monkeypatch, output)
+    original = LayoutInspectionResult.to_json
+    materialized = []
+
+    def serialize(result: LayoutInspectionResult, **kwargs: str) -> str:
+        """Record only completed string allocations while forwarding new SDK counting options."""
+        value = original(result, **kwargs)
+        materialized.append(len(value))
+        return value
+
+    monkeypatch.setattr(LayoutInspectionResult, "to_json", serialize)
+    result = _runner().invoke(regshape, ["layout", "inspect", "-p", "unused", "--json"])
+    assert result.exit_code == 1
+    assert result.stderr == f"OUTPUT_LIMIT: max_output_bytes cap {cap} exceeded\n"
+    assert output.getvalue() == ""
+    assert materialized == []
 
 
 def test_present_empty_fields_and_legacy_show_are_unchanged(tmp_path: Path) -> None:

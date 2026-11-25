@@ -123,8 +123,12 @@ automatic retry, repair, or network fallback.
 ## Serialization
 
 `result.to_dict()` returns an independent JSON-compatible recursive copy.
-`result.to_json()` returns two-space, ASCII-safe JSON plus one final line feed.
-Both preflight the complete encoded JSON byte budget before allocating the
+`result.to_json(*, encoding="ascii")` returns two-space, ASCII-safe JSON plus one
+final line feed. The optional encoding selects the destination text codec for
+byte-budget accounting, including encoding state/BOM; it does not change the
+returned string, schema or escaping. Pass the actual output stream encoding
+when it is not ASCII/UTF-8. Invalid or non-text codecs raise `ValueError`.
+Both methods preflight the complete encoded JSON byte budget before allocating the
 copy/string and raise `LayoutInspectionError` with `OUTPUT_LIMIT` if it cannot
 fit. Inspection itself does not materialize expanded output.
 
