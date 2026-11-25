@@ -64,6 +64,22 @@ def _runner() -> CliRunner:
     return CliRunner()
 
 
+def _process_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run the worktree CLI with real UTF-8 streams, not Click's version-specific capture buffers."""
+    return subprocess.run(
+        [sys.executable, "-m", "regshape.cli.main", *args],
+        capture_output=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(Path(__file__).parents[2]),
+            "PYTHONIOENCODING": "utf-8",
+        },
+    )
+
+
 def _raw(value: dict) -> bytes:
     """Encode synthetic metadata exactly like the approved tiny SDK example."""
     return json.dumps(value, separators=(",", ":"), ensure_ascii=True).encode()
@@ -419,15 +435,12 @@ def test_inspect_scenario_timing_keeps_stdout_unchanged(
     """Emit one named scenario on stderr only when requested, preserving tree/JSON stdout."""
     path = _tiny(tmp_path)
     args = ["layout", "inspect", "-p", str(path)] + (["--json"] if as_json else [])
-    plain = _runner().invoke(regshape, args)
-    timed = _runner().invoke(
-        regshape, [*args, "--time-scenarios", "--telemetry-format", "json"]
-    )
-    disabled = _runner().invoke(
-        regshape,
+    plain = _process_cli(args)
+    timed = _process_cli([*args, "--time-scenarios", "--telemetry-format", "json"])
+    disabled = _process_cli(
         [*args, "--time-scenarios", "--telemetry-format", "json", "-tv", "0"],
     )
-    assert plain.exit_code == timed.exit_code == disabled.exit_code == 0
+    assert plain.returncode == timed.returncode == disabled.returncode == 0
     assert plain.stdout == timed.stdout == disabled.stdout
     assert plain.stderr == disabled.stderr == ""
     event = json.loads(timed.stderr)
@@ -440,11 +453,9 @@ def test_inspect_scenario_timing_preserves_root_failure(tmp_path: Path) -> None:
     path = tmp_path / "invalid-layout"
     path.mkdir()
     args = ["layout", "inspect", "-p", str(path)]
-    plain = _runner().invoke(regshape, args)
-    timed = _runner().invoke(
-        regshape, [*args, "--time-scenarios", "--telemetry-format", "json"]
-    )
-    assert plain.exit_code == timed.exit_code == 1
+    plain = _process_cli(args)
+    timed = _process_cli([*args, "--time-scenarios", "--telemetry-format", "json"])
+    assert plain.returncode == timed.returncode == 1
     assert plain.stdout == timed.stdout == ""
     assert timed.stderr.startswith(plain.stderr)
     event = json.loads(timed.stderr[len(plain.stderr) :])
