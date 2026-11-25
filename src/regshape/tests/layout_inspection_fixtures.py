@@ -281,7 +281,7 @@ def observe_io(metadata: dict[str, int]) -> Iterator[IOFacts]:
         return fd
 
     def guarded_file_open(factory):
-        """Wrap each Python file factory without letting pathlib bypass the native-open guard."""
+        """Guard Python factories, including pathlib's cached opener on Python 3.10."""
 
         def file_open(file, mode="r", *args, **kwargs):
             """Permit metadata reads or standard output wrappers, rejecting payload/unlisted files."""
@@ -343,7 +343,9 @@ def observe_io(metadata: dict[str, int]) -> Iterator[IOFacts]:
         stack.enter_context(
             patch.object(builtins, "open", guarded_file_open(builtins.open))
         )
-        stack.enter_context(patch.object(io, "open", guarded_file_open(io.open)))
+        python_open = guarded_file_open(io.open)
+        stack.enter_context(patch.object(io, "open", python_open))
+        stack.enter_context(patch.object(Path, "open", python_open))
         stack.enter_context(patch.object(os, "stat", stated))
         stack.enter_context(
             patch.object(os, "supports_dir_fd", os.supports_dir_fd | {opened, stated})

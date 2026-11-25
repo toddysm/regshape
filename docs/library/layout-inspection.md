@@ -242,7 +242,9 @@ retain metadata/output bytes, native open/stat/read/parse counts, runtime,
 hardware, filesystem, elapsed median/maximum and peak RSS in bytes. Elapsed
 time covers the instrumented CLI invocation, excluding interpreter startup and
 fixture discovery; RSS covers the entire fresh process, including imports and
-output capture. Reads use stable, warm-cache files, not a cold-cache claim.
+output capture. Linux uses post-exec `VmHWM` rather than a potentially inherited
+`getrusage` high-water mark; macOS uses `getrusage` in byte units.
+Reads use stable, warm-cache files, not a cold-cache claim.
 Linux CI evidence and local Mac evidence are separate measurements, not a
 cross-machine ranking.
 

@@ -97,6 +97,24 @@ def occurrences(value: dict) -> int:
     return total
 
 
+def peak_rss_bytes() -> int:
+    """Read this post-exec process's peak resident bytes, excluding inherited Linux high-water marks.
+
+    Linux VmHWM resets at exec; macOS getrusage already reports this process.
+    :raises RuntimeError: If Linux does not report a VmHWM value in KiB.
+    """
+    if sys.platform == "linux":
+        for line in Path("/proc/self/status").read_text().splitlines():
+            if line.startswith("VmHWM:"):
+                parts = line.split()
+                if len(parts) == 3 and parts[2] == "kB":
+                    return int(parts[1]) * 1024
+        raise RuntimeError("Linux post-exec peak RSS (VmHWM in KiB) was not reported")
+    import resource
+
+    return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+
+
 def sample(path: Path, view: str) -> dict:
     """Run one actual CLI invocation, enforcing per-address IO before returning resource evidence.
 
@@ -105,8 +123,6 @@ def sample(path: Path, view: str) -> dict:
     """
     if view not in VIEWS:
         raise ValueError(f"Unknown view: {view}")
-    import resource
-
     metadata = metadata_files(path)
     if "mix_stderr" in inspect.signature(CliRunner).parameters:
         options = inspect.signature(CliRunner).bind(mix_stderr=False).kwargs
@@ -134,10 +150,9 @@ def sample(path: Path, view: str) -> dict:
     assert all(
         count == 1 for name, count in facts.target_stats.items() if name not in metadata
     )
-    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return {
         "elapsed_seconds": elapsed,
-        "peak_rss_bytes": int(rss if sys.platform == "darwin" else rss * 1024),
+        "peak_rss_bytes": peak_rss_bytes(),
         "output_bytes": len(result.stdout.encode("utf-8")),
         "io": {
             "opens": facts.opens,

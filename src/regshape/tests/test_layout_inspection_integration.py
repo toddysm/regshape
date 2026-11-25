@@ -8,6 +8,7 @@ the actual SDK and Click entry point against the same stored bytes.
 import hashlib
 import inspect
 import json
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -42,6 +43,9 @@ from regshape.tests.layout_inspection_fixtures import (
     build_layout,
     metadata_files,
     observe_io,
+)
+from regshape.tests.layout_inspection_fixtures import (
+    manifest as fixture_manifest,
 )
 
 EXPECTED = {
@@ -120,7 +124,20 @@ def test_stored_family_sdk_cli_parity_and_preservation(
         stats.object_references,
         stats.subject_references,
     ) == EXPECTED[shape]
-    assert stats.stored_bytes == sum(sdk._storage.sizes.values())
+    unvisited = (
+        hashlib.sha256(
+            fixture_manifest(annotations={"fixture": "subject-only"})
+        ).hexdigest()
+        if shape == "subject"
+        else None
+    )
+    assert stats.stored_bytes == sum(
+        len(values[0])
+        for name, values in before.items()
+        if name.startswith("blobs/")
+        and isinstance(values[0], bytes)
+        and name.rsplit("/", 1)[-1] != unvisited
+    )
     args = ["layout", "inspect", "-p", str(path)]
     args += ["--summary"] if summary else []
     args += ["--json"] if as_json else []
@@ -468,3 +485,32 @@ def test_readonly_guard_detects_python_open_and_bound_credentials(
             payload.read_bytes()
         else:
             client.resolve_credentials("registry.example", None, None)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux post-exec RSS semantics")
+def test_linux_peak_rss_excludes_retained_parent_allocation() -> None:
+    """A large retained parent allocation must not become the fresh worker's reported peak."""
+    worker = """
+import json
+from pathlib import Path
+from regshape.tests.benchmark_layout_inspection import peak_rss_bytes
+measured = peak_rss_bytes()
+actual = next(int(line.split()[1]) * 1024
+              for line in Path('/proc/self/status').read_text().splitlines()
+              if line.startswith('VmHWM:'))
+print(json.dumps({'measured': measured, 'actual': actual}))
+"""
+    parent = """
+import json, subprocess, sys
+from regshape.tests.benchmark_layout_inspection import peak_rss_bytes
+retained = bytearray(128 * 1024 * 1024)
+child = json.loads(subprocess.check_output([sys.executable, '-c', sys.argv[1]]))
+print(json.dumps({'parent': peak_rss_bytes(), 'child': child}))
+"""
+    evidence = json.loads(
+        subprocess.check_output([sys.executable, "-c", parent, worker])
+    )
+    assert evidence["parent"] >= 128 * 1024 * 1024
+    assert (
+        0 <= evidence["child"]["actual"] - evidence["child"]["measured"] < 1024 * 1024
+    )
