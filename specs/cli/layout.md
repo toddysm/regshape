@@ -113,6 +113,8 @@ flush retries, preserving exit 1 without closing borrowed output streams.
 The destination must use a stream character encoding; domain-name codecs
 (`idna` and `punycode`) are rejected before stdout with `OUTPUT_WRITE_FAILED`
 and exit 1.
+The configured process-stream encoding is honored, including explicit ASCII;
+Click does not automatically upgrade inspection output or diagnostics to UTF-8.
 There are no CLI budget overrides or automatic retries. For `LIMIT_REACHED`,
 use a separately prepared smaller valid layout or the SDK with deliberately
 reviewed named limits; do not modify the inspected original. For `OUTPUT_LIMIT`,

@@ -12,7 +12,7 @@ import os
 import sys
 import unicodedata
 from collections.abc import Iterable, Iterator, Mapping
-from typing import NoReturn, TextIO, cast
+from typing import Literal, NoReturn, TextIO, cast
 
 import click
 from click.utils import PacifyFlushWrapper
@@ -357,6 +357,16 @@ def _delivery_failure(
     raise click.exceptions.Exit(1) from error
 
 
+def _text_stream(name: Literal["stdout", "stderr"]) -> TextIO:
+    """Borrow a Click stream without its implicit ASCII-to-UTF-8 upgrade.
+
+    The process stream's encoding governs fallback and byte budgets; only an
+    unspecified encoding defaults to UTF-8. No stream ownership is transferred.
+    """
+    stream = sys.stdout if name == "stdout" else sys.stderr
+    return click.get_text_stream(name, encoding=stream.encoding or "utf-8")
+
+
 def emit_inspection_diagnostics(
     diagnostics: tuple[InspectionDiagnostic, ...], *, details: bool = False
 ) -> None:
@@ -364,7 +374,7 @@ def emit_inspection_diagnostics(
 
     :raises click.exceptions.Exit: With status 1 if stderr itself cannot be delivered.
     """
-    stream = click.get_text_stream("stderr")
+    stream = _text_stream("stderr")
     encoding = stream.encoding or "utf-8"
     try:
         for error in diagnostics:
@@ -395,7 +405,7 @@ def write_inspection(
     :raises LayoutInspectionError: If selected output exceeds its byte cap, before writing.
     :raises click.exceptions.Exit: With status 1 on invalid codec or output delivery failure.
     """
-    stream = click.get_text_stream("stdout")
+    stream = _text_stream("stdout")
     encoding = stream.encoding or "utf-8"
     try:
         if as_json:
@@ -411,7 +421,7 @@ def write_inspection(
             raise OSError("Short stdout write")
         stream.flush()
     except (OSError, ValueError) as error:
-        stderr = click.get_text_stream("stderr")
+        stderr = _text_stream("stderr")
         try:
             message = "".join(_escape(str(error), stderr.encoding or "utf-8", False))
             stderr.write(f"OUTPUT_WRITE_FAILED: {message}\n")

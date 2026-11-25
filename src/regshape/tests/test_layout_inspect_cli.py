@@ -295,7 +295,7 @@ def _streams(
     monkeypatch: pytest.MonkeyPatch, stdout: _Output, stderr: _Output | None = None
 ) -> None:
     """Replace only renderer stream selection; leave CliRunner's own capture lifecycle intact."""
-    original = display.click.get_text_stream
+    original = display._text_stream
 
     def stream(name: str) -> io.TextIOBase:
         """Borrow injected streams or the runner's actual stderr when not overridden."""
@@ -303,7 +303,7 @@ def _streams(
             return stdout
         return stderr if stderr is not None else original(name)
 
-    monkeypatch.setattr(display.click, "get_text_stream", stream)
+    monkeypatch.setattr(display, "_text_stream", stream)
 
 
 def test_exact_normalized_approved_baseline(tmp_path: Path) -> None:
@@ -507,6 +507,34 @@ def test_ascii_fallback_and_encoding_preserve_values(
         assert "└" not in text and "│" not in text
     assert "?" not in text
     text.encode(encoding)
+
+
+def test_real_ascii_process_streams_are_not_upgraded_by_click(tmp_path: Path) -> None:
+    """Keep actual ASCII stdout rendering and stderr diagnostics ASCII, without fake streams."""
+    path = _tiny(tmp_path, annotations={"unicode": "é雪🙂"})
+    code = """
+from regshape.cli.main import regshape
+from regshape.cli.layout_inspect import emit_inspection_diagnostics
+from regshape.libs.layout import InspectionDiagnostic, SourceLocation
+regshape(standalone_mode=False)
+emit_inspection_diagnostics((InspectionDiagnostic("TEST", "\\u00e9\\u96ea\\U0001f642", SourceLocation("index.json")),))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", code, "layout", "inspect", "-p", str(path)],
+        capture_output=True,
+        timeout=30,
+        check=False,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(Path(__file__).parents[2]),
+            "PYTHONIOENCODING": "ascii",
+        },
+    )
+    assert completed.returncode == 0, completed.stderr
+    text = completed.stdout.decode("ascii")
+    assert "`-- Index" in text and "|-- Config" in text
+    assert "\\u00e9\\u96ea\\U0001f642" in text
+    assert completed.stderr.decode("ascii") == "TEST: \\u00e9\\u96ea\\U0001f642\n"
 
 
 def test_terminal_controls_are_escaped_in_every_untrusted_surface(
