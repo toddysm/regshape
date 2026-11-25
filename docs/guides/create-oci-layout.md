@@ -198,11 +198,43 @@ Add `--json` to any command for machine-readable output.
 
 ## Viewing the index
 
+Use the 0.2 inspection command to explore the local content tree:
+
+```bash
+regshape layout inspect --path ./my-image
+regshape layout inspect --path ./my-image --json
+```
+
+`inspect --json` returns a **hierarchical content graph**, not the legacy
+entry-point-only OCI Image Index schema. It is not a drop-in replacement for
+scripts that read `show` JSON.
+
+The legacy command remains available in 0.2:
+
 ```bash
 regshape layout show --path ./my-image
 ```
 
-Prints `index.json` as pretty-printed JSON.
+It still prints the entry-point `index.json` as the same pretty-printed JSON
+on stdout, with this plain warning on stderr:
+
+```text
+Warning: 'layout show' is deprecated in 0.2 and will be removed in 0.3; use 'layout inspect'.
+```
+
+`show` is scheduled for removal in 0.3. For scripts that need the original
+entry-point schema rather than a graph, read that file directly:
+
+```bash
+cat ./my-image/index.json
+python -m json.tool ./my-image/index.json
+```
+
+`cat` preserves the file bytes; `json.tool` parses and pretty-prints the JSON.
+Neither validates the layout or follows descriptors. Python callers can continue
+using `regshape.libs.layout.read_index`; the SDK API is unchanged and is **not**
+deprecated. See the [command reference](../../specs/cli/layout.md#migrating-from-layout-show)
+for warning and exit behavior.
 
 ---
 

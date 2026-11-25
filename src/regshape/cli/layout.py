@@ -13,6 +13,7 @@
               Layouts via a staged build workflow.
               Inspection renders SDK-owned expanded trees or summaries without
               payload reads or CLI-owned classification/accounting.
+              Legacy show preserves entry-point JSON with a deprecation warning.
               Recursive validation opts into strict artifact graph policy.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
@@ -597,7 +598,9 @@ def status(ctx, layout_path, as_json):
 # ===========================================================================
 
 
-@layout.command("show")
+@layout.command(
+    "show", short_help="(Deprecated) Print the index.json of an OCI Image Layout."
+)
 @telemetry_options
 @click.option(
     "--path",
@@ -610,11 +613,26 @@ def status(ctx, layout_path, as_json):
 )
 @click.pass_context
 @track_scenario("layout show")
-def show(ctx, layout_path):
+def show(ctx: click.Context, layout_path: str) -> None:
     """Print the index.json of an OCI Image Layout.
 
-    Outputs the top-level OCI Image Index as pretty-printed JSON.
+    This command is deprecated in 0.2 and will be removed in 0.3; use
+    layout inspect for the content tree, not the legacy entry-point JSON schema.
+
+    \f
+    Invocation emits one plain stderr warning before reading the index. Click
+    help and argument errors do not invoke this callback. Layout/IO errors retain
+    their stderr diagnostic and exit 1; success prints the original top-level
+    OCI Image Index as pretty-printed JSON on stdout.
+
+    :param layout_path: Root directory containing the layout's entry-point index.
     """
+    click.echo(
+        "Warning: 'layout show' is deprecated in 0.2 and will be removed in 0.3;"
+        " use 'layout inspect'.",
+        err=True,
+        color=False,
+    )
     try:
         index = read_index(layout_path)
     except (LayoutError, OSError) as exc:

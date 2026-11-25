@@ -1486,16 +1486,20 @@ def test_encoded_json_cap_precedes_sdk_string_materialization(
 
 
 def test_present_empty_fields_and_legacy_show_are_unchanged(tmp_path: Path) -> None:
-    """A valid empty index retains its selected empty fields; legacy show emits no migration warning."""
+    """Inspection retains empty fields; deprecated show keeps its entry-point JSON."""
     path = _layout(tmp_path, [], {}, annotations={})
     inspected = _runner().invoke(regshape, ["layout", "inspect", "-p", str(path)])
     assert inspected.exit_code == 0, inspected.stderr
+    assert inspected.stderr == ""
     assert "Referenced objects (manifests): []\n" in inspected.stdout
     assert "Annotations (annotations): {}\n" in inspected.stdout
     assert "Artifact type" not in inspected.stdout and "Subject" not in inspected.stdout
     shown = _runner().invoke(regshape, ["layout", "show", "-p", str(path)])
     assert shown.exit_code == 0
-    assert shown.stderr == ""
+    assert shown.stderr == (
+        "Warning: 'layout show' is deprecated in 0.2 and will be removed in 0.3;"
+        " use 'layout inspect'.\n"
+    )
     assert json.loads(shown.stdout) == json.loads((path / "index.json").read_bytes())
 
 

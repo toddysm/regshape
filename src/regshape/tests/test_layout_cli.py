@@ -11,20 +11,22 @@ import inspect
 import io
 import json
 import sys
+from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
 from regshape.cli.main import regshape
+from regshape.libs.errors import LayoutError
 from regshape.libs.layout.operations import (
     generate_config,
     generate_manifest,
     init_layout,
+    read_index,
     read_stage,
     stage_layer,
 )
 from regshape.libs.models.mediatype import OCI_IMAGE_LAYER_TAR_GZIP
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -494,7 +496,10 @@ class TestLayoutStatusCLI:
 
 
 class TestLayoutShowCLI:
-    def test_shows_index_json(self, tmp_path):
+    """Preserve legacy entry-point JSON and exits while warning only on invocation."""
+
+    def test_shows_index_json(self, tmp_path: Path) -> None:
+        """An empty layout emits its original JSON, with one plain stderr warning."""
         layout_dir = tmp_path / "layout"
         init_layout(layout_dir)
         result = _runner().invoke(regshape, [
@@ -502,9 +507,102 @@ class TestLayoutShowCLI:
             "--path", str(layout_dir),
         ])
         assert result.exit_code == 0, result.output
-        data = json.loads(result.output)
+        data = json.loads(result.stdout)
         assert data["schemaVersion"] == 2
         assert data["manifests"] == []
+        assert result.stdout == json.dumps(
+            json.loads((layout_dir / "index.json").read_text()), indent=2
+        ) + "\n"
+        assert result.stderr == (
+            "Warning: 'layout show' is deprecated in 0.2 and will be removed in 0.3;"
+            " use 'layout inspect'.\n"
+        )
+
+    @pytest.mark.parametrize("path_option", ["--path", "-p"])
+    @pytest.mark.parametrize("color", [False, True])
+    def test_populated_json_and_sdk_are_unchanged(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+        path_option: str, color: bool,
+    ) -> None:
+        """Both path spellings preserve full legacy JSON, even with forced color."""
+        layout_dir = tmp_path / "layout"
+        init_layout(layout_dir)
+        _full_pipeline(layout_dir)
+        expected = json.loads((layout_dir / "index.json").read_text())
+        index = read_index(layout_dir)
+        assert json.loads(index.to_json()) == expected
+        assert capsys.readouterr() == ("", "")
+
+        result = _runner().invoke(regshape, [
+            "layout", "show", path_option, str(layout_dir),
+            "--telemetry-verbosity", "0",
+        ], color=color, env={"NO_COLOR": None if color else "1"})
+
+        assert result.exit_code == 0, result.stderr
+        assert result.stdout == json.dumps(expected, indent=2) + "\n"
+        assert result.stderr == (
+            "Warning: 'layout show' is deprecated in 0.2 and will be removed in 0.3;"
+            " use 'layout inspect'.\n"
+        )
+        assert "\x1b" not in result.stdout + result.stderr
+
+    @pytest.mark.parametrize("case", ["missing-path", "missing-option", "unknown-option", "help"])
+    def test_usage_errors_and_help_do_not_warn(self, tmp_path: Path, case: str) -> None:
+        """Help hides maintainer notes; help and usage errors do not run the callback."""
+        layout_dir = tmp_path / "layout"
+        init_layout(layout_dir)
+        arguments = {
+            "missing-path": ["--path", str(tmp_path / "absent")],
+            "missing-option": [],
+            "unknown-option": ["--path", str(layout_dir), "--json"],
+            "help": ["--help"],
+        }
+        result = _runner().invoke(regshape, ["layout", "show", *arguments[case]])
+
+        assert result.exit_code == (0 if case == "help" else 2)
+        assert "Warning:" not in result.stdout + result.stderr
+        if case == "help":
+            assert "--path" in result.stdout
+            assert "deprecated in 0.2" in result.stdout
+            assert "Invocation emits" not in result.stdout
+            assert ":param layout_path:" not in result.stdout
+            assert result.stderr == ""
+        else:
+            assert result.stdout == ""
+            assert "Error:" in result.stderr
+
+    def test_group_help_marks_show_deprecated(self) -> None:
+        """Group help advertises deprecation without invoking show or warning on stderr."""
+        result = _runner().invoke(regshape, ["layout", "--help"])
+
+        assert result.exit_code == 0
+        assert "show (Deprecated)" in " ".join(result.stdout.split())
+        assert result.stderr == ""
+
+    @pytest.mark.parametrize("damage", ["missing-marker", "malformed-index"])
+    def test_layout_errors_keep_exit_and_empty_stdout(
+        self, tmp_path: Path, damage: str,
+    ) -> None:
+        """Invoked commands warn before the unchanged SDK error and exit 1 without JSON."""
+        layout_dir = tmp_path / "layout"
+        init_layout(layout_dir)
+        if damage == "missing-marker":
+            (layout_dir / "oci-layout").unlink()
+        else:
+            (layout_dir / "index.json").write_text("{")
+        with pytest.raises(LayoutError) as error:
+            read_index(layout_dir)
+        result = _runner().invoke(regshape, [
+            "layout", "show", "--path", str(layout_dir),
+        ])
+
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert result.stderr == (
+            "Warning: 'layout show' is deprecated in 0.2 and will be removed in 0.3;"
+            " use 'layout inspect'.\n"
+            f"Error [{layout_dir}]: {error.value}\n"
+        )
 
 
 # ---------------------------------------------------------------------------
