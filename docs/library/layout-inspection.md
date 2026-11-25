@@ -217,3 +217,41 @@ Summary JSON adds root statistics and, only on recognized tagged index
 occurrences, an `association` block with source/tag/status and either a full
 resolved digest or unresolved SHA-512 algorithm/prefix. This does not invent
 an OCI subject, reverse subject direction or imply complete registry discovery.
+
+## Offline regression and resource evidence
+
+The [integrated tests](../../src/regshape/tests/test_layout_inspection_integration.py)
+exercise stored simple, nested/multi-root, subject-linked, shared, mixed/unknown
+and incomplete layouts through both SDK views and all four CLI forms. The
+[fixture builder](../../src/regshape/tests/layout_inspection_fixtures.py) also
+retains the digest-pinned BusyBox metadata reference and reproduces the locked
+human tree. Its local copy replaces opaque content with two-byte stand-ins and
+adjusts descriptor sizes; it is not a digest-valid downloaded image. No image
+layers are downloaded or committed, and inspection must not open those stand-ins.
+
+Run the [resource harness](../../src/regshape/tests/benchmark_layout_inspection.py)
+from the checkout with installed development dependencies:
+
+```shell
+python -m regshape.tests.benchmark_layout_inspection --output layout-baseline.json
+```
+
+It verifies the exact wide/reused-index counts, then records one warm-up and
+five fresh-process samples per view for BusyBox and both stress shapes. Reports
+retain metadata/output bytes, native open/stat/read/parse counts, runtime,
+hardware, filesystem, elapsed median/maximum and peak RSS in bytes. Elapsed
+time covers the instrumented CLI invocation, excluding interpreter startup and
+fixture discovery; RSS covers the entire fresh process, including imports and
+output capture. Reads use stable, warm-cache files, not a cold-cache claim.
+Linux CI evidence and local Mac evidence are separate measurements, not a
+cross-machine ranking.
+
+A baseline report says `performance_gate: not-approved; measurements only`.
+It does **not** pass the release gate. After the owner approves quantitative
+limits on #216, rerun with `--thresholds approved-limits.json`. This caller-supplied
+JSON must contain the matching `fixture_revision`, `platform` (from the report's
+environment), canonical #216 `approval` comment URL, and `limits` covering
+every `shape/view` pair. Each pair requires positive finite `elapsed_seconds`
+and `peak_rss_bytes` caps. Equality passes; an exceeded maximum exits 1.
+The caller must verify the approval's authenticity and scope before using it.
+Fixture/platform drift or missing limits is an error, never an implicit pass.
