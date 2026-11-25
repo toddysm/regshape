@@ -121,6 +121,7 @@ jobs:
           src/regshape/tests/test_progress_display.py
           src/regshape/tests/test_blob_cli.py
           src/regshape/tests/test_layout_cli.py
+          src/regshape/tests/test_layout_inspect_cli.py
           src/regshape/tests/test_artifact_graph.py
           src/regshape/tests/test_artifact_download.py
           src/regshape/tests/test_artifact_archive.py
@@ -161,6 +162,7 @@ jobs:
           src/regshape/tests/test_layout_push.py
           src/regshape/tests/test_artifact_pull_cli.py
           src/regshape/tests/test_layout_inspection.py
+          src/regshape/tests/test_layout_inspect_cli.py
       - name: Test native interleaved progress and deferred warnings
         run: >-
           python -m pytest -q
