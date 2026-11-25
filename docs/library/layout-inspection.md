@@ -128,6 +128,8 @@ final line feed. The optional encoding selects the destination text codec for
 byte-budget accounting, including encoding state/BOM; it does not change the
 returned string, schema or escaping. Pass the actual output stream encoding
 when it is not ASCII/UTF-8. Invalid or non-text codecs raise `ValueError`.
+UTF-7 accounting preserves whole-string shift boundaries without buffering
+an entire shifted run.
 Both methods preflight the complete encoded JSON byte budget before allocating the
 copy/string and raise `LayoutInspectionError` with `OUTPUT_LIMIT` if it cannot
 fit. Inspection itself does not materialize expanded output.

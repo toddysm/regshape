@@ -7,15 +7,15 @@ JSON delegates its shape and serialization to the SDK.
 
 from __future__ import annotations
 
-import codecs
-import errno
 import json
 import os
+import sys
 import unicodedata
 from collections.abc import Iterable, Iterator, Mapping
-from typing import NoReturn
+from typing import NoReturn, TextIO, cast
 
 import click
+from click.utils import PacifyFlushWrapper
 
 from regshape.libs.layout import (
     DescriptorView,
@@ -28,7 +28,11 @@ from regshape.libs.layout import (
     OpaqueNode,
     SourceLocation,
 )
-from regshape.libs.layout.inspection_models import JsonValue, ObjectNode
+from regshape.libs.layout.inspection_models import (
+    JsonValue,
+    ObjectNode,
+    encoded_chunk_lengths,
+)
 
 
 def _escape(value: str, encoding: str, ascii_only: bool) -> Iterator[str]:
@@ -292,15 +296,12 @@ class _Tree:
 def _preflight(
     chunks: Iterable[str], encoding: str, result: LayoutInspectionResult
 ) -> None:
-    """Count final encoded bytes, including stateful encoding overhead; stop at cap plus one."""
-    encoder = codecs.getincrementalencoder(encoding)()
+    """Count final encoded bytes/state; stop at the first over-budget chunk."""
     size = 0
-    for chunk in chunks:
-        size += len(encoder.encode(chunk))
+    for amount in encoded_chunk_lengths(chunks, encoding):
+        size += amount
         if size > result.limits.max_output_bytes:
             break
-    else:
-        size += len(encoder.encode("", final=True))
     if size > result.limits.max_output_bytes:
         raise LayoutInspectionError(
             (
@@ -326,14 +327,32 @@ def render_inspection(
     return "".join(tree.chunks(result.root))
 
 
-def _delivery_failure(error: OSError | UnicodeError) -> NoReturn:
-    """Let Click pacify EPIPE shutdown flushes; exit 1 for other reported delivery failures.
+class _FailedFlushStream(PacifyFlushWrapper):
+    """Non-owning Click proxy for a process stream whose delivery already failed.
 
-    The standalone Click entry point wraps process stdout/stderr without closing
-    borrowed streams when EPIPE escapes its callback.
+    Inherit Click's borrowed-stream constructor/attribute forwarding, but never
+    retry its known-failed buffer during shutdown. The primary error is reported
+    when stderr is writable, before this guard; healthy streams retain normal flushing.
     """
-    if isinstance(error, OSError) and error.errno == errno.EPIPE:
-        raise error
+
+    def flush(self) -> None:
+        """Do not retry already-reported failed output or close its borrowed stream."""
+        return None
+
+
+def _delivery_failure(
+    error: OSError | UnicodeError, *, stdout_failed: bool, stderr_failed: bool
+) -> NoReturn:
+    """Preserve exit 1 by protecting only failed process streams from shutdown retries.
+
+    All known-failed streams use Click's non-owning proxy with flushing disabled,
+    including mixed stdout/stderr failures with different errors. No stream is
+    closed or replaced at the descriptor level.
+    """
+    if stdout_failed:
+        sys.stdout = cast(TextIO, _FailedFlushStream(sys.stdout))
+    if stderr_failed:
+        sys.stderr = cast(TextIO, _FailedFlushStream(sys.stderr))
     raise click.exceptions.Exit(1) from error
 
 
@@ -362,7 +381,7 @@ def emit_inspection_diagnostics(
                 raise OSError("Short diagnostic write")
         stream.flush()
     except (OSError, UnicodeError) as error:
-        _delivery_failure(error)
+        _delivery_failure(error, stdout_failed=False, stderr_failed=True)
 
 
 def write_inspection(
@@ -399,6 +418,6 @@ def write_inspection(
             stderr.write(f"OUTPUT_WRITE_FAILED: {message}\n")
             stderr.flush()
         except (OSError, UnicodeError) as diagnostic_error:
-            _delivery_failure(diagnostic_error)
-        _delivery_failure(error)
+            _delivery_failure(diagnostic_error, stdout_failed=True, stderr_failed=True)
+        _delivery_failure(error, stdout_failed=True, stderr_failed=False)
     emit_inspection_diagnostics(result.diagnostics, details=True)

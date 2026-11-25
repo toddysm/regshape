@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import codecs
 import json
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, fields
 from types import MappingProxyType
 from typing import Literal, TypeAlias, cast
@@ -331,7 +331,7 @@ class LayoutInspectionResult:
         :raises LayoutInspectionError: When the encoded output exceeds its cap.
         """
         _preflight(self.root, self.limits.max_output_bytes, encoding)
-        return "".join(_json_chunks(_Projection(self.root))) + "\n"
+        return "".join(_json_output_chunks(self.root))
 
 
 @dataclass(frozen=True)
@@ -363,7 +363,7 @@ class LayoutSummaryResult:
         :raises LayoutInspectionError: If encoded summary bytes exceed the output cap.
         """
         _preflight(self.root, self.limits.max_output_bytes, encoding)
-        return "".join(_json_chunks(_Projection(self.root))) + "\n"
+        return "".join(_json_output_chunks(self.root))
 
 
 def _view_dict(root: LayoutNode | SummaryLayoutNode, cap: int) -> dict[str, object]:
@@ -635,21 +635,67 @@ def _json_chunks(value: object) -> Iterator[str]:
 _END = object()
 
 
-def _encoded_chunks(
-    root: LayoutNode | SummaryLayoutNode, encoding: str
-) -> Iterator[bytes]:
-    """Incrementally encode SDK JSON/LF, validating the codec before visiting the tree."""
+def _json_output_chunks(root: LayoutNode | SummaryLayoutNode) -> Iterator[str]:
+    """Yield the SDK projection and final LF, deferring tree access until iteration."""
+    yield from _json_chunks(_Projection(root))
+    yield "\n"
+
+
+def _utf7_lengths(chunks: Iterable[str]) -> Iterator[int]:
+    """Count whole-string UTF-7 without buffering shifted UTF-16/base64 runs.
+
+    Python's UTF-7 incremental encoder closes each chunk's shift, so summing it
+    overcounts. Retain only the run's UTF-16 unit count and account for unpadded
+    six-bit groups and the terminator required before base64 characters or '-'.
+    """
+    units = 0
+    for chunk in chunks:
+        size = 0
+        for char in chunk:
+            direct = char in "\t\r\n" or (" " <= char <= "}" and char not in "+\\")
+            if direct:
+                if units:
+                    size += int(char.isalnum() or char in "/-")
+                    units = 0
+                size += 1
+            elif char == "+" and not units:
+                size += 2
+            else:
+                if not units:
+                    size += 1
+                previous = (units * 16 + 5) // 6
+                units += 1 + (ord(char) > 0xFFFF)
+                size += (units * 16 + 5) // 6 - previous
+        yield size
+    if units:
+        yield 1
+
+
+def encoded_chunk_lengths(chunks: Iterable[str], encoding: str) -> Iterator[int]:
+    """Count destination bytes as if chunks were joined, without joining them.
+
+    Includes state/BOM and final codec flush; UTF-7 shift state crosses chunk
+    boundaries. Consumes caller-supplied chunks lazily so budget owners can stop.
+
+    :yields: Additional encoded bytes, including initial/final codec state.
+    :raises ValueError: On first iteration, before consuming chunks, for unknown/non-text codecs.
+    :raises UnicodeError: During iteration if the destination codec rejects text.
+    """
     try:
         encoder = codecs.getincrementalencoder(encoding)()
         initial = encoder.encode("")
+        canonical = codecs.lookup(encoding).name
     except (LookupError, TypeError) as error:
         raise ValueError("encoding must name a text-to-bytes codec") from error
     if not isinstance(initial, bytes):
         raise ValueError("encoding must name a text-to-bytes codec")
-    yield initial
-    for chunk in _json_chunks(_Projection(root)):
-        yield encoder.encode(chunk)
-    yield encoder.encode("\n", final=True)
+    if canonical == "utf-7":
+        yield from _utf7_lengths(chunks)
+        return
+    yield len(initial)
+    for chunk in chunks:
+        yield len(encoder.encode(chunk))
+    yield len(encoder.encode("", final=True))
 
 
 def _preflight(
@@ -657,8 +703,8 @@ def _preflight(
 ) -> None:
     """Count final encoded bytes including state/BOM and LF; stop before materialization."""
     count = 0
-    for chunk in _encoded_chunks(root, encoding):
-        count += len(chunk)
+    for size in encoded_chunk_lengths(_json_output_chunks(root), encoding):
+        count += size
         if count > cap:
             raise LayoutInspectionError(
                 (

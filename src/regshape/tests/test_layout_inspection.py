@@ -123,12 +123,14 @@ def _validate(value: dict, view: str = "expanded") -> None:
 
 
 @pytest.mark.parametrize("view", ["expanded", "summary"])
-@pytest.mark.parametrize("encoding", ["utf-16", "utf-8-sig", "utf-32"])
+@pytest.mark.parametrize("encoding", ["utf-16", "utf-8-sig", "utf-32", "utf-7"])
 def test_json_destination_encoding_budget_before_materialization(
-    tmp_path: Path, view: str, encoding: str,
+    tmp_path: Path,
+    view: str,
+    encoding: str,
 ) -> None:
     """Include actual BOM/state/LF bytes in both views and reject before the second JSON pass."""
-    path, _, _ = _tiny(tmp_path)
+    path, _, _ = _tiny(tmp_path, annotations={"backslashes": "\\" * 2048})
     result = inspect_layout(path)
     if view == "summary":
         result = summarize_layout(result)
@@ -160,6 +162,23 @@ def test_json_invalid_encoding_rejected_before_projection(
     ):
         with pytest.raises(ValueError):
             result.to_json(encoding=encoding)
+
+
+def test_utf7_whole_string_accounting_across_shift_boundaries() -> None:
+    """Keep byte counts independent of input chunking, including plus/non-BMP/implicit terminators."""
+    values = [
+        "+é+🙂-/~Aé_",
+        "é\néAé-é!",
+        "".join(chr(value) for value in range(128)) + "é雪🙂\ud800",
+    ]
+    for value in values:
+        for size in (1, 7, 512):
+            chunks = (
+                value[start : start + size] for start in range(0, len(value), size)
+            )
+            assert sum(inspection_models.encoded_chunk_lengths(chunks, "utf-7")) == len(
+                value.encode("utf-7")
+            )
 
 
 @pytest.mark.parametrize("mixed", [False, True])

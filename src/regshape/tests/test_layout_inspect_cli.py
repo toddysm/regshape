@@ -793,7 +793,8 @@ def test_repeated_indexes_cycles_and_traversal_limits_are_not_elided(
 
 
 @pytest.mark.parametrize(
-    "encoding,color", [("utf-8", False), ("utf-8", True), ("utf-16", False)]
+    "encoding,color",
+    [("utf-8", False), ("utf-8", True), ("utf-16", False), ("utf-7", False)],
 )
 def test_text_budget_exact_inclusive_encoded_boundary(
     tmp_path: Path,
@@ -801,7 +802,12 @@ def test_text_budget_exact_inclusive_encoded_boundary(
     color: bool,
 ) -> None:
     """Count all encoded indentation, LF, escapes and ANSI, including a single stateful BOM."""
-    sdk = inspect_layout(_tiny(tmp_path, annotations={"control": "\x00" * 100}))
+    sdk = inspect_layout(
+        _tiny(
+            tmp_path,
+            annotations={"control": "\x00" * 100, "unicode": "é" * 1024},
+        )
+    )
     text = display.render_inspection(
         sdk, encoding=encoding, ascii_only=False, color=color
     )
@@ -895,6 +901,7 @@ def test_delivery_failure_is_not_success(
     )
     assert result.exit_code == 1
     assert result.stderr.startswith("OUTPUT_WRITE_FAILED:")
+    assert not output.closed
     assert "\x1b" not in result.stderr
     if failure == "write":
         assert output.getvalue() == ""
@@ -913,6 +920,7 @@ def test_unwritable_stderr_still_returns_failure(
     )
     assert result.exit_code == 1
     assert result.stdout == result.stderr == ""
+    assert not output.closed and not stderr.closed
 
 
 @pytest.mark.parametrize("as_json", [False, True])
@@ -948,6 +956,68 @@ def test_real_closed_pipe_exits_one_without_shutdown_diagnostic(
     assert completed.stderr.count("\n") == 1
     assert "Exception ignored" not in completed.stderr
     assert "BrokenPipeError" not in completed.stderr
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("stderr_fails", [False, True])
+def test_buffered_enospc_exits_one_without_shutdown_retry(
+    tmp_path: Path,
+    as_json: bool,
+    stderr_fails: bool,
+) -> None:
+    """Keep exit 1 for full buffered stdout, even when diagnostic stderr also has EPIPE."""
+    code = '''
+import errno
+import io
+import os
+import sys
+class Failing(io.RawIOBase):
+    """Synthetic failed device; no external file or parent descriptor is modified."""
+    def __init__(self, number):
+        """Select a stream-specific failure while retaining normal RawIOBase lifetime."""
+        super().__init__()
+        self.number = number
+    def writable(self):
+        """Allow BufferedWriter to accept pending output."""
+        return True
+    def write(self, data):
+        """Fail the actual buffered flush with the selected operating-system error."""
+        raise OSError(self.number, "synthetic output device failure")
+sys.stdout = io.TextIOWrapper(io.BufferedWriter(Failing(errno.ENOSPC)), encoding="utf-8")
+if os.environ["REGSHAPE_TEST_STDERR_FAILURE"] == "1":
+    sys.stderr = io.TextIOWrapper(io.BufferedWriter(Failing(errno.EPIPE)), encoding="utf-8")
+from regshape.cli.main import regshape
+regshape()
+'''
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            code,
+            "layout",
+            "inspect",
+            "-p",
+            str(_tiny(tmp_path)),
+            *(["--json"] if as_json else []),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(Path(__file__).parents[2]),
+            "REGSHAPE_TEST_STDERR_FAILURE": str(int(stderr_fails)),
+        },
+    )
+    assert completed.returncode == 1, completed.stderr
+    assert completed.stdout == ""
+    if stderr_fails:
+        assert completed.stderr == ""
+    else:
+        assert completed.stderr.startswith("OUTPUT_WRITE_FAILED:")
+        assert completed.stderr.count("\n") == 1
+    assert "Exception ignored" not in completed.stderr
 
 
 def test_encoded_json_cap_precedes_sdk_string_materialization(

@@ -108,6 +108,8 @@ Output is preflighted against the SDK result's byte budget before stdout is
 written, including escapes, indentation, newlines and generated ANSI. A broken
 pipe or other delivery failure still exits 1 and reports `OUTPUT_WRITE_FAILED`
 when stderr is writable; interrupted delivery cannot promise complete output.
+Already-reported buffered failures are protected from interpreter-shutdown
+flush retries, preserving exit 1 without closing borrowed output streams.
 There are no CLI budget overrides or automatic retries. For `LIMIT_REACHED`,
 use a separately prepared smaller valid layout or the SDK with deliberately
 reviewed named limits; do not modify the inspected original. For `OUTPUT_LIMIT`,
