@@ -548,7 +548,7 @@ class TestLayoutShowCLI:
 
     @pytest.mark.parametrize("case", ["missing-path", "missing-option", "unknown-option", "help"])
     def test_usage_errors_and_help_do_not_warn(self, tmp_path: Path, case: str) -> None:
-        """Click rejects invalid arguments or prints help without running the callback."""
+        """Help hides maintainer notes; help and usage errors do not run the callback."""
         layout_dir = tmp_path / "layout"
         init_layout(layout_dir)
         arguments = {
@@ -564,10 +564,20 @@ class TestLayoutShowCLI:
         if case == "help":
             assert "--path" in result.stdout
             assert "deprecated in 0.2" in result.stdout
+            assert "Invocation emits" not in result.stdout
+            assert ":param layout_path:" not in result.stdout
             assert result.stderr == ""
         else:
             assert result.stdout == ""
             assert "Error:" in result.stderr
+
+    def test_group_help_marks_show_deprecated(self) -> None:
+        """Group help advertises deprecation without invoking show or warning on stderr."""
+        result = _runner().invoke(regshape, ["layout", "--help"])
+
+        assert result.exit_code == 0
+        assert "show (Deprecated)" in " ".join(result.stdout.split())
+        assert result.stderr == ""
 
     @pytest.mark.parametrize("damage", ["missing-marker", "malformed-index"])
     def test_layout_errors_keep_exit_and_empty_stdout(

@@ -911,7 +911,9 @@ when a script needs the old schema.
    without JSON stdout. The warning precedes the error.
 
 Click help and argument-validation failures do not invoke the command and
-therefore emit no runtime warning. Existing options, including telemetry options,
+therefore emit no runtime warning. `layout --help` marks `show` as deprecated;
+`layout show --help` explains migration without displaying maintainer contracts.
+Existing options, including telemetry options,
 remain unchanged; there is no `show --json` flag. The warning is readable without
 color and is not suppressed by `NO_COLOR` or telemetry verbosity zero.
 

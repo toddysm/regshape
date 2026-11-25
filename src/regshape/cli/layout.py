@@ -598,7 +598,9 @@ def status(ctx, layout_path, as_json):
 # ===========================================================================
 
 
-@layout.command("show")
+@layout.command(
+    "show", short_help="(Deprecated) Print the index.json of an OCI Image Layout."
+)
 @telemetry_options
 @click.option(
     "--path",
@@ -616,6 +618,8 @@ def show(ctx: click.Context, layout_path: str) -> None:
 
     This command is deprecated in 0.2 and will be removed in 0.3; use
     layout inspect for the content tree, not the legacy entry-point JSON schema.
+
+    \f
     Invocation emits one plain stderr warning before reading the index. Click
     help and argument errors do not invoke this callback. Layout/IO errors retain
     their stderr diagnostic and exit 1; success prints the original top-level
