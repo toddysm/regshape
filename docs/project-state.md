@@ -107,9 +107,12 @@ the owner authorized the SDK inspection item
 transition, using GitHub-hosted testing. The
 [SDK inspection API](library/layout-inspection.md) delivers the bounded local
 tree, typed partial diagnostics, occurrence-local tag evidence and expanded
-JSON under #212; it does not introduce a CLI command or summary API.
-Summaries, CLI display, migration, end-to-end validation and final user
-documentation remain dependency-blocked. No implementation landing date,
+JSON under #212. The [SDK summary API](library/layout-inspection.md#summarize_layout)
+under [#213](https://github.com/toddysm/regshape/issues/213) adds in-memory
+classification, contiguous manifest groups and observed storage/source-slot
+counts while retaining every index. Neither SDK slice introduces a CLI command.
+CLI display, migration, end-to-end validation and final user
+documentation remain incomplete. No overall capability landing date,
 automatic merge or release is claimed.
 
 Tracking is **issues-only** because Project access is unavailable in this

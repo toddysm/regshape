@@ -46,6 +46,9 @@ then pass the caller-owned client to registry operations. See the
   partial diagnostics and versioned hierarchical JSON. See the
   [inspection SDK reference](layout-inspection.md) for Linux/macOS safe-open
   requirements, independent limits and the metadata-only boundary.
+  `summarize_layout` produces pure in-memory
+  [evidence-based groups and observed counts](layout-inspection.md#summarize_layout)
+  without rescanning files or hiding individual indexes.
 - **Blob results:** `upload_blob_stream_result`, `upload_blob_chunked_result`
   and `mount_blob_result` in `regshape.libs.blobs` return library-owned
   [upload/mount result metadata](transfer-progress.md#upload-and-mount-results);

@@ -1,4 +1,4 @@
-"""Offline SDK inspection contracts, exact view shapes, safety and independent caps.
+"""Offline SDK inspection/summary contracts, exact shapes, safety and independent caps.
 
 Synthetic local bytes model opaque content without a registry, daemon, payload
 verification or extraction. Every explicit budget is tested at its inclusive
@@ -18,7 +18,12 @@ from unittest.mock import patch
 import pytest
 from jsonschema import Draft202012Validator
 
-from regshape.libs.artifacts.graph import OCI_INDEX, OCI_MANIFEST, REF_NAME
+from regshape.libs.artifacts.graph import (
+    DOCKER_MANIFEST,
+    OCI_INDEX,
+    OCI_MANIFEST,
+    REF_NAME,
+)
 from regshape.libs.artifacts.storage import SafeDirectory, require_readonly_filesystem
 from regshape.libs.errors import ArtifactError
 from regshape.libs.layout import (
@@ -26,8 +31,11 @@ from regshape.libs.layout import (
     InspectionLimits,
     LayoutInspectionError,
     ManifestNode,
+    SummaryGroup,
+    SummaryIndexNode,
     inspect_layout,
     inspection,
+    summarize_layout,
 )
 from regshape.tests.artifact_fixtures import address, edge
 
@@ -105,12 +113,624 @@ def _tiny(tmp_path: Path, **index_fields: object) -> tuple[Path, bytes, bytes]:
     return path, manifest, payload
 
 
-def _validate(value: dict) -> None:
-    """Validate the exact expanded branch of the approved version-1 output schema."""
+def _validate(value: dict, view: str = "expanded") -> None:
+    """Validate the selected branch of the approved version-1 output schema."""
     schema_path = Path(__file__).parents[3] / "specs/layout/layout-inspect.schema.json"
     schema = json.loads(schema_path.read_text())
-    schema["oneOf"] = [{"$ref": "#/$defs/expanded"}]
+    schema["oneOf"] = [{"$ref": f"#/$defs/{view}"}]
     Draft202012Validator(schema).validate(value)
+
+
+@pytest.mark.parametrize("mixed", [False, True])
+def test_summary_exact_approved_shapes_without_io(
+    tmp_path: Path,
+    mixed: bool,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Match both pinned D6 fixtures with pure, immutable, independently serialized views."""
+    payload = b"{}"
+    first = _manifest(payload)
+    manifests = [first]
+    if mixed:
+        second = json.loads(first)
+        second["layers"].append(second["layers"][0].copy())
+        second["subject"] = edge(first, OCI_MANIFEST)
+        manifests.append(_raw(second))
+        assert len(manifests[1]) == 716
+        assert address(manifests[1]) == (
+            "sha256:a12c8fd7afecaf38491b8dea268b9478ba888c76a4826d908540baf53a30619c"
+        )
+    path = _layout(
+        tmp_path,
+        _index([edge(raw, OCI_MANIFEST) for raw in manifests]),
+        {address(raw): raw for raw in [*manifests, payload]},
+    )
+    result = inspect_layout(path)
+    expanded = result.to_dict()
+    with (
+        patch("os.open", side_effect=AssertionError("summary must not open files")),
+        patch("os.stat", side_effect=AssertionError("summary must not stat files")),
+        patch.object(
+            type(result), "to_dict", side_effect=AssertionError("no expanded copy")
+        ),
+        patch.object(
+            type(result), "to_json", side_effect=AssertionError("no expanded JSON")
+        ),
+    ):
+        summary = summarize_layout(result)
+        actual = summary.to_dict()
+        encoded = summary.to_json()
+    expected_group = {
+        "kind": "group",
+        "category": "artifacts",
+        "artifactType": "application/vnd.example.payload",
+        "positions": [0, 1] if mixed else [0],
+        "references": 2 if mixed else 1,
+        "uniqueManifests": 2 if mixed else 1,
+        "configReferences": 2 if mixed else 1,
+        "layerReferences": 3 if mixed else 1,
+        "layerCountDistribution": {"1": 1, "2": 1} if mixed else {"1": 1},
+        "uniqueObjects": 3 if mixed else 2,
+        "storedBytes": 1138 if mixed else 422,
+    }
+    expected = {
+        "kind": "layout",
+        "location": str(path),
+        "imageLayoutVersion": "1.0.0",
+        "statistics": {
+            "uniqueObjects": 3 if mixed else 2,
+            "objectReferences": 7 if mixed else 3,
+            "subjectReferences": 1 if mixed else 0,
+            "storedBytes": 1138 if mixed else 422,
+        },
+        "statisticsComplete": True,
+        "children": [
+            {
+                **expanded["children"][0],
+                "children": [expected_group],
+            }
+        ],
+    }
+    assert actual == expected
+    assert encoded == json.dumps(expected, indent=2, ensure_ascii=True) + "\n"
+    _validate(actual, "summary")
+    assert capsys.readouterr() == ("", "")
+    assert summary.diagnostics is result.diagnostics
+    assert summary.complete
+    assert result.to_dict() == expanded
+    group = summary.root.children[0].children[0]
+    assert isinstance(group, SummaryGroup)
+    assert group.members[0] is result.root.children[0].children[0]
+    if mixed:
+        assert group.members[1].subject.digest == address(first)
+    actual["children"][0]["children"][0]["layerCountDistribution"]["1"] = 100
+    assert summary.to_dict() == expected
+    with pytest.raises(TypeError):
+        group.layer_count_distribution["1"] = 100
+    with pytest.raises(FrozenInstanceError):
+        group.category = "unclassified"
+
+
+@pytest.mark.parametrize(
+    "own_type,annotation,platform,manifest_type,config_type,descriptor_type,category",
+    [
+        (
+            "application/vnd.cncf.notary.signature",
+            False,
+            None,
+            OCI_MANIFEST,
+            "opaque",
+            None,
+            "signatures",
+        ),
+        (
+            "application/vnd.microsoft.artifact.lifecycle",
+            False,
+            None,
+            OCI_MANIFEST,
+            "opaque",
+            None,
+            "lifecycle",
+        ),
+        (
+            "application/vnd.in-toto+json",
+            False,
+            None,
+            OCI_MANIFEST,
+            "opaque",
+            None,
+            "attestations",
+        ),
+        (
+            "application/spdx+json",
+            False,
+            None,
+            OCI_MANIFEST,
+            "opaque",
+            None,
+            "artifacts",
+        ),
+        (
+            "application/vnd.example.unknown",
+            False,
+            None,
+            OCI_MANIFEST,
+            "opaque",
+            None,
+            "artifacts",
+        ),
+        (
+            None,
+            True,
+            {"os": "unknown", "architecture": "unknown"},
+            OCI_MANIFEST,
+            "opaque",
+            None,
+            "attestations",
+        ),
+        (
+            None,
+            False,
+            {"os": "unknown", "architecture": "unknown"},
+            OCI_MANIFEST,
+            "opaque",
+            None,
+            "unclassified",
+        ),
+        (
+            None,
+            False,
+            {"os": "linux", "architecture": "amd64"},
+            OCI_MANIFEST,
+            "application/vnd.oci.image.config.v1+json",
+            None,
+            "platform-images",
+        ),
+        (
+            None,
+            False,
+            {"os": "", "architecture": "amd64"},
+            OCI_MANIFEST,
+            "application/vnd.oci.image.config.v1+json",
+            None,
+            "unclassified",
+        ),
+        (
+            None,
+            False,
+            {"os": "linux", "architecture": "unknown"},
+            OCI_MANIFEST,
+            "application/vnd.oci.image.config.v1+json",
+            None,
+            "unclassified",
+        ),
+        (
+            None,
+            False,
+            None,
+            OCI_MANIFEST,
+            "application/vnd.oci.image.config.v1+json",
+            None,
+            "unclassified",
+        ),
+        (
+            None,
+            False,
+            {"os": "linux", "architecture": "amd64"},
+            OCI_MANIFEST,
+            "opaque",
+            None,
+            "unclassified",
+        ),
+        (
+            None,
+            False,
+            {"os": "linux", "architecture": "amd64"},
+            OCI_MANIFEST,
+            "application/vnd.oci.image.config.v1+json",
+            "application/vnd.in-toto+json",
+            "unclassified",
+        ),
+        (
+            "application/vnd.cncf.notary.signature",
+            True,
+            None,
+            OCI_MANIFEST,
+            "opaque",
+            None,
+            "unclassified",
+        ),
+        (
+            "application/vnd.example.unknown",
+            True,
+            None,
+            OCI_MANIFEST,
+            "opaque",
+            None,
+            "unclassified",
+        ),
+        (
+            None,
+            False,
+            {"os": "linux", "architecture": "amd64"},
+            DOCKER_MANIFEST,
+            "application/vnd.docker.container.image.v1+json",
+            None,
+            "platform-images",
+        ),
+        (
+            None,
+            False,
+            {"os": "linux", "architecture": "amd64"},
+            DOCKER_MANIFEST,
+            "application/vnd.oci.image.config.v1+json",
+            None,
+            "unclassified",
+        ),
+    ],
+)
+def test_summary_classification_uses_only_declared_evidence(
+    tmp_path: Path,
+    own_type: str | None,
+    annotation: bool,
+    platform: dict | None,
+    manifest_type: str,
+    config_type: str,
+    descriptor_type: str | None,
+    category: str,
+) -> None:
+    """Use exact own/edge evidence and compatible image pairs without fabricating fields."""
+    payload = b"{}"
+    body = json.loads(_manifest())
+    body["mediaType"] = manifest_type
+    body["config"]["mediaType"] = config_type
+    if own_type is None:
+        body.pop("artifactType")
+    else:
+        body["artifactType"] = own_type
+    manifest = _raw(body)
+    descriptor = edge(manifest, manifest_type)
+    if annotation:
+        descriptor["annotations"] = {
+            "vnd.docker.reference.type": "attestation-manifest"
+        }
+    if platform is not None:
+        descriptor["platform"] = platform
+    if descriptor_type is not None:
+        descriptor["artifactType"] = descriptor_type
+    path = _layout(
+        tmp_path,
+        _index([descriptor]),
+        {address(raw): raw for raw in (payload, manifest)},
+    )
+    result = inspect_layout(path)
+    summary = summarize_layout(result)
+    assert summary.complete
+    group = summary.root.children[0].children[0]
+    assert group.category == category
+    assert group.artifact_type == own_type
+    member = group.members[0]
+    assert member.incoming.platform == platform
+    assert member.subject is None
+    assert member.incoming.artifact_type == descriptor_type
+    _validate(summary.to_dict(), "summary")
+
+
+def test_summary_contiguous_runs_keep_every_index_and_distinct_source_counts(
+    tmp_path: Path,
+) -> None:
+    """Split at indexes/different types, preserve repeated index occurrences and shared totals."""
+    payload = b"{}"
+    first = _manifest(subject=edge(b"external", OCI_MANIFEST))
+    other = _manifest(artifactType="application/vnd.other")
+    nested = _index(
+        [edge(first, OCI_MANIFEST), edge(first, OCI_MANIFEST)],
+        annotations={"index-metadata": "retained"},
+    )
+    descriptors = [
+        edge(first, OCI_MANIFEST),
+        edge(first, OCI_MANIFEST),
+        edge(nested, OCI_INDEX),
+        edge(other, OCI_MANIFEST),
+        edge(first, OCI_MANIFEST),
+        edge(nested, OCI_INDEX),
+        edge(first, OCI_MANIFEST),
+    ]
+    path = _layout(
+        tmp_path,
+        _index(descriptors),
+        {address(raw): raw for raw in (payload, first, other, nested)},
+    )
+    result = inspect_layout(path)
+    summary = summarize_layout(result)
+    entry = summary.root.children[0]
+    assert [child.kind for child in entry.children] == [
+        "group",
+        "index",
+        "group",
+        "group",
+        "index",
+        "group",
+    ]
+    assert [
+        child.positions for child in entry.children if isinstance(child, SummaryGroup)
+    ] == [
+        (0, 1),
+        (3,),
+        (4,),
+        (6,),
+    ]
+    assert entry.manifests is result.root.children[0].manifests
+    for position in (1, 4):
+        index = entry.children[position]
+        assert isinstance(index, SummaryIndexNode)
+        assert index.annotations == {"index-metadata": "retained"}
+        assert index.children[0].positions == (0, 1)
+        assert index.children[0].references == 2
+        assert index.children[0].unique_manifests == 1
+        assert index.children[0].unique_objects == 2
+        assert index.children[0].layer_count_distribution == {"1": 2}
+        assert index.children[0].stored_bytes == len(first) + len(payload)
+        assert index.children[0].members[0].subject.digest == address(b"external")
+    stats = summary.to_dict()["statistics"]
+    assert stats == {
+        "uniqueObjects": 4,
+        "objectReferences": 13,  # entry 7 + nested 2 + two manifests' 2 slots each
+        "subjectReferences": 1,
+        "storedBytes": sum(map(len, (payload, first, other, nested))),
+    }
+    assert summary.complete
+    _validate(summary.to_dict(), "summary")
+
+
+def test_summary_invalid_source_slot_ends_a_contiguous_run(tmp_path: Path) -> None:
+    """A malformed descriptor without a child must still separate neighboring groups."""
+    payload = b"{}"
+    manifest = _manifest()
+    path = _layout(
+        tmp_path,
+        _index(
+            [edge(manifest, OCI_MANIFEST), {"size": 1}, edge(manifest, OCI_MANIFEST)]
+        ),
+        {address(raw): raw for raw in (payload, manifest)},
+    )
+    result = inspect_layout(path)
+    summary = summarize_layout(result)
+    children = summary.root.children[0].children
+    assert [group.positions for group in children] == [(0,), (2,)]
+    assert summary.diagnostics is result.diagnostics
+    assert not summary.complete
+    assert summary.root.children[0].manifests[1].errors
+    _validate(summary.to_dict(), "summary")
+
+
+def test_summary_mixed_attestation_evidence_and_absent_media_type(
+    tmp_path: Path,
+) -> None:
+    """Group one attestation category while retaining nonuniform source evidence in members."""
+    payload = b"{}"
+    declared = _manifest(artifactType="application/vnd.in-toto+json", layers=[])
+    implicit_body = json.loads(declared)
+    implicit_body.pop("artifactType")
+    implicit_body.pop("mediaType")
+    implicit = _raw(implicit_body)
+    path = _layout(
+        tmp_path,
+        _index(
+            [
+                edge(declared, OCI_MANIFEST),
+                edge(
+                    implicit,
+                    OCI_MANIFEST,
+                    annotations={"vnd.docker.reference.type": "attestation-manifest"},
+                ),
+            ]
+        ),
+        {address(raw): raw for raw in (payload, declared, implicit)},
+    )
+    summary = summarize_layout(inspect_layout(path))
+    groups = summary.root.children[0].children
+    assert len(groups) == 1
+    group = groups[0]
+    assert group.category == "attestations"
+    assert group.artifact_type is None
+    assert group.layer_count_distribution == {"0": 2}
+    assert group.members[0].artifact_type == "application/vnd.in-toto+json"
+    assert group.members[1].artifact_type is group.members[1].media_type is None
+    assert "artifactType" not in summary.to_dict()["children"][0]["children"][0]
+    _validate(summary.to_dict(), "summary")
+
+
+@pytest.mark.parametrize(
+    "failure", ["missing-layer", "invalid-layer", "size", "artifact", "unknown"]
+)
+def test_summary_keeps_incomplete_and_conflicting_manifests_expanded(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    """Errors end runs, remain source-owned and never disappear behind a successful group."""
+    payload = b"{}"
+    good = _manifest()
+    bad_body = json.loads(good)
+    bad_body["annotations"] = {"fixture": "bad"}
+    if failure == "missing-layer":
+        bad_body["layers"] = [edge(b"missing")]
+    elif failure == "invalid-layer":
+        bad_body["layers"] = [{"size": 1}]
+    bad = _raw(bad_body)
+    descriptor = edge(bad, OCI_MANIFEST)
+    if failure == "size":
+        descriptor["size"] += 1
+    elif failure == "artifact":
+        descriptor["artifactType"] = "application/vnd.conflicting"
+    elif failure == "unknown":
+        descriptor["mediaType"] = "application/vnd.unsupported"
+    path = _layout(
+        tmp_path,
+        _index([edge(good, OCI_MANIFEST), descriptor, edge(good, OCI_MANIFEST)]),
+        {address(raw): raw for raw in (payload, good, bad)},
+    )
+    result = inspect_layout(path)
+    summary = summarize_layout(result)
+    children = summary.root.children[0].children
+    assert [item.kind for item in children] == [
+        "group",
+        "unknown" if failure == "unknown" else "manifest",
+        "group",
+    ]
+    assert children[0].positions == (0,)
+    assert children[2].positions == (2,)
+    assert children[1] is result.root.children[0].children[1]
+    assert summary.diagnostics is result.diagnostics and summary.diagnostics
+    assert not summary.complete and not summary.root.statistics_complete
+    assert summary.root.statistics.unique_objects == 3
+    assert summary.root.statistics.stored_bytes == len(payload) + len(good) + len(bad)
+    _validate(summary.to_dict(), "summary")
+
+
+@pytest.mark.parametrize(
+    "algorithm,resolved", [("sha256", True), ("sha512", True), ("sha512", False)]
+)
+def test_summary_projects_occurrence_local_tag_associations(
+    tmp_path: Path,
+    algorithm: str,
+    resolved: bool,
+) -> None:
+    """Display resolved/unresolved declarations separately, never as inferred subjects."""
+    prefix = "a" * 64
+    subject = algorithm + ":" + prefix + ("b" * 64 if algorithm == "sha512" else "")
+    nested = _index(
+        [],
+        **(
+            {"subject": edge(b"external", OCI_MANIFEST, digest=subject)}
+            if resolved
+            else {}
+        ),
+    )
+    path = _layout(
+        tmp_path,
+        _index(
+            [
+                edge(
+                    nested, OCI_INDEX, annotations={REF_NAME: algorithm + "-" + prefix}
+                ),
+                edge(nested, OCI_INDEX, annotations={REF_NAME: "ordinary"}),
+            ]
+        ),
+        {address(nested): nested},
+    )
+    result = inspect_layout(path)
+    summary = summarize_layout(result)
+    first, second = summary.to_dict()["children"][0]["children"]
+    expected = {
+        "tag": algorithm + "-" + prefix,
+        "source": "index.json#/manifests/0/annotations/" + REF_NAME,
+        "status": "resolved" if resolved else "unresolved",
+    }
+    expected.update(
+        {"digest": subject} if resolved else {"algorithm": "sha512", "prefix": prefix}
+    )
+    assert first["association"] == expected
+    assert "association" not in second
+    assert ("subject" in first) == resolved
+    assert summary.complete
+    assert summary.root.statistics.unique_objects == 1
+    assert summary.root.statistics.subject_references == int(resolved)
+    assert "association" not in result.to_dict()["children"][0]["children"][0]
+    _validate(summary.to_dict(), "summary")
+
+
+@pytest.mark.parametrize("subject_suffix", [None, "a", "b"])
+def test_summary_tagged_members_keep_absent_matching_and_conflicting_subjects(
+    tmp_path: Path,
+    subject_suffix: str | None,
+) -> None:
+    """A local declaration neither creates a member subject nor hides a mismatched one."""
+    payload = b"{}"
+    fields = (
+        {
+            "subject": edge(
+                b"external", OCI_MANIFEST, digest="sha256:" + subject_suffix * 64
+            )
+        }
+        if subject_suffix is not None
+        else {}
+    )
+    manifest = _manifest(**fields)
+    nested = _index([edge(manifest, OCI_MANIFEST)])
+    path = _layout(
+        tmp_path,
+        _index([edge(nested, OCI_INDEX, annotations={REF_NAME: "sha256-" + "a" * 64})]),
+        {address(raw): raw for raw in (payload, manifest, nested)},
+    )
+    result = inspect_layout(path)
+    summary = summarize_layout(result)
+    listed = summary.root.children[0].children[0]
+    member = listed.children[0]
+    assert listed.referrer_list.digest == "sha256:" + "a" * 64
+    if subject_suffix == "b":
+        assert isinstance(member, ManifestNode)
+        assert member.subject.digest == "sha256:" + "b" * 64
+        assert member.subject.errors[0].code == "CONFLICTING_DESCRIPTOR"
+        assert not summary.complete
+    else:
+        assert isinstance(member, SummaryGroup)
+        source = member.members[0]
+        assert (source.subject is None) == (subject_suffix is None)
+        assert summary.complete
+    assert summary.diagnostics is result.diagnostics
+    assert summary.root.statistics.subject_references == int(subject_suffix is not None)
+    assert summary.root.statistics.unique_objects == 3
+    _validate(summary.to_dict(), "summary")
+
+
+def test_summary_selected_output_budget_and_partial_traversal(tmp_path: Path) -> None:
+    """Enforce exact ASCII/LF summary bytes without spending an expanded-output budget."""
+    payload = b"{}"
+    manifest = _manifest(annotations={"escaped": "\u96ea\n\x1b"})
+    path = _layout(
+        tmp_path,
+        _index([edge(manifest, OCI_MANIFEST)] * 8),
+        {address(raw): raw for raw in (payload, manifest)},
+    )
+    result = inspect_layout(path)
+    encoded = summarize_layout(result).to_json()
+    cap = len(encoded.encode("ascii"))
+    assert len(result.to_json()) > cap
+    exact = replace(result, limits=replace(result.limits, max_output_bytes=cap))
+    assert summarize_layout(exact).to_json() == encoded
+    assert summarize_layout(exact).to_dict() == json.loads(encoded)
+    with pytest.raises(LayoutInspectionError):
+        exact.to_json()
+    limited = summarize_layout(
+        replace(result, limits=replace(result.limits, max_output_bytes=cap - 1))
+    )
+    with patch(
+        "regshape.libs.layout.inspection_models._copy_slot",
+        side_effect=AssertionError("preflight must precede copying"),
+    ):
+        for serialize in (limited.to_dict, limited.to_json):
+            with pytest.raises(LayoutInspectionError) as caught:
+                serialize()
+            assert caught.value.diagnostics[0].code == "OUTPUT_LIMIT"
+    partial = inspect_layout(path, limits=InspectionLimits(max_occurrences=3))
+    summarized = summarize_layout(partial)
+    assert not summarized.complete
+    assert summarized.diagnostics is partial.diagnostics
+    assert summarized.root.children[0].children[0].kind == "manifest"
+    assert summarized.root.statistics.object_references == 10
+    assert not summarized.to_dict()["statisticsComplete"]
+    _validate(summarized.to_dict(), "summary")
+
+
+@pytest.mark.parametrize("value", [None, {}, "layout", 1])
+def test_summary_invalid_arguments_without_io(value: object) -> None:
+    """Reject non-inspection inputs explicitly instead of returning empty-success totals."""
+    with (
+        patch("os.open", side_effect=AssertionError("must not open")),
+        pytest.raises(ValueError, match="LayoutInspectionResult"),
+    ):
+        summarize_layout(value)
 
 
 def _nodes(root):
