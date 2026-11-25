@@ -327,7 +327,7 @@ class LayoutInspectionResult:
 
         :param encoding: Destination text encoding for byte-budget accounting only;
             the returned JSON string remains ASCII-safe. Includes encoding state/BOM.
-        :raises ValueError: If encoding does not name a text-to-bytes codec.
+        :raises ValueError: For unknown/non-text codecs or IDNA/Punycode domain-name codecs.
         :raises LayoutInspectionError: When the encoded output exceeds its cap.
         """
         _preflight(self.root, self.limits.max_output_bytes, encoding)
@@ -359,7 +359,7 @@ class LayoutSummaryResult:
 
         :param encoding: Destination text encoding for byte-budget accounting only;
             the returned JSON string remains ASCII-safe. Includes encoding state/BOM.
-        :raises ValueError: If encoding does not name a text-to-bytes codec.
+        :raises ValueError: For unknown/non-text codecs or IDNA/Punycode domain-name codecs.
         :raises LayoutInspectionError: If encoded summary bytes exceed the output cap.
         """
         _preflight(self.root, self.limits.max_output_bytes, encoding)
@@ -676,9 +676,10 @@ def encoded_chunk_lengths(chunks: Iterable[str], encoding: str) -> Iterator[int]
 
     Includes state/BOM and final codec flush; UTF-7 shift state crosses chunk
     boundaries. Consumes caller-supplied chunks lazily so budget owners can stop.
+    IDNA/Punycode are domain-name transforms, not stream character encodings.
 
     :yields: Additional encoded bytes, including initial/final codec state.
-    :raises ValueError: On first iteration, before consuming chunks, for unknown/non-text codecs.
+    :raises ValueError: Before consuming chunks for unknown/non-text or IDNA/Punycode codecs.
     :raises UnicodeError: During iteration if the destination codec rejects text.
     """
     try:
@@ -689,6 +690,10 @@ def encoded_chunk_lengths(chunks: Iterable[str], encoding: str) -> Iterator[int]
         raise ValueError("encoding must name a text-to-bytes codec") from error
     if not isinstance(initial, bytes):
         raise ValueError("encoding must name a text-to-bytes codec")
+    if canonical in {"idna", "punycode"}:
+        raise ValueError(
+            "encoding must name a stream character encoding; IDNA/Punycode are unsupported"
+        )
     if canonical == "utf-7":
         yield from _utf7_lengths(chunks)
         return

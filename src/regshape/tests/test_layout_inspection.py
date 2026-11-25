@@ -149,7 +149,7 @@ def test_json_destination_encoding_budget_before_materialization(
 
 
 @pytest.mark.parametrize(
-    "encoding", [None, 42, "not-a-codec", "rot_13", "base64_codec"]
+    "encoding", [None, 42, "not-a-codec", "rot_13", "base64_codec", "punycode", "idna"]
 )
 def test_json_invalid_encoding_rejected_before_projection(
     tmp_path: Path,
@@ -162,6 +162,21 @@ def test_json_invalid_encoding_rejected_before_projection(
     ):
         with pytest.raises(ValueError):
             result.to_json(encoding=encoding)
+
+
+@pytest.mark.parametrize("view", ["expanded", "summary"])
+def test_punycode_rejected_instead_of_false_exact_cap_failure(
+    tmp_path: Path,
+    view: str,
+) -> None:
+    """Reject the domain-name codec explicitly even when whole-string bytes fit exactly."""
+    result = inspect_layout(_tiny(tmp_path)[0])
+    if view == "summary":
+        result = summarize_layout(result)
+    size = len(result.to_json().encode("punycode"))
+    exact = replace(result, limits=replace(result.limits, max_output_bytes=size))
+    with pytest.raises(ValueError, match="stream character encoding"):
+        exact.to_json(encoding="punycode")
 
 
 def test_utf7_whole_string_accounting_across_shift_boundaries() -> None:

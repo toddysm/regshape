@@ -908,6 +908,30 @@ def test_delivery_failure_is_not_success(
         assert "\\n\\u001b[31m" in result.stderr
 
 
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("encoding", ["punycode", "idna"])
+def test_non_stream_stdout_codec_fails_explicitly_before_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    as_json: bool,
+    encoding: str,
+) -> None:
+    """Report unsupported destination encoding as a delivery failure, with no stdout or traceback."""
+    output = _Output(encoding=encoding, terminal=False)
+    _streams(monkeypatch, output)
+    result = _runner().invoke(
+        regshape,
+        ["layout", "inspect", "-p", str(_tiny(tmp_path))]
+        + (["--json"] if as_json else []),
+    )
+    assert result.exit_code == 1
+    assert output.getvalue() == ""
+    assert result.stderr.startswith("OUTPUT_WRITE_FAILED:")
+    assert "stream character encoding" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert not output.closed
+
+
 def test_unwritable_stderr_still_returns_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

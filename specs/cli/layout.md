@@ -110,6 +110,9 @@ pipe or other delivery failure still exits 1 and reports `OUTPUT_WRITE_FAILED`
 when stderr is writable; interrupted delivery cannot promise complete output.
 Already-reported buffered failures are protected from interpreter-shutdown
 flush retries, preserving exit 1 without closing borrowed output streams.
+The destination must use a stream character encoding; domain-name codecs
+(`idna` and `punycode`) are rejected before stdout with `OUTPUT_WRITE_FAILED`
+and exit 1.
 There are no CLI budget overrides or automatic retries. For `LIMIT_REACHED`,
 use a separately prepared smaller valid layout or the SDK with deliberately
 reviewed named limits; do not modify the inspected original. For `OUTPUT_LIMIT`,

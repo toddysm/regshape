@@ -321,6 +321,7 @@ def render_inspection(
 
     :raises LayoutInspectionError: Before materialization if encoded output exceeds
         the result's inclusive max_output_bytes budget.
+    :raises ValueError: For invalid/non-stream destination codecs, including IDNA/Punycode.
     """
     tree = _Tree(encoding, ascii_only, color)
     _preflight(tree.chunks(result.root), encoding, result)
@@ -341,7 +342,7 @@ class _FailedFlushStream(PacifyFlushWrapper):
 
 
 def _delivery_failure(
-    error: OSError | UnicodeError, *, stdout_failed: bool, stderr_failed: bool
+    error: OSError | ValueError, *, stdout_failed: bool, stderr_failed: bool
 ) -> NoReturn:
     """Preserve exit 1 by protecting only failed process streams from shutdown retries.
 
@@ -362,7 +363,6 @@ def emit_inspection_diagnostics(
     """Write safe plain stderr in SDK discovery order; root errors omit occurrence details.
 
     :raises click.exceptions.Exit: With status 1 if stderr itself cannot be delivered.
-    :raises OSError: EPIPE is delegated to Click's shutdown-flush protection.
     """
     stream = click.get_text_stream("stderr")
     encoding = stream.encoding or "utf-8"
@@ -380,7 +380,7 @@ def emit_inspection_diagnostics(
             if stream.write("\n") != 1:
                 raise OSError("Short diagnostic write")
         stream.flush()
-    except (OSError, UnicodeError) as error:
+    except (OSError, ValueError) as error:
         _delivery_failure(error, stdout_failed=False, stderr_failed=True)
 
 
@@ -393,31 +393,30 @@ def write_inspection(
     JSON is the SDK serializer verbatim. Borrowed streams are flushed, not closed.
 
     :raises LayoutInspectionError: If selected output exceeds its byte cap, before writing.
-    :raises click.exceptions.Exit: With status 1 on output delivery failure.
-    :raises OSError: EPIPE is delegated to Click's shutdown-flush protection.
+    :raises click.exceptions.Exit: With status 1 on invalid codec or output delivery failure.
     """
     stream = click.get_text_stream("stdout")
     encoding = stream.encoding or "utf-8"
-    if as_json:
-        content = result.to_json(encoding=encoding)
-    else:
-        content = render_inspection(
-            result,
-            encoding=encoding,
-            ascii_only=ascii_only,
-            color=stream.isatty() and not os.environ.get("NO_COLOR"),
-        )
     try:
+        if as_json:
+            content = result.to_json(encoding=encoding)
+        else:
+            content = render_inspection(
+                result,
+                encoding=encoding,
+                ascii_only=ascii_only,
+                color=stream.isatty() and not os.environ.get("NO_COLOR"),
+            )
         if stream.write(content) != len(content):
             raise OSError("Short stdout write")
         stream.flush()
-    except (OSError, UnicodeError) as error:
+    except (OSError, ValueError) as error:
         stderr = click.get_text_stream("stderr")
         try:
             message = "".join(_escape(str(error), stderr.encoding or "utf-8", False))
             stderr.write(f"OUTPUT_WRITE_FAILED: {message}\n")
             stderr.flush()
-        except (OSError, UnicodeError) as diagnostic_error:
+        except (OSError, ValueError) as diagnostic_error:
             _delivery_failure(diagnostic_error, stdout_failed=True, stderr_failed=True)
         _delivery_failure(error, stdout_failed=True, stderr_failed=False)
     emit_inspection_diagnostics(result.diagnostics, details=True)
