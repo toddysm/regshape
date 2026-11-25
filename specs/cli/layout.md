@@ -85,11 +85,19 @@ omitted; present empty collections remain visible. `schemaVersion` is a document
 schema discriminator, not the OCI release number.
 
 Text uses the approved Unicode connectors when the output encoding supports them,
-otherwise ASCII. Untrusted backslashes and control/format characters are escaped,
+otherwise ASCII. Untrusted backslashes, control/format characters and Unicode
+line/paragraph separators are escaped,
 including in paths, keys and diagnostic messages; unencodable characters are never
-replaced with `?`. Terminal output uses cyan labels, default-foreground values,
+replaced with `?`. Compact platform and non-string annotation values retain valid
+JSON escaping, including surrogate pairs for unencodable non-BMP characters.
+Terminal output uses cyan labels, default-foreground values,
 gray connectors and bold type-colored headings. Redirected output, JSON and a
 nonempty `NO_COLOR` suppress ANSI.
+
+The shared `--time-scenarios` option reports one `layout inspect` timing through
+library telemetry on stderr, including failed inspections, without modifying
+tree/JSON stdout. `--telemetry-format json` selects a JSON telemetry event;
+`--telemetry-verbosity 0` disables it.
 
 JSON is the SDK's two-space, ASCII-safe, newline-terminated
 [version-1 expanded schema](../layout/layout-inspect.schema.json), not legacy

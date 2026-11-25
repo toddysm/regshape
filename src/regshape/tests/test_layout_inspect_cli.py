@@ -345,6 +345,129 @@ def test_json_is_sdk_serializer_not_a_cli_schema(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "encoding,ascii_only",
+    [("utf-8", False), ("utf-8", True), ("ascii", False), ("latin-1", False)],
+)
+@pytest.mark.parametrize("color", [False, True])
+def test_compact_json_values_round_trip_without_double_escaping(
+    tmp_path: Path, encoding: str, ascii_only: bool, color: bool
+) -> None:
+    """Keep platform/structured annotation JSON parseable and safe in every text output mode."""
+    sdk = inspect_layout(_tiny(tmp_path))
+    platform = {
+        "os": 'a"b\\c',
+        "extra": "\x1b\u202e\u2028\u2029é雪🙂\ud800",
+    }
+    annotation = {"nested": ('a"b\\c', "\x00\u2028\u2029é🙂\ud800")}
+    index = sdk.root.children[0]
+    descriptor = replace(index.manifests[0], platform=platform)
+    sdk = replace(
+        sdk,
+        root=replace(
+            sdk.root,
+            children=(
+                replace(
+                    index,
+                    manifests=(descriptor,),
+                    annotations={"structured": annotation},
+                ),
+            ),
+        ),
+    )
+    text = display.render_inspection(
+        sdk, encoding=encoding, ascii_only=ascii_only, color=color
+    )
+    plain = SGR.sub("", text)
+    platform_json = next(
+        line.split("Platform (platform): ", 1)[1]
+        for line in plain.splitlines()
+        if "Platform (platform): " in line
+    )
+    annotation_json = next(
+        line.split("structured: ", 1)[1]
+        for line in plain.splitlines()
+        if "structured: " in line
+    )
+    assert json.loads(platform_json) == platform
+    assert json.loads(annotation_json) == {
+        "nested": ['a"b\\c', "\x00\u2028\u2029é🙂\ud800"]
+    }
+    for unsafe in ("\x1b", "\u202e", "\u2028", "\u2029", "\ud800"):
+        assert unsafe not in plain
+    text.encode(encoding)
+    size = len(text.encode(encoding))
+    exact = replace(sdk, limits=replace(sdk.limits, max_output_bytes=size))
+    assert (
+        display.render_inspection(
+            exact, encoding=encoding, ascii_only=ascii_only, color=color
+        )
+        == text
+    )
+    over = replace(sdk, limits=replace(sdk.limits, max_output_bytes=size - 1))
+    with pytest.raises(LayoutInspectionError) as error:
+        display.render_inspection(
+            over, encoding=encoding, ascii_only=ascii_only, color=color
+        )
+    assert error.value.diagnostics[0].code == "OUTPUT_LIMIT"
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_inspect_scenario_timing_keeps_stdout_unchanged(
+    tmp_path: Path, as_json: bool
+) -> None:
+    """Emit one named scenario on stderr only when requested, preserving tree/JSON stdout."""
+    path = _tiny(tmp_path)
+    args = ["layout", "inspect", "-p", str(path)] + (["--json"] if as_json else [])
+    plain = _runner().invoke(regshape, args)
+    timed = _runner().invoke(
+        regshape, [*args, "--time-scenarios", "--telemetry-format", "json"]
+    )
+    disabled = _runner().invoke(
+        regshape,
+        [*args, "--time-scenarios", "--telemetry-format", "json", "-tv", "0"],
+    )
+    assert plain.exit_code == timed.exit_code == disabled.exit_code == 0
+    assert plain.stdout == timed.stdout == disabled.stdout
+    assert plain.stderr == disabled.stderr == ""
+    event = json.loads(timed.stderr)
+    assert event["type"] == "scenario" and event["name"] == "layout inspect"
+    assert event["elapsed_s"] >= 0
+
+
+def test_inspect_scenario_timing_preserves_root_failure(tmp_path: Path) -> None:
+    """A failed inspection retains its diagnostic and exit 1 alongside one scenario event."""
+    path = tmp_path / "invalid-layout"
+    path.mkdir()
+    args = ["layout", "inspect", "-p", str(path)]
+    plain = _runner().invoke(regshape, args)
+    timed = _runner().invoke(
+        regshape, [*args, "--time-scenarios", "--telemetry-format", "json"]
+    )
+    assert plain.exit_code == timed.exit_code == 1
+    assert plain.stdout == timed.stdout == ""
+    assert timed.stderr.startswith(plain.stderr)
+    event = json.loads(timed.stderr[len(plain.stderr) :])
+    assert event["type"] == "scenario" and event["name"] == "layout inspect"
+
+
+@pytest.mark.parametrize("encoding", ["bogus", "rot13"])
+@pytest.mark.parametrize("ascii_only", [False, True])
+def test_render_invalid_codecs_fail_before_traversal(
+    tmp_path: Path, encoding: str, ascii_only: bool
+) -> None:
+    """Unknown and non-text codecs raise the renderer's documented ValueError before projection."""
+    sdk = inspect_layout(_tiny(tmp_path))
+    with patch.object(
+        display._Tree, "chunks", side_effect=AssertionError("projection started")
+    ) as chunks:
+        with pytest.raises(ValueError, match="text-to-bytes codec"):
+            display.render_inspection(
+                sdk, encoding=encoding, ascii_only=ascii_only, color=False
+            )
+    chunks.assert_not_called()
+
+
 def test_source_positions_descriptor_ownership_and_valid_siblings(
     tmp_path: Path,
 ) -> None:
@@ -542,7 +665,7 @@ def test_terminal_controls_are_escaped_in_every_untrusted_surface(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Escape paths, annotation keys/values, platform JSON, messages and sources before styling."""
-    hostile = "\\\n\t\r\x00\x1b[31m\x7f\x85\u202e\u200d"
+    hostile = "\\\n\t\r\x00\x1b[31m\x7f\x85\u202e\u200d\u2028\u2029"
     path = _tiny(tmp_path, annotations={f"key{hostile}": hostile})
     renamed = path.with_name("layout" + hostile.replace("\x00", "").replace("\\", ""))
     path.rename(renamed)
@@ -573,10 +696,21 @@ def test_terminal_controls_are_escaped_in_every_untrusted_surface(
     assert result.exit_code == 1
     for text in (result.stdout, result.stderr):
         assert all(char == "\n" or ord(char) >= 32 for char in text)
-        for unsafe in ("\r", "\t", "\x1b", "\x7f", "\x85", "\u202e", "\u200d"):
+        for unsafe in (
+            "\r",
+            "\t",
+            "\x1b",
+            "\x7f",
+            "\x85",
+            "\u202e",
+            "\u200d",
+            "\u2028",
+            "\u2029",
+        ):
             assert unsafe not in text
         assert "\\u001b[31m" in text
         assert "\\u202e" in text and "\\u200d" in text
+        assert "\\u2028\\u2029" in text
         assert "\\\\\\n\\t\\r\\u0000" in text
     assert "Error (INVALID_DESCRIPTOR)" in result.stdout
     machine = _runner().invoke(

@@ -631,6 +631,7 @@ def show(ctx, layout_path):
 @click.option("--json", "as_json", is_flag=True, help="Output the SDK's hierarchical JSON.")
 @click.option("--ascii", "ascii_only", is_flag=True, help="Use ASCII connectors and escaped values.")
 @click.pass_context
+@track_scenario("layout inspect")
 def inspect_cmd(
     ctx: click.Context, layout_path: str, as_json: bool, ascii_only: bool
 ) -> None:
@@ -638,7 +639,8 @@ def inspect_cmd(
 
     Incompatible flags fail before IO. Invalid roots/output caps produce no stdout;
     descendant diagnostics accompany the partial view on stderr and exit 1.
-    Legacy show, status and validation remain independent.
+    Requested scenario timing uses library telemetry on stderr without changing
+    tree/JSON stdout. Legacy show, status and validation remain independent.
     """
     if as_json and ascii_only:
         raise click.UsageError("--ascii cannot be combined with --json")

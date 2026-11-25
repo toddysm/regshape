@@ -35,31 +35,45 @@ from regshape.libs.layout.inspection_models import (
 )
 
 
-def _escape(value: str, encoding: str, ascii_only: bool) -> Iterator[str]:
-    """Reversibly escape controls, backslashes and unencodable characters in bounded chunks."""
+def _escape(
+    value: str, encoding: str, ascii_only: bool, *, json_encoded: bool = False
+) -> Iterator[str]:
+    """Escape unsafe terminal text in bounded chunks, preserving generated JSON syntax.
+
+    JSON-encoded chunks retain existing backslashes and use JSON Unicode escapes
+    for unsafe/unencodable characters; raw strings retain reversible text escapes.
+    """
     for start in range(0, len(value), 512):
         escaped = []
         for char in value[start : start + 512]:
+            if char == "\\" and json_encoded:
+                escaped.append(char)
+                continue
             if char in "\\\n\t\r":
                 escaped.append(
                     {"\\": "\\\\", "\n": "\\n", "\t": "\\t", "\r": "\\r"}[char]
                 )
                 continue
-            unsafe = unicodedata.category(char) in ("Cc", "Cf", "Cs")
+            unsafe = unicodedata.category(char) in ("Cc", "Cf", "Cs", "Zl", "Zp")
             try:
                 char.encode("ascii" if ascii_only else encoding)
             except UnicodeEncodeError:
                 unsafe = True
             if unsafe:
-                code = ord(char)
-                escaped.append(f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}")
+                if json_encoded:
+                    escaped.append(json.dumps(char, ensure_ascii=True)[1:-1])
+                else:
+                    code = ord(char)
+                    escaped.append(
+                        f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}"
+                    )
             else:
                 escaped.append(char)
         yield "".join(escaped)
 
 
 def _compact_json(value: JsonValue) -> Iterator[str]:
-    """Yield compact, source-ordered platform JSON without copying maps or whole strings."""
+    """Yield compact platform/annotation JSON without copying maps or whole strings."""
     if isinstance(value, Mapping):
         yield "{"
         for position, (key, item) in enumerate(value.items()):
@@ -89,7 +103,10 @@ class _Tree:
     """One immutable presentation policy, reusable for counting and materialization passes."""
 
     def __init__(self, encoding: str, ascii_only: bool, color: bool) -> None:
-        """Select encodable connectors; forced ASCII also escapes every non-ASCII value."""
+        """Select encodable connectors; forced ASCII also escapes every non-ASCII value.
+
+        :raises ValueError: For unknown or non-text destination codecs.
+        """
         self.encoding = encoding
         self.ascii_only = ascii_only
         self.color = color
@@ -98,6 +115,8 @@ class _Tree:
             unicode_tree = not ascii_only
         except UnicodeEncodeError:
             unicode_tree = False
+        except (LookupError, TypeError) as error:
+            raise ValueError("encoding must name a text-to-bytes codec") from error
         self.stem = "│" if unicode_tree else "|"
         self.branch = "├── " if unicode_tree else "|-- "
         self.last = "└── " if unicode_tree else "`-- "
@@ -110,10 +129,14 @@ class _Tree:
         if self.color:
             yield "\x1b[0m"
 
-    def _safe(self, chunks: Iterable[str]) -> Iterator[str]:
-        """Escape borrowed text chunks before they reach a styled span."""
+    def _safe(
+        self, chunks: Iterable[str], *, json_encoded: bool = False
+    ) -> Iterator[str]:
+        """Escape text before styling, without re-escaping renderer-generated JSON."""
         for chunk in chunks:
-            yield from _escape(chunk, self.encoding, self.ascii_only)
+            yield from _escape(
+                chunk, self.encoding, self.ascii_only, json_encoded=json_encoded
+            )
 
     def _end(self) -> Iterator[str]:
         """End a line without carrying its final style into subsequent output."""
@@ -127,10 +150,11 @@ class _Tree:
         label: str,
         value: str | Iterable[str] | None = None,
         *,
+        json_encoded: bool = False,
         style: str = "36",
         slot: str = "",
     ) -> Iterator[str]:
-        """Emit an unpadded label/colon and optional full value; None denotes a section."""
+        """Emit a label/value line; None denotes a section and generated JSON keeps its escapes."""
         yield from self._span((prefix,), "90")
         if slot:
             yield from self._span((slot,), "36")
@@ -139,7 +163,11 @@ class _Tree:
         if value is not None:
             yield " "
             yield from self._span(
-                self._safe((value,) if isinstance(value, str) else value), "39"
+                self._safe(
+                    (value,) if isinstance(value, str) else value,
+                    json_encoded=json_encoded,
+                ),
+                "39",
             )
         yield from self._end()
 
@@ -155,6 +183,7 @@ class _Tree:
                 prefix + "  ",
                 key,
                 value if isinstance(value, str) else _compact_json(value),
+                json_encoded=not isinstance(value, str),
             )
 
     def _errors(
@@ -191,7 +220,10 @@ class _Tree:
         nested = prefix + "  "
         if descriptor.platform is not None:
             yield from self._field(
-                nested, "Platform (platform)", _compact_json(descriptor.platform)
+                nested,
+                "Platform (platform)",
+                _compact_json(descriptor.platform),
+                json_encoded=True,
             )
         if descriptor.annotations is not None:
             yield from self._annotations(nested, descriptor.annotations)
