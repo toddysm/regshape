@@ -433,3 +433,14 @@ def test_resource_gate_checks_exact_caps_and_rejects_missing_approval() -> None:
     thresholds["limits"].pop(first)
     with pytest.raises(ValueError, match="every shape/view"):
         evaluate(report, thresholds)
+
+
+def test_metadata_inventory_rejects_descriptor_path_traversal(tmp_path: Path) -> None:
+    """Reject path-like digest fields before constructing or reading any descriptor-derived file."""
+    path = build_layout(tmp_path / "layout", "simple")
+    entry = path / "index.json"
+    value = json.loads(entry.read_bytes())
+    value["manifests"][0]["digest"] = "../outside"
+    entry.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match="Digest must be lowercase"):
+        metadata_files(path)

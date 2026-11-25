@@ -280,7 +280,9 @@ def measure(output: Path, thresholds: Path | None) -> bool:
                             "-m",
                             "regshape.tests.benchmark_layout_inspection",
                             "--sample",
-                            str(path),
+                            root.name,
+                            "--shape",
+                            shape,
                             "--view",
                             view,
                         ],
@@ -322,14 +324,19 @@ def main() -> None:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--thresholds", type=Path)
     parser.add_argument("--sample", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--shape", choices=SHAPES, help=argparse.SUPPRESS)
     parser.add_argument("--view", choices=VIEWS)
     args = parser.parse_args()
     if sys.platform not in ("linux", "darwin"):
         parser.error("Fresh-process resource evidence requires Linux or local macOS")
     if args.sample is not None:
-        if args.view is None:
-            parser.error("--sample requires --view")
-        print(json.dumps(sample(args.sample, args.view)))
+        if args.view is None or args.shape is None:
+            parser.error("--sample requires --shape and --view")
+        namespace = args.sample.name
+        if not namespace.startswith("regshape-layout-benchmark-"):
+            parser.error("--sample requires a benchmark temporary namespace")
+        path = Path(tempfile.gettempdir()).resolve() / namespace / args.shape
+        print(json.dumps(sample(path, args.view)))
     elif args.output is None:
         parser.error("--output is required for baseline or approved-threshold reruns")
     else:

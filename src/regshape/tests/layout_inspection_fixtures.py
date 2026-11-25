@@ -19,6 +19,7 @@ from typing import BinaryIO
 from unittest.mock import patch
 
 from regshape.libs.artifacts.graph import OCI_INDEX, OCI_MANIFEST
+from regshape.libs.artifacts.models import digest_parts
 from regshape.libs.artifacts.storage import SafeDirectory
 from regshape.libs.layout import inspection
 from regshape.tests.artifact_fixtures import address, edge
@@ -179,7 +180,7 @@ def build_layout(path: Path, shape: str) -> Path:
     (path / "oci-layout").write_bytes(b'{"imageLayoutVersion":"1.0.0"}')
     (path / "index.json").write_bytes(index(roots))
     for digest, value in objects.items():
-        algorithm, name = digest.split(":")
+        algorithm, name = digest_parts(digest)
         directory = path / "blobs" / algorithm
         directory.mkdir(parents=True, exist_ok=True)
         (directory / name).write_bytes(value)
@@ -187,7 +188,10 @@ def build_layout(path: Path, shape: str) -> Path:
 
 
 def metadata_files(path: Path) -> dict[str, int]:
-    """Inventory fixture metadata before observation, excluding opaque/unlisted objects."""
+    """Inventory fixture metadata before observation, excluding opaque/unlisted objects.
+
+    :raises ValueError: If a descriptor digest is not a safe supported content address.
+    """
     found = {
         name: (path / name).stat().st_size for name in ("oci-layout", "index.json")
     }
@@ -205,7 +209,7 @@ def metadata_files(path: Path) -> dict[str, int]:
             ):
                 continue
             seen.add(digest)
-            algorithm, name = digest.split(":")
+            algorithm, name = digest_parts(digest)
             target = path / "blobs" / algorithm / name
             found[name] = target.stat().st_size
             pending.append(json.loads(target.read_bytes()))
