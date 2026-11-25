@@ -4,6 +4,7 @@ One warm-up and five measured runs use stable warm-cache fixtures. Elapsed time
 covers the guarded CLI invocation, not interpreter startup or fixture discovery;
 peak RSS covers the entire child process, including imports/capture. Instrumentation
 overhead is included. Baseline measurements are never called a performance pass.
+Workers inherit the parent-created fixture cwd and accept no input path.
 """
 
 from __future__ import annotations
@@ -280,15 +281,13 @@ def measure(output: Path, thresholds: Path | None) -> bool:
                             "-m",
                             "regshape.tests.benchmark_layout_inspection",
                             "--sample",
-                            root.name,
-                            "--shape",
-                            shape,
                             "--view",
                             view,
                         ],
                         capture_output=True,
                         text=True,
                         check=True,
+                        cwd=path,
                         env={
                             **os.environ,
                             "PYTHONIOENCODING": "utf-8",
@@ -323,20 +322,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--thresholds", type=Path)
-    parser.add_argument("--sample", type=Path, help=argparse.SUPPRESS)
-    parser.add_argument("--shape", choices=SHAPES, help=argparse.SUPPRESS)
+    parser.add_argument("--sample", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--view", choices=VIEWS)
     args = parser.parse_args()
     if sys.platform not in ("linux", "darwin"):
         parser.error("Fresh-process resource evidence requires Linux or local macOS")
-    if args.sample is not None:
-        if args.view is None or args.shape is None:
-            parser.error("--sample requires --shape and --view")
-        namespace = args.sample.name
-        if not namespace.startswith("regshape-layout-benchmark-"):
-            parser.error("--sample requires a benchmark temporary namespace")
-        path = Path(tempfile.gettempdir()).resolve() / namespace / args.shape
-        print(json.dumps(sample(path, args.view)))
+    if args.sample:
+        if args.view is None:
+            parser.error("--sample requires --view")
+        print(json.dumps(sample(Path.cwd(), args.view)))
     elif args.output is None:
         parser.error("--output is required for baseline or approved-threshold reruns")
     else:

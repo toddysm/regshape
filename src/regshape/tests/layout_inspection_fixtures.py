@@ -8,6 +8,8 @@ payloads and adjusted sizes under the original names, not verified blob content.
 
 from __future__ import annotations
 
+import builtins
+import io
 import json
 import os
 from collections import Counter
@@ -263,6 +265,7 @@ def observe_io(metadata: dict[str, int]) -> Iterator[IOFacts]:
     facts = IOFacts()
     real_open, real_stat, real_read = os.open, os.stat, SafeDirectory.read_file
     real_json = inspection._json
+    metadata_fds: set[int] = set()
 
     def opened(name, flags, *args, **kwargs):
         """Refuse write flags and non-directory opaque/unlisted file opens."""
@@ -272,7 +275,29 @@ def observe_io(metadata: dict[str, int]) -> Iterator[IOFacts]:
         if not flags & os.O_DIRECTORY:
             assert Path(name).name in metadata, f"Forbidden payload open: {name}"
         facts.opens += 1
-        return real_open(name, flags, *args, **kwargs)
+        fd = real_open(name, flags, *args, **kwargs)
+        if not flags & os.O_DIRECTORY:
+            metadata_fds.add(fd)
+        return fd
+
+    def guarded_file_open(factory):
+        """Wrap each Python file factory without letting pathlib bypass the native-open guard."""
+
+        def file_open(file, mode="r", *args, **kwargs):
+            """Permit metadata reads or standard output wrappers, rejecting payload/unlisted files."""
+            if isinstance(file, int) and file in (1, 2):
+                return factory(file, mode, *args, **kwargs)
+            assert not any(flag in mode for flag in "wax+"), "Forbidden file write"
+            if isinstance(file, int):
+                assert file in metadata_fds, "Forbidden unobserved file descriptor"
+            else:
+                name = Path(file).name
+                assert name in metadata, f"Forbidden payload open: {file}"
+                facts.opens += 1
+                facts.metadata_opens[name] += 1
+            return factory(file, mode, *args, **kwargs)
+
+        return file_open
 
     def stated(name, *args, **kwargs):
         """Keep actual no-follow stats, including cached opaque target observations."""
@@ -303,6 +328,7 @@ def observe_io(metadata: dict[str, int]) -> Iterator[IOFacts]:
             "subprocess.Popen",
             "docker.from_env",
             "regshape.libs.auth.credentials.resolve_credentials",
+            "regshape.libs.transport.client.resolve_credentials",
             "gzip.decompress",
             "tarfile.open",
             "os.mkdir",
@@ -314,6 +340,10 @@ def observe_io(metadata: dict[str, int]) -> Iterator[IOFacts]:
                 patch(target, side_effect=AssertionError(f"Forbidden: {target}"))
             )
         stack.enter_context(patch.object(os, "open", opened))
+        stack.enter_context(
+            patch.object(builtins, "open", guarded_file_open(builtins.open))
+        )
+        stack.enter_context(patch.object(io, "open", guarded_file_open(io.open)))
         stack.enter_context(patch.object(os, "stat", stated))
         stack.enter_context(
             patch.object(os, "supports_dir_fd", os.supports_dir_fd | {opened, stated})

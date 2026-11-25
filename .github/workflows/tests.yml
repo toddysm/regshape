@@ -56,8 +56,6 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install package and test dependencies
         run: python -m pip install -e ".[dev]"
-      - name: Run tests
-        run: python -m pytest -q
       - name: Record offline layout inspection baselines
         if: matrix.python-version == '3.12'
         run: >-
@@ -71,6 +69,8 @@ jobs:
           path: ${{ runner.temp }}/layout-inspection-baseline.json
           if-no-files-found: error
           retention-days: 90
+      - name: Run tests
+        run: python -m pytest -q
 
   urllib3-legacy:
     runs-on: ubuntu-latest

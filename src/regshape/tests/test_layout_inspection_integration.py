@@ -32,6 +32,7 @@ from regshape.libs.layout import (
     summarize_layout,
     validate_layout,
 )
+from regshape.libs.transport import client
 from regshape.tests.benchmark_layout_inspection import SHAPES, VIEWS, evaluate
 from regshape.tests.layout_inspection_fixtures import (
     FAMILY,
@@ -444,3 +445,26 @@ def test_metadata_inventory_rejects_descriptor_path_traversal(tmp_path: Path) ->
     entry.write_text(json.dumps(value))
     with pytest.raises(ValueError, match="Digest must be lowercase"):
         metadata_files(path)
+
+
+@pytest.mark.parametrize(
+    "operation", ["builtin-open", "path-read", "client-credentials"]
+)
+def test_readonly_guard_detects_python_open_and_bound_credentials(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    """Prohibited high-level payload reads and the transport's imported credential binding fail immediately."""
+    path = build_layout(tmp_path / "layout", "simple")
+    payload = path / "blobs/sha256" / hashlib.sha256(PAYLOAD).hexdigest()
+    with (
+        observe_io(metadata_files(path)),
+        pytest.raises(AssertionError, match="Forbidden"),
+    ):
+        if operation == "builtin-open":
+            with open(payload, "rb") as stream:
+                stream.read()
+        elif operation == "path-read":
+            payload.read_bytes()
+        else:
+            client.resolve_credentials("registry.example", None, None)
