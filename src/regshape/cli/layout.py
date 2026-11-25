@@ -11,7 +11,8 @@
               ``generate manifest``, ``update config``, ``status``, ``show``,
               ``inspect`` and ``validate`` subcommands for creating and managing OCI Image
               Layouts via a staged build workflow.
-              Inspection renders SDK-owned local occurrences without payload reads.
+              Inspection renders SDK-owned expanded trees or summaries without
+              payload reads or CLI-owned classification/accounting.
               Recursive validation opts into strict artifact graph policy.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
@@ -49,6 +50,7 @@ from regshape.libs.layout import (
     read_index,
     read_stage,
     stage_layer,
+    summarize_layout,
     update_config_with_result,
     update_layer_annotations,
     update_manifest_annotations,
@@ -633,16 +635,22 @@ def show(ctx, layout_path):
     help="Local OCI Image Layout directory to inspect without reading payloads.",
 )
 @click.option("--json", "as_json", is_flag=True, help="Output the SDK's hierarchical JSON.")
+@click.option(
+    "--summary", is_flag=True,
+    help="Keep every index and condense manifests into SDK evidence-based groups.",
+)
 @click.option("--ascii", "ascii_only", is_flag=True, help="Use ASCII connectors and escaped values.")
 @click.pass_context
 @track_scenario("layout inspect")
 def inspect_cmd(
-    ctx: click.Context, layout_path: str, as_json: bool, ascii_only: bool
+    ctx: click.Context, layout_path: str, as_json: bool, summary: bool, ascii_only: bool
 ) -> None:
-    """Inspect an expanded local tree, preserving partial SDK results and failure status.
+    """Inspect an expanded or summarized local tree, preserving SDK failure status.
 
     Incompatible flags fail before IO. Invalid roots/output caps produce no stdout;
     descendant diagnostics accompany the partial view on stderr and exit 1.
+    Summary grouping/counts come only from the SDK; JSON serializes the selected
+    view without first materializing expanded output.
     Requested scenario timing uses library telemetry on stderr without changing
     tree/JSON stdout. Legacy show, status and validation remain independent.
     """
@@ -654,7 +662,8 @@ def inspect_cmd(
             "Path must be nonempty and contain no NUL characters", param_hint="--path"
         )
     try:
-        result = inspect_layout(layout_path)
+        inspection = inspect_layout(layout_path)
+        result = summarize_layout(inspection) if summary else inspection
         write_inspection(result, as_json=as_json, ascii_only=ascii_only)
     except LayoutInspectionError as error:
         emit_inspection_diagnostics(error.diagnostics)
