@@ -1,4 +1,4 @@
-"""Offline expanded inspect CLI contracts: golden tree, safe styling and exact failures.
+"""Offline expanded/summary CLI contracts: golden views, SDK delegation and safe failures.
 
 Synthetic metadata uses the approved snapshot's names without claiming payload
 hash verification. Native inspection tests skip unsupported safe-open platforms;
@@ -33,8 +33,10 @@ from regshape.libs.layout import (
     InspectionDiagnostic,
     LayoutInspectionError,
     LayoutInspectionResult,
+    LayoutSummaryResult,
     SourceLocation,
     inspect_layout,
+    summarize_layout,
 )
 from regshape.tests.artifact_fixtures import address, edge
 
@@ -110,8 +112,8 @@ def _layout(
     return path
 
 
-def _tiny(tmp_path: Path, **fields: object) -> Path:
-    """Create the pinned 420-byte artifact manifest with repeated config/content bytes."""
+def _tiny(tmp_path: Path, *, mixed: bool = False, **fields: object) -> Path:
+    """Create pinned D6 artifacts, optionally adding the 716-byte mixed-shape subject fixture."""
     payload = b"{}"
     manifest = _raw(
         {
@@ -122,10 +124,16 @@ def _tiny(tmp_path: Path, **fields: object) -> Path:
             "layers": [edge(payload)],
         }
     )
+    manifests = [manifest]
+    if mixed:
+        second = json.loads(manifest)
+        second["layers"].append(second["layers"][0].copy())
+        second["subject"] = edge(manifest, OCI_MANIFEST)
+        manifests.append(_raw(second))
     return _layout(
         tmp_path,
-        [edge(manifest, OCI_MANIFEST)],
-        {address(manifest): manifest, address(payload): payload},
+        [edge(raw, OCI_MANIFEST) for raw in manifests],
+        {address(raw): raw for raw in [*manifests, payload]},
         **fields,
     )
 
@@ -428,13 +436,16 @@ def test_compact_json_values_round_trip_without_double_escaping(
     assert error.value.diagnostics[0].code == "OUTPUT_LIMIT"
 
 
+@pytest.mark.parametrize("summary", [False, True])
 @pytest.mark.parametrize("as_json", [False, True])
 def test_inspect_scenario_timing_keeps_stdout_unchanged(
-    tmp_path: Path, as_json: bool
+    tmp_path: Path, as_json: bool, summary: bool
 ) -> None:
     """Emit one named scenario on stderr only when requested, preserving tree/JSON stdout."""
     path = _tiny(tmp_path)
     args = ["layout", "inspect", "-p", str(path)] + (["--json"] if as_json else [])
+    if summary:
+        args.append("--summary")
     plain = _process_cli(args)
     timed = _process_cli([*args, "--time-scenarios", "--telemetry-format", "json"])
     disabled = _process_cli(
@@ -910,13 +921,13 @@ def test_missing_shared_payload_exact_streams_and_status(
     [
         [],
         ["--path", "unused", "--ascii", "--json"],
-        ["--path", "unused", "--summary"],
+        ["--path", "unused", "--summary", "--ascii", "--json"],
         ["--path", ""],
         ["--path", "\x00"],
     ],
 )
 def test_invalid_arguments_never_inspect(args: list[str]) -> None:
-    """Missing required options and incompatible/unimplemented flags remain usage errors before IO."""
+    """Missing required options and incompatible flags remain usage errors before IO in both views."""
     with patch("regshape.cli.layout.inspect_layout") as inspector:
         result = _runner().invoke(regshape, ["layout", "inspect", *args])
     assert result.exit_code == 2
@@ -943,16 +954,19 @@ def test_unsupported_platform_mapping_without_tree() -> None:
     assert result.stderr == "UNSUPPORTED_PLATFORM: Read-only safe opens unavailable\n"
 
 
+@pytest.mark.parametrize("summary", [False, True])
 @pytest.mark.parametrize("as_json", [False, True])
 def test_invalid_root_empty_stdout_and_exact_stderr(
-    tmp_path: Path, as_json: bool
+    tmp_path: Path, as_json: bool, summary: bool
 ) -> None:
     """A missing marker is an SDK root failure, not Click existence validation or a partial tree."""
     path = tmp_path / "invalid-layout"
     path.mkdir()
     result = _runner().invoke(
         regshape,
-        ["layout", "inspect", "-p", str(path)] + (["--json"] if as_json else []),
+        ["layout", "inspect", "-p", str(path)]
+        + (["--json"] if as_json else [])
+        + (["--summary"] if summary else []),
     )
     assert result.exit_code == 1
     assert result.stdout == ""
@@ -962,9 +976,13 @@ def test_invalid_root_empty_stdout_and_exact_stderr(
     )
 
 
-def test_renderer_never_serializes_or_reopens_sdk_result(tmp_path: Path) -> None:
+@pytest.mark.parametrize("summary", [False, True])
+def test_renderer_never_serializes_or_reopens_sdk_result(
+    tmp_path: Path, summary: bool
+) -> None:
     """Text consumes typed occurrences directly, without CLI discovery, file reads or JSON copies."""
     sdk = inspect_layout(_tiny(tmp_path))
+    selected = summarize_layout(sdk) if summary else sdk
     with (
         patch("builtins.open", side_effect=AssertionError("no CLI file reads")),
         patch("os.open", side_effect=AssertionError("no CLI safe opens")),
@@ -979,11 +997,22 @@ def test_renderer_never_serializes_or_reopens_sdk_result(tmp_path: Path) -> None
             "to_json",
             side_effect=AssertionError("no JSON proxy"),
         ),
+        patch.object(
+            LayoutSummaryResult,
+            "to_dict",
+            side_effect=AssertionError("no summary copy"),
+        ),
+        patch.object(
+            LayoutSummaryResult,
+            "to_json",
+            side_effect=AssertionError("no summary JSON"),
+        ),
     ):
         text = display.render_inspection(
-            sdk, encoding="utf-8", ascii_only=False, color=False
+            selected, encoding="utf-8", ascii_only=False, color=False
         )
-    assert "OCI layout\n" in text and "Content 0 sha256:" in text
+    assert "OCI layout\n" in text
+    assert ("Manifest group\n" if summary else "Content 0 sha256:") in text
 
 
 def test_cli_delegates_path_and_metadata_without_its_own_io(tmp_path: Path) -> None:
@@ -1103,18 +1132,21 @@ def test_repeated_indexes_cycles_and_traversal_limits_are_not_elided(
     "encoding,color",
     [("utf-8", False), ("utf-8", True), ("utf-16", False), ("utf-7", False)],
 )
+@pytest.mark.parametrize("summary", [False, True])
 def test_text_budget_exact_inclusive_encoded_boundary(
     tmp_path: Path,
     encoding: str,
     color: bool,
+    summary: bool,
 ) -> None:
     """Count all encoded indentation, LF, escapes and ANSI, including a single stateful BOM."""
-    sdk = inspect_layout(
+    inspection = inspect_layout(
         _tiny(
             tmp_path,
             annotations={"control": "\x00" * 100, "unicode": "é" * 1024},
         )
     )
+    sdk = summarize_layout(inspection) if summary else inspection
     text = display.render_inspection(
         sdk, encoding=encoding, ascii_only=False, color=color
     )
@@ -1134,19 +1166,22 @@ def test_text_budget_exact_inclusive_encoded_boundary(
     assert error.value.diagnostics[0].code == "OUTPUT_LIMIT"
 
 
+@pytest.mark.parametrize("summary", [False, True])
 @pytest.mark.parametrize("as_json", [False, True])
 def test_cli_output_cap_refuses_all_stdout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     as_json: bool,
+    summary: bool,
 ) -> None:
     """Fail one byte over the selected representation cap without writing cut-off output."""
     sdk = inspect_layout(_tiny(tmp_path))
+    selected = summarize_layout(sdk) if summary else sdk
     content = (
-        sdk.to_json()
+        selected.to_json()
         if as_json
         else display.render_inspection(
-            sdk,
+            selected,
             encoding="utf-8",
             ascii_only=False,
             color=False,
@@ -1157,7 +1192,9 @@ def test_cli_output_cap_refuses_all_stdout(
     monkeypatch.setattr("regshape.cli.layout.inspect_layout", lambda path: limited)
     result = _runner().invoke(
         regshape,
-        ["layout", "inspect", "-p", "unused"] + (["--json"] if as_json else []),
+        ["layout", "inspect", "-p", "unused"]
+        + (["--json"] if as_json else [])
+        + (["--summary"] if summary else []),
     )
     assert result.exit_code == 1
     assert result.stdout == ""
@@ -1192,11 +1229,13 @@ def test_preflight_stops_before_materializing_amplified_values(
 
 @pytest.mark.parametrize("failure", ["write", "flush", "short"])
 @pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("summary", [False, True])
 def test_delivery_failure_is_not_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     failure: str,
     as_json: bool,
+    summary: bool,
 ) -> None:
     """Broken pipes, deferred failures and short writes return 1 with escaped diagnostic stderr."""
     path = _tiny(tmp_path)
@@ -1204,7 +1243,9 @@ def test_delivery_failure_is_not_success(
     _streams(monkeypatch, output)
     result = _runner().invoke(
         regshape,
-        ["layout", "inspect", "-p", str(path)] + (["--json"] if as_json else []),
+        ["layout", "inspect", "-p", str(path)]
+        + (["--json"] if as_json else [])
+        + (["--summary"] if summary else []),
     )
     assert result.exit_code == 1
     assert result.stderr.startswith("OUTPUT_WRITE_FAILED:")
@@ -1456,3 +1497,338 @@ def test_present_empty_fields_and_legacy_show_are_unchanged(tmp_path: Path) -> N
     assert shown.exit_code == 0
     assert shown.stderr == ""
     assert json.loads(shown.stdout) == json.loads((path / "index.json").read_bytes())
+
+
+def test_summary_exact_tiny_text_contract(tmp_path: Path) -> None:
+    """Expose every D6 summary field with approved spacing, exact counts and full source digest."""
+    path = _tiny(tmp_path)
+    result = _runner().invoke(
+        regshape, ["layout", "inspect", "-p", str(path), "--summary"]
+    )
+    assert result.exit_code == 0, result.stderr
+    assert result.stderr == ""
+    assert (
+        result.stdout
+        == f"""OCI layout
+│  Location: {path}
+│  Layout format version (imageLayoutVersion): 1.0.0
+│  Unique objects: 2
+│  Object references: 3
+│  Subject references: 0
+│  Stored bytes: 422
+│  Statistics complete: true
+│
+└── Index
+    │  Location: index.json
+    │  Document schema version (schemaVersion): 2
+    │  Media type (mediaType): application/vnd.oci.image.index.v1+json
+    │  Referenced objects (manifests):
+    │    [0] Digest (digest): sha256:f9b333e16b17d3bb223460cb53d9925856fb02b9e142abbcd6b0e232fa39336f
+    │
+    └── Manifest group
+          Category: artifacts
+          Artifact type (artifactType): application/vnd.example.payload
+          Positions: [0]
+          References: 1
+          Unique manifests: 1
+          Config references: 1
+          Layer references: 1
+          Layer count distribution: {{"1": 1}}
+          Unique objects: 2
+          Stored bytes: 422
+"""
+    )
+
+
+@pytest.mark.parametrize("mixed", [False, True])
+def test_summary_json_is_selected_sdk_serializer(tmp_path: Path, mixed: bool) -> None:
+    """Match approved single/mixed fixtures without expanded serialization or a CLI JSON schema."""
+    path = _tiny(tmp_path, mixed=mixed)
+    inspection = inspect_layout(path)
+    expected = summarize_layout(inspection).to_json()
+    with (
+        patch.object(
+            LayoutInspectionResult,
+            "to_json",
+            side_effect=AssertionError("no expanded JSON"),
+        ),
+        patch.object(
+            LayoutInspectionResult,
+            "to_dict",
+            side_effect=AssertionError("no expanded copy"),
+        ),
+    ):
+        result = _runner().invoke(
+            regshape,
+            ["layout", "inspect", "-p", str(path), "--summary", "--json"],
+            color=True,
+        )
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout == expected and result.stderr == ""
+    value = json.loads(result.stdout)
+    assert value["statistics"] == {
+        "uniqueObjects": 3 if mixed else 2,
+        "objectReferences": 7 if mixed else 3,
+        "subjectReferences": 1 if mixed else 0,
+        "storedBytes": 1138 if mixed else 422,
+    }
+    group = value["children"][0]["children"][0]
+    assert group["positions"] == ([0, 1] if mixed else [0])
+    assert group["layerCountDistribution"] == ({"1": 1, "2": 1} if mixed else {"1": 1})
+    assert "members" not in group and "children" not in group
+    assert "\x1b" not in result.stdout
+
+
+def test_summary_cli_uses_sdk_counts_without_recounting(tmp_path: Path) -> None:
+    """Render deliberately distinct SDK observations unchanged, with no additional layout IO."""
+    sdk = inspect_layout(_tiny(tmp_path))
+    summary = summarize_layout(sdk)
+    index = summary.root.children[0]
+    group = replace(
+        index.children[0],
+        positions=(4, 7),
+        unique_manifests=101,
+        config_references=202,
+        layer_references=303,
+        unique_objects=404,
+        stored_bytes=505,
+        layer_count_distribution={"1": 3, "2": 8},
+    )
+    selected = replace(
+        summary,
+        root=replace(
+            summary.root,
+            children=(replace(index, children=(group,)),),
+            statistics=replace(summary.root.statistics, unique_objects=606),
+        ),
+    )
+    with (
+        patch("regshape.cli.layout.inspect_layout", return_value=sdk) as inspector,
+        patch(
+            "regshape.cli.layout.summarize_layout", return_value=selected
+        ) as summarizer,
+        patch("builtins.open", side_effect=AssertionError("no CLI file reads")),
+        patch("os.open", side_effect=AssertionError("no CLI safe opens")),
+        patch("os.stat", wraps=os.stat) as stat,
+    ):
+        result = _runner().invoke(
+            regshape, ["layout", "inspect", "-p", "sdk-owned-path", "--summary"]
+        )
+    assert result.exit_code == 0, result.stderr
+    inspector.assert_called_once_with("sdk-owned-path")
+    summarizer.assert_called_once_with(sdk)
+    for expected in (
+        "Positions: [4, 7]",
+        "Unique manifests: 101",
+        "Config references: 202",
+        "Layer references: 303",
+        "Unique objects: 404",
+        "Stored bytes: 505",
+        "Unique objects: 606",
+        'Layer count distribution: {"1": 3, "2": 8}',
+    ):
+        assert expected in result.stdout
+    assert all(
+        "sdk-owned-path" not in str(call.args[0])
+        and sdk.root.location not in str(call.args[0])
+        for call in stat.call_args_list
+    )
+
+
+@pytest.mark.parametrize("ascii_only", [False, True])
+def test_summary_mixed_shapes_safe_values_and_color_parity(
+    tmp_path: Path, ascii_only: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep mixed histograms, complete escaped values and reset spans in Unicode/ASCII summaries."""
+    path = _tiny(tmp_path, mixed=True, annotations={"danger": "\x1b\u202eé\n\\value"})
+    summary = summarize_layout(inspect_layout(path))
+    plain = display.render_inspection(
+        summary, encoding="utf-8", ascii_only=ascii_only, color=False
+    )
+    colored = display.render_inspection(
+        summary, encoding="utf-8", ascii_only=ascii_only, color=True
+    )
+    assert SGR.sub("", colored) == plain
+    assert "\x1b[1;36mManifest group\x1b[0m" in colored
+    assert "\x1b[36mCategory\x1b[0m\x1b[36m:\x1b[0m \x1b[39martifacts\x1b[0m" in colored
+    assert 'Layer count distribution: {"1": 1, "2": 1}' in plain
+    assert "\\u001b\\u202e" in plain and "\\n\\\\value" in plain
+    assert "\x1b" not in plain and "\u202e" not in plain and "Each" not in plain
+    if ascii_only:
+        plain.encode("ascii")
+        assert "`-- Manifest group" in plain and "\\u00e9" in plain
+    output = _Output(terminal=True)
+    _streams(monkeypatch, output)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    args = ["layout", "inspect", "-p", str(path), "--summary"] + (
+        ["--ascii"] if ascii_only else []
+    )
+    result = _runner().invoke(regshape, args, color=True)
+    assert result.exit_code == 0, result.stderr
+    assert output.getvalue() == colored
+    output.seek(0)
+    output.truncate()
+    monkeypatch.setenv("NO_COLOR", "1")
+    result = _runner().invoke(regshape, args, color=True)
+    assert result.exit_code == 0 and output.getvalue() == plain
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("failure", ["unknown", "missing", "unclassified"])
+def test_summary_keeps_partial_and_unclassified_runs_visible(
+    tmp_path: Path, as_json: bool, failure: str
+) -> None:
+    """Do not group away partial errors or invent a platform/attestation category from unknown evidence."""
+    path = _tiny(tmp_path)
+    raw = json.loads((path / "index.json").read_bytes())
+    descriptor = raw["manifests"][0].copy()
+    if failure == "unknown":
+        descriptor["mediaType"] = "application/vnd.unsupported"
+    elif failure == "missing":
+        descriptor["digest"] = address(b"absent")
+    else:
+        body = {
+            "schemaVersion": 2,
+            "mediaType": OCI_MANIFEST,
+            "config": edge(b"{}", "application/vnd.oci.image.config.v1+json"),
+            "layers": [],
+        }
+        manifest = _raw(body)
+        target = path / "blobs" / address(manifest).replace(":", "/")
+        target.write_bytes(manifest)
+        descriptor = edge(
+            manifest,
+            OCI_MANIFEST,
+            platform={"os": "unknown", "architecture": "unknown"},
+        )
+    raw["manifests"] = [raw["manifests"][0], descriptor, raw["manifests"][0]]
+    (path / "index.json").write_bytes(_raw(raw))
+    selected = summarize_layout(inspect_layout(path))
+    args = ["layout", "inspect", "-p", str(path), "--summary"] + (
+        ["--json"] if as_json else []
+    )
+    result = _runner().invoke(regshape, args)
+    assert result.exit_code == (0 if failure == "unclassified" else 1), result.stderr
+    assert result.stdout == (
+        selected.to_json()
+        if as_json
+        else display.render_inspection(
+            selected, encoding="utf-8", ascii_only=False, color=False
+        )
+    )
+    children = selected.to_dict()["children"][0]["children"]
+    assert children[0]["positions"] == [0] and children[2]["positions"] == [2]
+    if failure == "unclassified":
+        assert children[1]["category"] == "unclassified" and result.stderr == ""
+    else:
+        assert children[1]["errors"] and result.stderr
+        assert not selected.root.statistics_complete
+        if not as_json:
+            assert "Statistics complete: false" in result.stdout
+            assert (
+                "Error (" in result.stdout
+                or "Missing file (MISSING_OBJECT)" in result.stdout
+            )
+
+
+@pytest.mark.parametrize(
+    "algorithm,resolved", [("sha256", True), ("sha512", True), ("sha512", False)]
+)
+@pytest.mark.parametrize("as_json", [False, True])
+def test_summary_keeps_every_index_and_source_local_association(
+    tmp_path: Path, algorithm: str, resolved: bool, as_json: bool
+) -> None:
+    """Retain nested source metadata and tag declarations without attaching them to repeated ordinary indexes."""
+    prefix = "a" * 64
+    digest = algorithm + ":" + prefix + ("b" * 64 if algorithm == "sha512" else "")
+    nested = _raw(
+        {
+            "schemaVersion": 2,
+            "mediaType": OCI_INDEX,
+            "manifests": [],
+            "annotations": {"own": "nested"},
+            **(
+                {"subject": edge(b"external", OCI_MANIFEST, digest=digest)}
+                if resolved
+                else {}
+            ),
+        }
+    )
+    tag_key = "org.opencontainers.image.ref.name"
+    path = _layout(
+        tmp_path,
+        [
+            edge(nested, OCI_INDEX, annotations={tag_key: algorithm + "-" + prefix}),
+            edge(nested, OCI_INDEX, annotations={tag_key: "ordinary"}),
+        ],
+        {address(nested): nested},
+        annotations={"own": "entry"},
+    )
+    result = _runner().invoke(
+        regshape,
+        ["layout", "inspect", "-p", str(path), "--summary"]
+        + (["--json"] if as_json else []),
+    )
+    assert result.exit_code == 0 and result.stderr == ""
+    expected = summarize_layout(inspect_layout(path))
+    if as_json:
+        assert result.stdout == expected.to_json()
+        first, second = json.loads(result.stdout)["children"][0]["children"]
+        assert first["association"]["status"] == (
+            "resolved" if resolved else "unresolved"
+        )
+        assert "association" not in second
+    else:
+        assert result.stdout.count("Index") == 3
+        assert result.stdout.count("Tag-schema association:") == 1
+        assert result.stdout.count("own: nested") == 2 and "own: entry" in result.stdout
+        assert f"Tag: {algorithm}-{prefix}" in result.stdout
+        assert f"Source: index.json#/manifests/0/annotations/{tag_key}" in result.stdout
+        assert f"Status: {'resolved' if resolved else 'unresolved'}" in result.stdout
+        if resolved:
+            assert f"Digest: {digest}" in result.stdout
+        else:
+            assert (
+                "Algorithm: sha512" in result.stdout
+                and f"Prefix: {prefix}" in result.stdout
+            )
+            assert f"Digest: {digest}" not in result.stdout
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_summary_preflights_only_selected_view(tmp_path: Path, as_json: bool) -> None:
+    """A fitting summary succeeds when expanded output exceeds the same inclusive byte budget."""
+    sdk = inspect_layout(_tiny(tmp_path, mixed=True))
+    selected = summarize_layout(sdk)
+    summary_text = (
+        selected.to_json()
+        if as_json
+        else display.render_inspection(
+            selected, encoding="utf-8", ascii_only=False, color=False
+        )
+    )
+    expanded_text = (
+        sdk.to_json()
+        if as_json
+        else display.render_inspection(
+            sdk, encoding="utf-8", ascii_only=False, color=False
+        )
+    )
+    cap = len(summary_text.encode("utf-8"))
+    assert len(expanded_text.encode("utf-8")) > cap
+    limited = replace(sdk, limits=replace(sdk.limits, max_output_bytes=cap))
+    with (
+        patch("regshape.cli.layout.inspect_layout", return_value=limited),
+        patch.object(
+            LayoutInspectionResult,
+            "to_json",
+            side_effect=AssertionError("no expanded JSON"),
+        ),
+    ):
+        result = _runner().invoke(
+            regshape,
+            ["layout", "inspect", "-p", "unused", "--summary"]
+            + (["--json"] if as_json else []),
+        )
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout == summary_text and result.stderr == ""

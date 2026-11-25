@@ -1,4 +1,4 @@
-"""Render SDK-owned layout occurrences without reading files or rebuilding edges.
+"""Render SDK-owned expanded/summary occurrences without IO, classification or recounting.
 
 Text escapes untrusted strings before adding SGR spans. A counting pass enforces
 the selected stream's encoded byte budget before materializing or writing stdout;
@@ -26,9 +26,13 @@ from regshape.libs.layout import (
     LayoutInspectionError,
     LayoutInspectionResult,
     LayoutNode,
+    LayoutSummaryResult,
     ManifestNode,
     OpaqueNode,
     SourceLocation,
+    SummaryGroup,
+    SummaryIndexNode,
+    SummaryLayoutNode,
 )
 from regshape.libs.layout.inspection_models import (
     JsonValue,
@@ -232,16 +236,62 @@ class _Tree:
         if descriptor.digest is not None:
             yield from self._errors(nested, descriptor.errors)
 
-    def _properties(self, node: LayoutNode | ObjectNode, prefix: str) -> Iterator[str]:
-        """Render intrinsic fields and embedded descriptors in the approved block order."""
+    def _properties(
+        self,
+        node: (
+            LayoutNode
+            | ObjectNode
+            | SummaryLayoutNode
+            | SummaryIndexNode
+            | SummaryGroup
+        ),
+        prefix: str,
+    ) -> Iterator[str]:
+        """Render source fields or exact SDK summary counts, never inspecting group members."""
+        if isinstance(node, SummaryGroup):
+            yield from self._field(prefix, "Category", node.category)
+            if node.artifact_type is not None:
+                yield from self._field(
+                    prefix, "Artifact type (artifactType)", node.artifact_type
+                )
+            yield from self._field(
+                prefix, "Positions", _compact_json(node.positions), json_encoded=True
+            )
+            for label, count in (
+                ("References", node.references),
+                ("Unique manifests", node.unique_manifests),
+                ("Config references", node.config_references),
+                ("Layer references", node.layer_references),
+            ):
+                yield from self._field(prefix, label, str(count))
+            yield from self._field(
+                prefix,
+                "Layer count distribution",
+                _compact_json(node.layer_count_distribution),
+                json_encoded=True,
+            )
+            yield from self._field(prefix, "Unique objects", str(node.unique_objects))
+            yield from self._field(prefix, "Stored bytes", str(node.stored_bytes))
+            return
         yield from self._field(prefix, "Location", node.location)
-        if isinstance(node, LayoutNode):
+        if isinstance(node, (LayoutNode, SummaryLayoutNode)):
             yield from self._field(
                 prefix,
                 "Layout format version (imageLayoutVersion)",
                 node.image_layout_version,
             )
-        if isinstance(node, (IndexNode, ManifestNode)):
+        if isinstance(node, SummaryLayoutNode):
+            for label, count in (
+                ("Unique objects", node.statistics.unique_objects),
+                ("Object references", node.statistics.object_references),
+                ("Subject references", node.statistics.subject_references),
+                ("Stored bytes", node.statistics.stored_bytes),
+            ):
+                yield from self._field(prefix, label, str(count))
+            yield from self._field(
+                prefix, "Statistics complete", str(node.statistics_complete).lower()
+            )
+        if isinstance(node, (IndexNode, SummaryIndexNode, ManifestNode)):
             for label, value in (
                 ("Document schema version (schemaVersion)", node.schema_version),
                 ("Media type (mediaType)", node.media_type),
@@ -254,7 +304,10 @@ class _Tree:
                 yield from self._descriptor(prefix + "  ", node.subject)
             if node.annotations is not None:
                 yield from self._annotations(prefix, node.annotations)
-            if isinstance(node, IndexNode) and node.manifests is not None:
+            if (
+                isinstance(node, (IndexNode, SummaryIndexNode))
+                and node.manifests is not None
+            ):
                 yield from self._field(
                     prefix,
                     "Referenced objects (manifests)",
@@ -262,6 +315,22 @@ class _Tree:
                 )
                 for position, descriptor in enumerate(node.manifests):
                     yield from self._descriptor(prefix + "  ", descriptor, position)
+            if isinstance(node, SummaryIndexNode) and node.referrer_list is not None:
+                evidence = node.referrer_list
+                yield from self._field(prefix, "Tag-schema association")
+                for label, value in (
+                    ("Tag", evidence.tag),
+                    ("Source", str(evidence.source)),
+                    ("Status", evidence.status),
+                ):
+                    yield from self._field(prefix + "  ", label, value)
+                if evidence.digest is not None:
+                    yield from self._field(prefix + "  ", "Digest", evidence.digest)
+                else:
+                    yield from self._field(
+                        prefix + "  ", "Algorithm", evidence.algorithm
+                    )
+                    yield from self._field(prefix + "  ", "Prefix", evidence.prefix)
             if isinstance(node, ManifestNode):
                 if node.config is not None:
                     yield from self._field(prefix, "Configuration (config)")
@@ -275,16 +344,26 @@ class _Tree:
         yield from self._errors(prefix, node.errors)
 
     def _node(
-        self, node: LayoutNode | ObjectNode, prefix: str = "", last: bool = True
+        self,
+        node: (
+            LayoutNode
+            | ObjectNode
+            | SummaryLayoutNode
+            | SummaryIndexNode
+            | SummaryGroup
+        ),
+        prefix: str = "",
+        last: bool = True,
     ) -> Iterator[str]:
         """Walk only SDK-provided occurrences; stems distinguish internal nodes from leaves."""
-        if isinstance(node, LayoutNode):
+        if isinstance(node, (LayoutNode, SummaryLayoutNode)):
             name, style = "OCI layout", "39"
             base = prefix
         else:
             name, style = {
                 "index": ("Index", "1;35"),
                 "manifest": ("Manifest", "1;36"),
+                "group": ("Manifest group", "1;36"),
                 "config": ("Config", "1;33"),
                 "layer": ("Layer", "1;34"),
                 "content": ("Content", "1;34"),
@@ -297,13 +376,25 @@ class _Tree:
             )
             base = prefix + ("    " if last else self.stem + "   ")
         yield from self._span((name,), style)
-        if not isinstance(node, LayoutNode) and node.digest is not None:
+        if (
+            not isinstance(node, (LayoutNode, SummaryLayoutNode, SummaryGroup))
+            and node.digest is not None
+        ):
             yield " "
             yield from self._span(self._safe((node.digest,)), "39")
         yield from self._end()
         children = (
             node.children
-            if isinstance(node, (LayoutNode, IndexNode, ManifestNode))
+            if isinstance(
+                node,
+                (
+                    LayoutNode,
+                    SummaryLayoutNode,
+                    IndexNode,
+                    SummaryIndexNode,
+                    ManifestNode,
+                ),
+            )
             else None
         )
         yield from self._properties(
@@ -316,19 +407,21 @@ class _Tree:
                 yield from self._node(child, base, position == len(children) - 1)
                 if (
                     position < len(children) - 1
-                    and isinstance(child, (IndexNode, ManifestNode))
+                    and isinstance(child, (IndexNode, SummaryIndexNode, ManifestNode))
                     and child.children
                 ):
                     yield from self._span((base + self.stem,), "90")
                     yield from self._end()
 
-    def chunks(self, root: LayoutNode) -> Iterator[str]:
-        """Yield one full expanded view without IO or an independent tree allocation."""
+    def chunks(self, root: LayoutNode | SummaryLayoutNode) -> Iterator[str]:
+        """Yield the selected SDK view without expanding groups or allocating another tree."""
         yield from self._node(root)
 
 
 def _preflight(
-    chunks: Iterable[str], encoding: str, result: LayoutInspectionResult
+    chunks: Iterable[str],
+    encoding: str,
+    result: LayoutInspectionResult | LayoutSummaryResult,
 ) -> None:
     """Count final encoded bytes/state; stop at the first over-budget chunk."""
     size = 0
@@ -349,9 +442,13 @@ def _preflight(
 
 
 def render_inspection(
-    result: LayoutInspectionResult, *, encoding: str, ascii_only: bool, color: bool
+    result: LayoutInspectionResult | LayoutSummaryResult,
+    *,
+    encoding: str,
+    ascii_only: bool,
+    color: bool,
 ) -> str:
-    """Return bounded expanded text; the caller owns stream/color policy and delivery.
+    """Return bounded selected-view text; the caller owns stream/color policy and delivery.
 
     :raises LayoutInspectionError: Before materialization if encoded output exceeds
         the result's inclusive max_output_bytes budget.
@@ -473,7 +570,10 @@ def emit_inspection_diagnostics(
 
 
 def write_inspection(
-    result: LayoutInspectionResult, *, as_json: bool, ascii_only: bool
+    result: LayoutInspectionResult | LayoutSummaryResult,
+    *,
+    as_json: bool,
+    ascii_only: bool,
 ) -> None:
     """Serialize the selected SDK view, preflight stdout, deliver it and repeat diagnostics.
 
