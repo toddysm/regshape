@@ -976,6 +976,69 @@ def test_unwritable_stderr_still_returns_failure(
 
 
 @pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("state", ["stdout-absent", "both-absent", "stdout-closed"])
+def test_missing_or_closed_process_streams_fail_without_traceback(
+    tmp_path: Path,
+    as_json: bool,
+    state: str,
+) -> None:
+    """Keep delivery failures explicit even when Python starts without standard descriptors.
+
+    The driver classifies unhandled stream errors as exit 97, not the expected
+    controlled exit 1, even when both descriptors prevent traceback capture.
+    """
+    bootstrap = """
+import os
+import sys
+if os.environ["REGSHAPE_TEST_STREAM_STATE"] != "stdout-closed":
+    os.close(1)
+if os.environ["REGSHAPE_TEST_STREAM_STATE"] == "both-absent":
+    os.close(2)
+os.execv(sys.executable, [sys.executable, "-c", sys.argv[1], *sys.argv[2:]])
+"""
+    driver = """
+import os
+import sys
+from regshape.cli.main import regshape
+if os.environ["REGSHAPE_TEST_STREAM_STATE"] == "stdout-closed":
+    sys.stdout.close()
+try:
+    regshape()
+except (AttributeError, OSError, ValueError):
+    raise SystemExit(97)
+"""
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            bootstrap,
+            driver,
+            "layout",
+            "inspect",
+            "-p",
+            str(_tiny(tmp_path)),
+            *(["--json"] if as_json else []),
+        ],
+        capture_output=True,
+        timeout=30,
+        check=False,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(Path(__file__).parents[2]),
+            "REGSHAPE_TEST_STREAM_STATE": state,
+        },
+    )
+    assert completed.returncode == 1, completed.stderr
+    assert completed.stdout == b""
+    if state == "both-absent":
+        assert completed.stderr == b""
+    else:
+        assert completed.stderr.startswith(b"OUTPUT_WRITE_FAILED:")
+        assert completed.stderr.count(b"\n") == 1
+    assert b"Traceback" not in completed.stderr
+
+
+@pytest.mark.parametrize("as_json", [False, True])
 def test_real_closed_pipe_exits_one_without_shutdown_diagnostic(
     tmp_path: Path,
     as_json: bool,

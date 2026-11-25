@@ -348,11 +348,11 @@ def _delivery_failure(
 
     All known-failed streams use Click's non-owning proxy with flushing disabled,
     including mixed stdout/stderr failures with different errors. No stream is
-    closed or replaced at the descriptor level.
+    closed or replaced at the descriptor level; absent streams remain absent.
     """
-    if stdout_failed:
+    if stdout_failed and sys.stdout is not None:
         sys.stdout = cast(TextIO, _FailedFlushStream(sys.stdout))
-    if stderr_failed:
+    if stderr_failed and sys.stderr is not None:
         sys.stderr = cast(TextIO, _FailedFlushStream(sys.stderr))
     raise click.exceptions.Exit(1) from error
 
@@ -362,8 +362,12 @@ def _text_stream(name: Literal["stdout", "stderr"]) -> TextIO:
 
     The process stream's encoding governs fallback and byte budgets; only an
     unspecified encoding defaults to UTF-8. No stream ownership is transferred.
+
+    :raises OSError: If Python started without the requested process stream.
     """
     stream = sys.stdout if name == "stdout" else sys.stderr
+    if stream is None:
+        raise OSError(f"{name} is unavailable")
     return click.get_text_stream(name, encoding=stream.encoding or "utf-8")
 
 
@@ -374,9 +378,9 @@ def emit_inspection_diagnostics(
 
     :raises click.exceptions.Exit: With status 1 if stderr itself cannot be delivered.
     """
-    stream = _text_stream("stderr")
-    encoding = stream.encoding or "utf-8"
     try:
+        stream = _text_stream("stderr")
+        encoding = stream.encoding or "utf-8"
         for error in diagnostics:
             parts = [f"{error.code}: ", error.message]
             if details:
@@ -405,9 +409,9 @@ def write_inspection(
     :raises LayoutInspectionError: If selected output exceeds its byte cap, before writing.
     :raises click.exceptions.Exit: With status 1 on invalid codec or output delivery failure.
     """
-    stream = _text_stream("stdout")
-    encoding = stream.encoding or "utf-8"
     try:
+        stream = _text_stream("stdout")
+        encoding = stream.encoding or "utf-8"
         if as_json:
             content = result.to_json(encoding=encoding)
         else:
@@ -421,8 +425,8 @@ def write_inspection(
             raise OSError("Short stdout write")
         stream.flush()
     except (OSError, ValueError) as error:
-        stderr = _text_stream("stderr")
         try:
+            stderr = _text_stream("stderr")
             message = "".join(_escape(str(error), stderr.encoding or "utf-8", False))
             stderr.write(f"OUTPUT_WRITE_FAILED: {message}\n")
             stderr.flush()

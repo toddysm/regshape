@@ -115,6 +115,8 @@ The destination must use a stream character encoding; domain-name codecs
 and exit 1.
 The configured process-stream encoding is honored, including explicit ASCII;
 Click does not automatically upgrade inspection output or diagnostics to UTF-8.
+Missing or closed standard streams also fail with exit 1. Diagnostics are sent
+only to writable stderr, never substituted onto stdout; absent streams remain absent.
 There are no CLI budget overrides or automatic retries. For `LIMIT_REACHED`,
 use a separately prepared smaller valid layout or the SDK with deliberately
 reviewed named limits; do not modify the inspected original. For `OUTPUT_LIMIT`,
