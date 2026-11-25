@@ -726,9 +726,11 @@ def test_summary_selected_output_budget_and_partial_traversal(tmp_path: Path) ->
 @pytest.mark.parametrize("value", [None, {}, "layout", 1])
 def test_summary_invalid_arguments_without_io(value: object) -> None:
     """Reject non-inspection inputs explicitly instead of returning empty-success totals."""
-    with patch("os.open", side_effect=AssertionError("must not open")):
-        with pytest.raises(ValueError, match="LayoutInspectionResult"):
-            summarize_layout(value)
+    with (
+        patch("os.open", side_effect=AssertionError("must not open")),
+        pytest.raises(ValueError, match="LayoutInspectionResult"),
+    ):
+        summarize_layout(value)
 
 
 def _nodes(root):

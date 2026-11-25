@@ -162,8 +162,9 @@ retain **every index occurrence**, intrinsic metadata, source descriptor
 blocks, errors and occurrence-local referrers evidence. At each index,
 contiguous complete manifest occurrences of the same evidence-based category
 become `SummaryGroup` values. Generic artifacts additionally require exactly
-the same own `artifactType`. A different category/type, index or incomplete
-manifest ends a run; errors and unknown documents stay expanded.
+the same own `artifactType`. A different category/type, index, malformed
+manifest slot or incomplete manifest ends a run; errors and unknown documents
+stay expanded.
 The original inspection is unchanged.
 
 Categories are `platform-images`, `attestations`, `signatures`, `lifecycle`,
