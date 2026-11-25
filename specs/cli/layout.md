@@ -97,7 +97,10 @@ nonempty `NO_COLOR` suppress ANSI.
 The shared `--time-scenarios` option reports one `layout inspect` timing through
 library telemetry on stderr, including failed inspections, without modifying
 tree/JSON stdout. `--telemetry-format json` selects a JSON telemetry event;
-`--telemetry-verbosity 0` disables it.
+`--telemetry-verbosity 0` disables it. Scenario output honors stderr's encoding,
+including strict ASCII, and uses the same controlled delivery-failure policy:
+missing/failed stderr exits 1 without redirecting telemetry onto stdout or
+retrying failed buffered writes at interpreter shutdown.
 
 JSON is the SDK's two-space, ASCII-safe, newline-terminated
 [version-1 expanded schema](../layout/layout-inspect.schema.json), not legacy

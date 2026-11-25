@@ -2,7 +2,8 @@
 
 Text escapes untrusted strings before adding SGR spans. A counting pass enforces
 the selected stream's encoded byte budget before materializing or writing stdout;
-JSON delegates its shape and serialization to the SDK.
+JSON delegates its shape and serialization to the SDK. Requested scenario
+telemetry borrows an encoding-safe stderr sink without a stdout fallback.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from typing import Literal, NoReturn, TextIO, cast
 import click
 from click.utils import PacifyFlushWrapper
 
+from regshape.libs.decorators import get_telemetry_config
 from regshape.libs.layout import (
     DescriptorView,
     IndexNode,
@@ -401,6 +403,46 @@ def _text_stream(name: Literal["stdout", "stderr"]) -> TextIO:
     if stream is None:
         raise OSError(f"{name} is unavailable")
     return click.get_text_stream(name, encoding=stream.encoding or "utf-8")
+
+
+class _InspectionTelemetryStream:
+    """Borrow safe process stderr lazily for library-generated telemetry.
+
+    Preserve generated JSON escapes and structural newlines. No borrowed stream
+    is closed, and an absent/failed stderr never redirects telemetry to stdout.
+    """
+
+    def write(self, text: str) -> int:
+        """Deliver bounded escaped chunks and flush before claiming success.
+
+        :returns: Original character count, even when encoding-safe escapes expand it.
+        :raises click.exceptions.Exit: With status 1 on absent/failed stderr.
+        """
+        try:
+            stream = _text_stream("stderr")
+            encoding = stream.encoding or "utf-8"
+            for start in range(0, len(text), 512):
+                for position, line in enumerate(text[start : start + 512].split("\n")):
+                    if position and stream.write("\n") != 1:
+                        raise OSError("Short telemetry write")
+                    for chunk in _escape(line, encoding, False, json_encoded=True):
+                        if stream.write(chunk) != len(chunk):
+                            raise OSError("Short telemetry write")
+            stream.flush()
+        except (OSError, ValueError) as error:
+            _delivery_failure(error, stdout_failed=False, stderr_failed=True)
+        return len(text)
+
+    def flush(self) -> None:
+        """Flush borrowed stderr through the same controlled failure path, without closing it."""
+        self.write("")
+
+
+def bind_inspection_telemetry() -> None:
+    """Select safe stderr for a requested scenario without taking over library telemetry lifetime."""
+    config = get_telemetry_config()
+    if config.time_scenarios_enabled:
+        config.output = _InspectionTelemetryStream()
 
 
 def emit_inspection_diagnostics(

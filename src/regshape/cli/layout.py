@@ -23,7 +23,11 @@ import click
 import requests
 
 from regshape.cli.formatting import emit_error, emit_json, progress_status
-from regshape.cli.layout_inspect import emit_inspection_diagnostics, write_inspection
+from regshape.cli.layout_inspect import (
+    bind_inspection_telemetry,
+    emit_inspection_diagnostics,
+    write_inspection,
+)
 from regshape.cli.progress import ProgressDisplay
 from regshape.cli.telemetry import telemetry_options
 from regshape.libs.artifacts.models import ArtifactLimits
@@ -642,6 +646,7 @@ def inspect_cmd(
     Requested scenario timing uses library telemetry on stderr without changing
     tree/JSON stdout. Legacy show, status and validation remain independent.
     """
+    bind_inspection_telemetry()
     if as_json and ascii_only:
         raise click.UsageError("--ascii cannot be combined with --json")
     if not layout_path or "\x00" in layout_path:

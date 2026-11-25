@@ -462,6 +462,140 @@ def test_inspect_scenario_timing_preserves_root_failure(tmp_path: Path) -> None:
     assert event["type"] == "scenario" and event["name"] == "layout inspect"
 
 
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("valid_root", [False, True])
+@pytest.mark.parametrize("both_absent", [False, True])
+def test_scenario_missing_stderr_never_falls_back_to_stdout(
+    tmp_path: Path, as_json: bool, valid_root: bool, both_absent: bool
+) -> None:
+    """Missing stderr keeps exit 1 without appending telemetry to a tree/JSON or empty failure stdout."""
+    path = _tiny(tmp_path) if valid_root else tmp_path / "missing-layout"
+    args = ["layout", "inspect", "-p", str(path)] + (["--json"] if as_json else [])
+    expected = _process_cli(args)
+    bootstrap = """
+import os
+import sys
+os.close(2)
+if os.environ["REGSHAPE_TEST_BOTH_ABSENT"] == "1":
+    os.close(1)
+os.execv(sys.executable, [sys.executable, "-c", sys.argv[1], *sys.argv[2:]])
+"""
+    driver = """
+from regshape.cli.main import regshape
+try:
+    regshape()
+except (AttributeError, OSError, ValueError):
+    raise SystemExit(97)
+"""
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            bootstrap,
+            driver,
+            *args,
+            "--time-scenarios",
+            "--telemetry-format",
+            "json",
+        ],
+        capture_output=True,
+        timeout=30,
+        check=False,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(Path(__file__).parents[2]),
+            "PYTHONIOENCODING": "utf-8",
+            "REGSHAPE_TEST_BOTH_ABSENT": str(int(both_absent)),
+        },
+    )
+    assert completed.returncode == 1
+    assert completed.stderr == b""
+    assert completed.stdout == (b"" if both_absent else expected.stdout.encode("utf-8"))
+    if as_json and valid_root and not both_absent:
+        assert json.loads(completed.stdout) == json.loads(expected.stdout)
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("valid_root", [False, True])
+def test_scenario_text_is_safe_on_strict_ascii_stderr(
+    tmp_path: Path, as_json: bool, valid_root: bool
+) -> None:
+    """Escape text telemetry's Unicode borders while retaining inspection stdout and failure status."""
+    path = _tiny(tmp_path) if valid_root else tmp_path / "missing-layout"
+    args = ["layout", "inspect", "-p", str(path)] + (["--json"] if as_json else [])
+    expected = _process_cli(args)
+    code = """
+import sys
+sys.stderr.reconfigure(encoding="ascii", errors="strict")
+from regshape.cli.main import regshape
+try:
+    regshape()
+except (AttributeError, OSError, ValueError):
+    raise SystemExit(97)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", code, *args, "--time-scenarios"],
+        capture_output=True,
+        timeout=30,
+        check=False,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(Path(__file__).parents[2]),
+            "PYTHONIOENCODING": "utf-8",
+        },
+    )
+    assert completed.returncode == expected.returncode
+    assert completed.stdout.decode("utf-8") == expected.stdout
+    stderr = completed.stderr.decode("ascii")
+    assert stderr.startswith(expected.stderr)
+    assert "\\u2500\\u2500 telemetry " in stderr
+    assert "scenario  layout inspect" in stderr
+    assert "Traceback" not in stderr and "UnicodeEncodeError" not in stderr
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_buffered_scenario_stderr_failure_has_no_shutdown_traceback(
+    tmp_path: Path, as_json: bool
+) -> None:
+    """A telemetry-only buffered ENOSPC failure remains exit 1 without stderr shutdown retries."""
+    path = _tiny(tmp_path)
+    args = ["layout", "inspect", "-p", str(path)] + (["--json"] if as_json else [])
+    expected = _process_cli(args)
+    code = '''
+import errno
+import io
+import sys
+class Failing(io.RawIOBase):
+    """Synthetic stderr device; no parent descriptor or filesystem device is modified."""
+    def writable(self):
+        """Let buffering accept the telemetry text before the actual device fails."""
+        return True
+    def write(self, data):
+        """Fail only real delivery of pending stderr bytes."""
+        raise OSError(errno.ENOSPC, "synthetic telemetry device failure")
+sys.stderr = io.TextIOWrapper(io.BufferedWriter(Failing()), encoding="utf-8")
+from regshape.cli.main import regshape
+try:
+    regshape()
+except (AttributeError, OSError, ValueError):
+    raise SystemExit(97)
+'''
+    completed = subprocess.run(
+        [sys.executable, "-c", code, *args, "--time-scenarios"],
+        capture_output=True,
+        timeout=30,
+        check=False,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(Path(__file__).parents[2]),
+            "PYTHONIOENCODING": "utf-8",
+        },
+    )
+    assert completed.returncode == 1
+    assert completed.stdout.decode("utf-8") == expected.stdout
+    assert completed.stderr == b""
+
+
 @pytest.mark.parametrize("encoding", ["bogus", "rot13"])
 @pytest.mark.parametrize("ascii_only", [False, True])
 def test_render_invalid_codecs_fail_before_traversal(
