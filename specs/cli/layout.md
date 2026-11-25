@@ -17,10 +17,13 @@ documented [`layout push`](layout-push.md) performs registry operations unless
 **Recursive validation and push require Linux/macOS, compatible native
 filesystems, and the trusted-private namespace contract; Windows fails closed.**
 
-The planned [`layout inspect` human-output design](layout-inspect.md) captures
-the approved graph presentation and color rules for
-[#130](https://github.com/toddysm/regshape/issues/130). That specification is not
-an implementation announcement; legacy `layout show` remains documented below.
+Development builds targeting 0.2 add SDK-backed `layout inspect` for a connected
+local content tree and matching hierarchical JSON. The
+[`layout inspect` human-output design](layout-inspect.md) fixes its presentation
+and color rules under [#130](https://github.com/toddysm/regshape/issues/130).
+Inspection requires Linux/macOS safe read-only filesystem primitives but does
+not require a private writable namespace. Legacy `layout show` stays independent,
+with unchanged entry-point JSON and no migration warning in this delivery.
 
 ### Primary Workflow
 
@@ -43,6 +46,7 @@ regshape layout generate manifest         [OPTIONS]
 regshape layout update config             [OPTIONS]
 regshape layout status                    [OPTIONS]
 regshape layout show                      [OPTIONS]
+regshape layout inspect                   [OPTIONS]
 regshape layout validate                  [OPTIONS]
 regshape layout push                      [OPTIONS]
 ```
@@ -52,6 +56,85 @@ regshape layout push                      [OPTIONS]
 ---
 
 ## Subcommands
+
+### `layout inspect`
+
+Inspect an explicit local OCI layout using the
+[SDK inspection API](../../docs/library/layout-inspection.md). Every reachable
+index and manifest remains individually visible; config and layer/content nodes
+are opaque locations, not decoded payloads. Inspection does not hash payloads,
+verify signatures, extract files, contact registries or read credentials.
+Provide a stable directory: bounded observations are not an atomic snapshot.
+
+| Option | Short | Type | Default | Description |
+| --- | --- | --- | --- | --- |
+| `--path` | `-p` | path | required | Local layout directory; invalid roots fail through the SDK |
+| `--json` | | flag | false | Emit the SDK's expanded hierarchical JSON verbatim |
+| `--ascii` | | flag | false | Force ASCII connectors and reversible escapes for non-ASCII values; incompatible with `--json` |
+
+```shell
+regshape layout inspect -p ./my-image
+regshape layout inspect --path ./my-image --json
+regshape layout inspect -p ./my-image --ascii
+```
+
+The default connected tree preserves full digests, filenames, annotation strings,
+source descriptor positions/order and repeated occurrences. Descriptor platforms
+and annotations stay under their containing document. Absent optional fields are
+omitted; present empty collections remain visible. `schemaVersion` is a document
+schema discriminator, not the OCI release number.
+
+Text uses the approved Unicode connectors when the output encoding supports them,
+otherwise ASCII. Untrusted backslashes, control/format characters and Unicode
+line/paragraph separators are escaped,
+including in paths, keys and diagnostic messages; unencodable characters are never
+replaced with `?`. Compact platform and non-string annotation values retain valid
+JSON escaping, including surrogate pairs for unencodable non-BMP characters.
+Terminal output uses cyan labels, default-foreground values,
+gray connectors and bold type-colored headings. Redirected output, JSON and a
+nonempty `NO_COLOR` suppress ANSI.
+
+The shared `--time-scenarios` option reports one `layout inspect` timing through
+library telemetry on stderr, including failed inspections, without modifying
+tree/JSON stdout. `--telemetry-format json` selects a JSON telemetry event;
+`--telemetry-verbosity 0` disables it. Scenario output honors stderr's encoding,
+including strict ASCII, and uses the same controlled delivery-failure policy:
+missing/failed stderr exits 1 without redirecting telemetry onto stdout or
+retrying failed buffered writes at interpreter shutdown.
+
+JSON is the SDK's two-space, ASCII-safe, newline-terminated
+[version-1 expanded schema](../layout/layout-inspect.schema.json), not legacy
+`show` JSON. Raw logical values round-trip through standard JSON escaping.
+Invalid roots and output-budget failures produce no stdout. Descendant failures
+retain trustworthy partial output and repeat ordered diagnostics on stderr;
+missing files remain distinct from unreadable/malformed objects.
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Structurally complete inspection, including valid empty indexes/layer arrays |
+| 1 | Invalid/unsupported root, partial inspection, traversal/output limit or write failure |
+| 2 | Missing required arguments or incompatible flags |
+
+Output is preflighted against the SDK result's byte budget before stdout is
+written, including escapes, indentation, newlines and generated ANSI. A broken
+pipe or other delivery failure still exits 1 and reports `OUTPUT_WRITE_FAILED`
+when stderr is writable; interrupted delivery cannot promise complete output.
+Already-reported buffered failures are protected from interpreter-shutdown
+flush retries, preserving exit 1 without closing borrowed output streams.
+The destination must use a stream character encoding; domain-name codecs
+(`idna` and `punycode`) are rejected before stdout with `OUTPUT_WRITE_FAILED`
+and exit 1.
+The configured process-stream encoding is honored, including explicit ASCII;
+Click does not automatically upgrade inspection output or diagnostics to UTF-8.
+Missing or closed standard streams also fail with exit 1. Diagnostics are sent
+only to writable stderr, never substituted onto stdout; absent streams remain absent.
+There are no CLI budget overrides or automatic retries. For `LIMIT_REACHED`,
+use a separately prepared smaller valid layout or the SDK with deliberately
+reviewed named limits; do not modify the inspected original. For `OUTPUT_LIMIT`,
+use a reviewed SDK `max_output_bytes` increase. CLI summary selection and the
+legacy-show migration warning are separate work items, not options in this slice.
+
+---
 
 ### `layout init`
 

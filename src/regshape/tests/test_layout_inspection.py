@@ -35,6 +35,7 @@ from regshape.libs.layout import (
     SummaryIndexNode,
     inspect_layout,
     inspection,
+    inspection_models,
     summarize_layout,
 )
 from regshape.tests.artifact_fixtures import address, edge
@@ -119,6 +120,80 @@ def _validate(value: dict, view: str = "expanded") -> None:
     schema = json.loads(schema_path.read_text())
     schema["oneOf"] = [{"$ref": f"#/$defs/{view}"}]
     Draft202012Validator(schema).validate(value)
+
+
+@pytest.mark.parametrize("view", ["expanded", "summary"])
+@pytest.mark.parametrize("encoding", ["utf-16", "utf-8-sig", "utf-32", "utf-7"])
+def test_json_destination_encoding_budget_before_materialization(
+    tmp_path: Path,
+    view: str,
+    encoding: str,
+) -> None:
+    """Include actual BOM/state/LF bytes in both views and reject before the second JSON pass."""
+    path, _, _ = _tiny(tmp_path, annotations={"backslashes": "\\" * 2048})
+    result = inspect_layout(path)
+    if view == "summary":
+        result = summarize_layout(result)
+    expected = result.to_json()
+    size = len(expected.encode(encoding))
+    exact = replace(result, limits=replace(result.limits, max_output_bytes=size))
+    assert exact.to_json(encoding=encoding) == expected
+    limited = replace(result, limits=replace(result.limits, max_output_bytes=size - 1))
+    with patch.object(
+        inspection_models, "_json_chunks", wraps=inspection_models._json_chunks
+    ) as chunks:
+        with pytest.raises(LayoutInspectionError) as error:
+            limited.to_json(encoding=encoding)
+    assert error.value.diagnostics[0].code == "OUTPUT_LIMIT"
+    assert chunks.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "encoding", [None, 42, "not-a-codec", "rot_13", "base64_codec", "punycode", "idna"]
+)
+def test_json_invalid_encoding_rejected_before_projection(
+    tmp_path: Path,
+    encoding: object,
+) -> None:
+    """Bad/non-text codec arguments fail explicitly without traversing or allocating JSON."""
+    result = inspect_layout(_tiny(tmp_path)[0])
+    with patch.object(
+        inspection_models, "_json_chunks", side_effect=AssertionError("no projection")
+    ):
+        with pytest.raises(ValueError):
+            result.to_json(encoding=encoding)
+
+
+@pytest.mark.parametrize("view", ["expanded", "summary"])
+def test_punycode_rejected_instead_of_false_exact_cap_failure(
+    tmp_path: Path,
+    view: str,
+) -> None:
+    """Reject the domain-name codec explicitly even when whole-string bytes fit exactly."""
+    result = inspect_layout(_tiny(tmp_path)[0])
+    if view == "summary":
+        result = summarize_layout(result)
+    size = len(result.to_json().encode("punycode"))
+    exact = replace(result, limits=replace(result.limits, max_output_bytes=size))
+    with pytest.raises(ValueError, match="stream character encoding"):
+        exact.to_json(encoding="punycode")
+
+
+def test_utf7_whole_string_accounting_across_shift_boundaries() -> None:
+    """Keep byte counts independent of input chunking, including plus/non-BMP/implicit terminators."""
+    values = [
+        "+é+🙂-/~Aé_",
+        "é\néAé-é!",
+        "".join(chr(value) for value in range(128)) + "é雪🙂\ud800",
+    ]
+    for value in values:
+        for size in (1, 7, 512):
+            chunks = (
+                value[start : start + size] for start in range(0, len(value), size)
+            )
+            assert sum(inspection_models.encoded_chunk_lengths(chunks, "utf-7")) == len(
+                value.encode("utf-7")
+            )
 
 
 @pytest.mark.parametrize("mixed", [False, True])

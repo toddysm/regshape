@@ -9,8 +9,9 @@
    :synopsis: Click command groups providing ``init``, ``add layer``,
               ``annotate layer``, ``annotate manifest``, ``generate config``,
               ``generate manifest``, ``update config``, ``status``, ``show``,
-              and ``validate`` subcommands for creating and managing OCI Image
+              ``inspect`` and ``validate`` subcommands for creating and managing OCI Image
               Layouts via a staged build workflow.
+              Inspection renders SDK-owned local occurrences without payload reads.
               Recursive validation opts into strict artifact graph policy.
 
 .. moduleauthor:: ToddySM <toddysm@gmail.com>
@@ -22,6 +23,11 @@ import click
 import requests
 
 from regshape.cli.formatting import emit_error, emit_json, progress_status
+from regshape.cli.layout_inspect import (
+    bind_inspection_telemetry,
+    emit_inspection_diagnostics,
+    write_inspection,
+)
 from regshape.cli.progress import ProgressDisplay
 from regshape.cli.telemetry import telemetry_options
 from regshape.libs.artifacts.models import ArtifactLimits
@@ -31,12 +37,14 @@ from regshape.libs.errors import (
     AuthError,
     BlobError,
     LayoutError,
+    LayoutInspectionError,
     ManifestError,
 )
 from regshape.libs.layout import (
     generate_config,
     generate_manifest,
     init_layout,
+    inspect_layout,
     prepare_layer_content,
     read_index,
     read_stage,
@@ -611,6 +619,48 @@ def show(ctx, layout_path):
         emit_error(layout_path, str(exc))
 
     emit_json(json.loads(index.to_json()))
+
+
+# ===========================================================================
+# layout inspect
+# ===========================================================================
+
+
+@layout.command("inspect")
+@telemetry_options
+@click.option(
+    "--path", "-p", "layout_path", required=True, type=str, metavar="DIR",
+    help="Local OCI Image Layout directory to inspect without reading payloads.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Output the SDK's hierarchical JSON.")
+@click.option("--ascii", "ascii_only", is_flag=True, help="Use ASCII connectors and escaped values.")
+@click.pass_context
+@track_scenario("layout inspect")
+def inspect_cmd(
+    ctx: click.Context, layout_path: str, as_json: bool, ascii_only: bool
+) -> None:
+    """Inspect an expanded local tree, preserving partial SDK results and failure status.
+
+    Incompatible flags fail before IO. Invalid roots/output caps produce no stdout;
+    descendant diagnostics accompany the partial view on stderr and exit 1.
+    Requested scenario timing uses library telemetry on stderr without changing
+    tree/JSON stdout. Legacy show, status and validation remain independent.
+    """
+    bind_inspection_telemetry()
+    if as_json and ascii_only:
+        raise click.UsageError("--ascii cannot be combined with --json")
+    if not layout_path or "\x00" in layout_path:
+        raise click.BadParameter(
+            "Path must be nonempty and contain no NUL characters", param_hint="--path"
+        )
+    try:
+        result = inspect_layout(layout_path)
+        write_inspection(result, as_json=as_json, ascii_only=ascii_only)
+    except LayoutInspectionError as error:
+        emit_inspection_diagnostics(error.diagnostics)
+        ctx.exit(1)
+    if not result.complete:
+        ctx.exit(1)
 
 
 # ===========================================================================
