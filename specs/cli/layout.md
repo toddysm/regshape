@@ -23,7 +23,8 @@ local content tree, optional evidence-based summaries and matching hierarchical 
 and color rules under [#130](https://github.com/toddysm/regshape/issues/130).
 Inspection requires Linux/macOS safe read-only filesystem primitives but does
 not require a private writable namespace. Legacy `layout show` stays independent,
-with unchanged entry-point JSON and no migration warning in this delivery.
+with unchanged entry-point JSON and a plain stderr deprecation warning in 0.2.
+It is scheduled for removal in 0.3; see [migration guidance](#migrating-from-layout-show).
 
 ### Primary Workflow
 
@@ -884,7 +885,10 @@ regshape layout status --path ./my-image
 
 ### `layout show`
 
-Print the `index.json` of an OCI Image Layout.
+Print the `index.json` of an OCI Image Layout. **Deprecated in 0.2; scheduled
+for removal in 0.3.** Use [`layout inspect`](#layout-inspect) to explore the
+content tree, or [read the original entry-point file](#migrating-from-layout-show)
+when a script needs the old schema.
 
 #### Options
 
@@ -894,9 +898,22 @@ Print the `index.json` of an OCI Image Layout.
 
 #### Behaviour
 
-1. Call `read_index(layout)` from `libs/layout/operations.py`.
-2. Print the `ImageIndex` serialised as pretty-printed JSON and exit 0.
-3. On `LayoutError`, print the error and exit 1.
+1. On invocation, print exactly this plain warning to stderr, followed by LF:
+
+   ```text
+   Warning: 'layout show' is deprecated in 0.2 and will be removed in 0.3; use 'layout inspect'.
+   ```
+
+2. Call `read_index(layout)` from `libs/layout/operations.py`.
+3. Print the `ImageIndex` serialised as pretty-printed JSON and exit 0. Stdout
+   remains unchanged; the warning never contaminates JSON.
+4. On `LayoutError` or `OSError`, retain the existing stderr error and exit 1
+   without JSON stdout. The warning precedes the error.
+
+Click help and argument-validation failures do not invoke the command and
+therefore emit no runtime warning. Existing options, including telemetry options,
+remain unchanged; there is no `show --json` flag. The warning is readable without
+color and is not suppressed by `NO_COLOR` or telemetry verbosity zero.
 
 #### Output
 
@@ -924,13 +941,37 @@ Pretty-printed `index.json`:
 | Code | Meaning |
 |------|---------|
 | 0 | Success |
-| 1 | Layout not found or `index.json` malformed |
+| 1 | Existing path is not a valid layout, `index.json` malformed, or an I/O failure |
+| 2 | Argument/option error, including a nonexistent `--path` |
 
 #### Examples
 
 ```bash
 regshape layout show --path ./my-image
 ```
+
+#### Migrating from `layout show`
+
+For human inspection, use `regshape layout inspect --path ./my-image`. For
+machine-readable inspection, add `--json` to that command.
+**The new JSON describes a hierarchical content graph, not the old
+entry-point-only OCI Image Index schema.** `show` is not an alias for `inspect`;
+scripts cannot simply substitute `inspect --json` and expect the same fields.
+
+To read the original entry-point file without walking the graph:
+
+```shell
+cat ./my-image/index.json
+# Optional: parse and pretty-print the entry-point JSON.
+python -m json.tool ./my-image/index.json
+```
+
+Direct file reads do not perform layout validation and preserve source fields;
+`cat` preserves source bytes rather than `show`'s normalized pretty-printing.
+The SDK's `regshape.libs.layout.read_index` remains available and unchanged,
+without a deprecation warning. Only the CLI `show` command is deprecated.
+See the [layout creation guide](../../docs/guides/create-oci-layout.md#viewing-the-index)
+for this migration in the authoring workflow.
 
 ---
 
