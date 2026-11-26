@@ -264,9 +264,9 @@ def observe_io(metadata: dict[str, int]) -> Iterator[IOFacts]:
     """
     facts = IOFacts()
     real_open, real_stat, real_read = os.open, os.stat, SafeDirectory.read_file
-    real_native_read = os.read
     real_json = inspection._json
     metadata_fds: dict[int, str] = {}
+    wrapped_fds: set[int] = set()
 
     def opened(name, flags, *args, **kwargs):
         """Refuse write flags and non-directory opaque/unlisted file opens."""
@@ -277,23 +277,30 @@ def observe_io(metadata: dict[str, int]) -> Iterator[IOFacts]:
             assert Path(name).name in metadata, f"Forbidden payload open: {name}"
         facts.opens += 1
         fd = real_open(name, flags, *args, **kwargs)
+        metadata_fds.pop(fd, None)
+        wrapped_fds.discard(fd)
         if not flags & os.O_DIRECTORY:
             filename = Path(name).name
             metadata_fds[fd] = filename
             facts.metadata_opens[filename] += 1
         return fd
 
-    def native_read(fd: int, size: int) -> bytes:
-        """Charge direct native reads to their observed metadata address, rejecting unlisted descriptors."""
-        name = metadata_fds.get(fd)
-        assert name is not None, "Forbidden unobserved native read"
-        value = real_native_read(fd, size)
-        facts.reads[name] += 1
-        facts.metadata_bytes += len(value)
-        return value
+    def guarded_native_read(factory):
+        """Charge ordinary, positional and vectored native reads by their actual returned byte count."""
+
+        def native_read(fd, *args, **kwargs):
+            """Reject unobserved descriptors and retain the underlying read API's result."""
+            name = metadata_fds.get(fd)
+            assert name is not None, "Forbidden unobserved native read"
+            value = factory(fd, *args, **kwargs)
+            facts.reads[name] += 1
+            facts.metadata_bytes += value if isinstance(value, int) else len(value)
+            return value
+
+        return native_read
 
     def guarded_file_open(factory):
-        """Guard Python factories, including pathlib's cached opener on Python 3.10."""
+        """Guard Python factories and allow one wrapper per native open, including cached pathlib."""
 
         def file_open(file, mode="r", *args, **kwargs):
             """Permit metadata reads or standard output wrappers, rejecting payload/unlisted files."""
@@ -302,16 +309,38 @@ def observe_io(metadata: dict[str, int]) -> Iterator[IOFacts]:
             assert not any(flag in mode for flag in "wax+"), "Forbidden file write"
             if isinstance(file, int):
                 assert file in metadata_fds, "Forbidden unobserved file descriptor"
+                assert file not in wrapped_fds, "Forbidden metadata descriptor wrapper"
+                wrapped_fds.add(file)
                 return factory(file, mode, *args, **kwargs)
             name = Path(file).name
             assert name in metadata, f"Forbidden payload open: {file}"
             stream = factory(file, mode, *args, **kwargs)
             metadata_fds[stream.fileno()] = name
+            wrapped_fds.add(stream.fileno())
             facts.opens += 1
             facts.metadata_opens[name] += 1
             return stream
 
         return file_open
+
+    def guarded_buffer(factory):
+        """Permit memory/standard-stream buffers but reject extra wrappers around metadata handles."""
+
+        def buffered(raw, *args, **kwargs):
+            """Keep factory semantics for non-metadata streams without hiding native reads."""
+            fileno = getattr(raw, "fileno", None)
+            if fileno is not None:
+                try:
+                    fd = fileno()
+                except io.UnsupportedOperation:
+                    pass  # In-memory streams have no native descriptor.
+                else:
+                    assert fd not in metadata_fds, (
+                        "Forbidden metadata descriptor wrapper"
+                    )
+            return factory(raw, *args, **kwargs)
+
+        return buffered
 
     def stated(name, *args, **kwargs):
         """Keep actual no-follow stats, including cached opaque target observations."""
@@ -348,18 +377,29 @@ def observe_io(metadata: dict[str, int]) -> Iterator[IOFacts]:
             "os.unlink",
             "os.rename",
             "os.chmod",
+            "os.dup",
+            "os.dup2",
         ):
             stack.enter_context(
                 patch(target, side_effect=AssertionError(f"Forbidden: {target}"))
             )
         stack.enter_context(patch.object(os, "open", opened))
-        stack.enter_context(patch.object(os, "read", native_read))
+        for name in ("read", "pread", "readv", "preadv"):
+            if hasattr(os, name):
+                stack.enter_context(
+                    patch.object(os, name, guarded_native_read(getattr(os, name)))
+                )
         stack.enter_context(
             patch.object(builtins, "open", guarded_file_open(builtins.open))
         )
         python_open = guarded_file_open(io.open)
         stack.enter_context(patch.object(io, "open", python_open))
         stack.enter_context(patch.object(Path, "open", python_open))
+        stack.enter_context(patch.object(io, "FileIO", guarded_file_open(io.FileIO)))
+        for name in ("BufferedReader", "BufferedRandom", "TextIOWrapper"):
+            stack.enter_context(
+                patch.object(io, name, guarded_buffer(getattr(io, name)))
+            )
         stack.enter_context(patch.object(os, "stat", stated))
         stack.enter_context(
             patch.object(os, "supports_dir_fd", os.supports_dir_fd | {opened, stated})

@@ -7,6 +7,7 @@ the actual SDK and Click entry point against the same stored bytes.
 
 import hashlib
 import inspect
+import io
 import json
 import os
 import subprocess
@@ -519,11 +520,22 @@ print(json.dumps({'parent': peak_rss_bytes(), 'child': child}))
     )
 
 
-@pytest.mark.parametrize("operation", ["native-reopen", "native-reread"])
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "native-reopen",
+        "native-reread",
+        "native-pread",
+        "native-readv",
+        "io-open-fd",
+        "fileio-fd",
+        "buffered-fd",
+    ],
+)
 def test_resource_harness_rejects_duplicate_native_metadata_reads(
     tmp_path: Path, operation: str
 ) -> None:
-    """Native reopens and seek/reread on an existing metadata handle must fail actual sampler gates."""
+    """Duplicate native/positional reads and extra descriptor wrappers must fail the actual sampler."""
     path = build_layout(tmp_path / "layout", "simple")
     if operation == "native-reopen":
         original_json = inspection._json
@@ -544,13 +556,33 @@ def test_resource_harness_rejects_duplicate_native_metadata_reads(
         def duplicate_read(stream: _Stream, size: int) -> bytes:
             """Read and rewind the same native handle without changing the SDK's bytes."""
             if stream.name == "index.json" and stream.stream.tell() == 0:
-                os.read(stream.fileno(), 1)
-                os.lseek(stream.fileno(), 0, os.SEEK_SET)
+                if operation == "native-pread":
+                    os.pread(stream.fileno(), 1, 0)
+                elif operation == "native-readv":
+                    os.readv(stream.fileno(), [bytearray(1)])
+                    os.lseek(stream.fileno(), 0, os.SEEK_SET)
+                elif operation == "buffered-fd":
+                    assert isinstance(stream.stream, io.BufferedIOBase)
+                    buffered = io.BufferedReader(stream.stream)
+                    buffered.read(1)
+                    buffered.detach()
+                    stream.stream.seek(0)
+                elif operation in ("io-open-fd", "fileio-fd"):
+                    factory = io.open if operation == "io-open-fd" else io.FileIO
+                    with factory(stream.fileno(), "rb", closefd=False) as wrapper:
+                        wrapper.read(1)
+                    stream.stream.seek(0)
+                else:
+                    os.read(stream.fileno(), 1)
+                    os.lseek(stream.fileno(), 0, os.SEEK_SET)
             return original_read(stream, size)
 
         injection = patch.object(_Stream, "read", duplicate_read)
-    failure = (
-        "Metadata opens" if operation == "native-reopen" else "Metadata read bytes"
-    )
+    if operation == "native-reopen":
+        failure = "Metadata opens"
+    elif operation in ("io-open-fd", "fileio-fd", "buffered-fd"):
+        failure = "Forbidden metadata descriptor wrapper"
+    else:
+        failure = "Metadata read bytes"
     with injection, pytest.raises(AssertionError, match=failure):
         sample(path, "expanded-json")

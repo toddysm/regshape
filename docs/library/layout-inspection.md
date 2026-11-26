@@ -248,10 +248,12 @@ Reads use stable, warm-cache files, not a cold-cache claim.
 Linux CI evidence and local Mac evidence are separate measurements, not a
 cross-machine ranking.
 
-The I/O guard counts actual native metadata opens and observes direct
-`os.read` bytes, including rereads on an existing descriptor. Negative sampler
-regressions verify that duplicate native opens or same-handle rereads fail the
-open/byte-budget gates even when the SDK output is unchanged.
+The I/O guard counts actual native metadata opens and observes direct ordinary,
+positional and vectored read bytes, including rereads on an existing descriptor.
+It permits one Python file wrapper per native metadata open and rejects extra
+raw/buffered descriptor wrappers or descriptor duplication that could hide reads.
+Negative sampler regressions verify the open/byte-budget or wrapper gates, using
+injections that otherwise preserve the SDK output.
 
 A baseline report says `performance_gate: not-approved; measurements only`.
 It does **not** pass the release gate. After the owner approves quantitative
