@@ -272,7 +272,7 @@ Fixture/platform drift or missing limits is an error, never an implicit pass.
 
 The committed [Linux limits](../../src/regshape/tests/fixtures/layout-inspection/linux-thresholds.json)
 and [local Mac limits](../../src/regshape/tests/fixtures/layout-inspection/macos-thresholds.json)
-reference the [owner's renewed approval](https://github.com/toddysm/regshape/issues/216#issuecomment-7179330712).
+reference the [owner's renewed approval](https://github.com/toddysm/regshape/issues/216#issuecomment-7179703954).
 Linux CI enforces its approved limits and retains the full report even on failure.
 Run the Mac rerun locally, not on a hosted Mac runner:
 
