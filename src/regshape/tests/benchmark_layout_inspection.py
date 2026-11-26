@@ -246,7 +246,7 @@ def measure(output: Path, thresholds: Path | None) -> bool:
     """Create stable fixtures, precheck structure, then retain every fresh-process sample.
 
     :returns: True for a recorded baseline, or the actual approved-threshold rerun result.
-    :raises subprocess.CalledProcessError: If a sample fails its correctness gates.
+    :raises RuntimeError: If a worker fails; captured diagnostics and partial samples are retained.
     """
     report: dict = {
         "fixture_revision": revision(),
@@ -293,27 +293,44 @@ def measure(output: Path, thresholds: Path | None) -> bool:
                 "filesystem_device": path.stat().st_dev,
             }
             for view in VIEWS:
-                samples = []
+                samples: list[dict] = []
                 for run in range(6):
-                    child = subprocess.run(
-                        [
-                            sys.executable,
-                            "-m",
-                            "regshape.tests.benchmark_layout_inspection",
-                            "--sample",
-                            "--view",
-                            view,
-                        ],
-                        capture_output=True,
-                        text=True,
-                        check=True,
-                        cwd=path,
-                        env={
-                            **os.environ,
-                            "PYTHONIOENCODING": "utf-8",
-                            "NO_COLOR": "1",
-                        },
-                    )
+                    try:
+                        child = subprocess.run(
+                            [
+                                sys.executable,
+                                "-m",
+                                "regshape.tests.benchmark_layout_inspection",
+                                "--sample",
+                                "--view",
+                                view,
+                            ],
+                            capture_output=True,
+                            text=True,
+                            check=True,
+                            cwd=path,
+                            env={
+                                **os.environ,
+                                "PYTHONIOENCODING": "utf-8",
+                                "NO_COLOR": "1",
+                            },
+                        )
+                    except subprocess.CalledProcessError as error:
+                        case = f"{shape}/{view}"
+                        report["performance_gate"] = "failed"
+                        report["failure"] = {
+                            "case": case,
+                            "iteration": run,
+                            "returncode": error.returncode,
+                            "stdout": error.stdout,
+                            "stderr": error.stderr,
+                            "partial_samples": samples,
+                        }
+                        output.write_text(json.dumps(report, indent=2) + "\n")
+                        raise RuntimeError(
+                            f"Resource worker failed: {case}, iteration {run}; "
+                            f"evidence: {output}\nstdout: {error.stdout}\nstderr: {error.stderr}"
+                        ) from error
                     value = json.loads(child.stdout)
                     if run:
                         samples.append(value)

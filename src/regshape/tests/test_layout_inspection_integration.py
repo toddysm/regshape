@@ -38,6 +38,7 @@ from regshape.libs.layout import (
     validate_layout,
 )
 from regshape.libs.transport import client
+from regshape.tests import benchmark_layout_inspection as benchmark
 from regshape.tests.benchmark_layout_inspection import SHAPES, VIEWS, evaluate, sample
 from regshape.tests.layout_inspection_fixtures import (
     FAMILY,
@@ -599,3 +600,42 @@ def test_resource_harness_rejects_duplicate_native_metadata_reads(
         failure = "Metadata read bytes"
     with injection, pytest.raises(AssertionError, match=failure):
         sample(path, "expanded-json")
+
+
+def test_resource_harness_retains_failed_worker_diagnostics(tmp_path: Path) -> None:
+    """Keep the failed case, captured diagnostics and completed measured samples without claiming a pass."""
+    original_run = subprocess.run
+    measured = {"elapsed_seconds": 0.01, "peak_rss_bytes": 1024, "output_bytes": 1}
+    calls = 0
+
+    def worker(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        """Let environment discovery run normally; fail the second measured worker after its warm-up."""
+        nonlocal calls
+        if command[0] != sys.executable:
+            return original_run(command, **kwargs)
+        calls += 1
+        if calls == 3:
+            raise subprocess.CalledProcessError(
+                1, command, output="partial output", stderr="Metadata read bytes failed"
+            )
+        return subprocess.CompletedProcess(command, 0, json.dumps(measured), "")
+
+    output = tmp_path / "failed-report.json"
+    with (
+        patch.object(benchmark, "SHAPES", ("busybox",)),
+        patch.object(benchmark, "VIEWS", ("expanded-text",)),
+        patch.object(subprocess, "run", worker),
+        pytest.raises(RuntimeError, match="Metadata read bytes failed"),
+    ):
+        benchmark.measure(output, None)
+    report = json.loads(output.read_text())
+    assert report["performance_gate"] == "failed"
+    assert report["failure"] == {
+        "case": "busybox/expanded-text",
+        "iteration": 2,
+        "returncode": 1,
+        "stdout": "partial output",
+        "stderr": "Metadata read bytes failed",
+        "partial_samples": [measured],
+    }
+    assert report["measurements"] == {}

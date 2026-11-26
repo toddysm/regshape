@@ -259,6 +259,10 @@ constructors or the `SafeDirectory` context can read them; the context reuses
 that observer rather than double counting. Text metadata factories are rejected
 because these counters require exact binary bytes. Standard output and in-memory
 streams retain their normal behavior.
+If a worker fails, the report records its case/iteration, exit status, captured
+stdout/stderr and completed measured samples for that case, alongside earlier
+completed cases. The CLI surfaces those diagnostics and exits nonzero; an
+incomplete report is explicitly failed, never approved performance evidence.
 
 A baseline report says `performance_gate: not-approved; measurements only`.
 It does **not** pass the release gate. After the owner approves quantitative
