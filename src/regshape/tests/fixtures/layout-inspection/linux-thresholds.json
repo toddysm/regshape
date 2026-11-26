@@ -1,0 +1,19 @@
+{
+  "fixture_revision": "2f1eeb1a26c94fd66a0d3674b2b2e24fa07e89626030e9b39b30403431506e37",
+  "platform": "linux-x86_64",
+  "approval": "https://github.com/toddysm/regshape/issues/216#issuecomment-7178337127",
+  "limits": {
+    "busybox/expanded-text": {"elapsed_seconds": 0.1, "peak_rss_bytes": 67108864},
+    "busybox/expanded-json": {"elapsed_seconds": 0.1, "peak_rss_bytes": 67108864},
+    "busybox/summary-text": {"elapsed_seconds": 0.1, "peak_rss_bytes": 67108864},
+    "busybox/summary-json": {"elapsed_seconds": 0.1, "peak_rss_bytes": 67108864},
+    "wide/expanded-text": {"elapsed_seconds": 1.6, "peak_rss_bytes": 90177536},
+    "wide/expanded-json": {"elapsed_seconds": 1.0, "peak_rss_bytes": 90177536},
+    "wide/summary-text": {"elapsed_seconds": 0.7, "peak_rss_bytes": 78643200},
+    "wide/summary-json": {"elapsed_seconds": 0.7, "peak_rss_bytes": 78643200},
+    "reused-index/expanded-text": {"elapsed_seconds": 6.7, "peak_rss_bytes": 159383552},
+    "reused-index/expanded-json": {"elapsed_seconds": 3.1, "peak_rss_bytes": 156237824},
+    "reused-index/summary-text": {"elapsed_seconds": 1.5, "peak_rss_bytes": 98566144},
+    "reused-index/summary-json": {"elapsed_seconds": 1.1, "peak_rss_bytes": 98566144}
+  }
+}

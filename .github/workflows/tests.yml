@@ -56,10 +56,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install package and test dependencies
         run: python -m pip install -e ".[dev]"
-      - name: Record offline layout inspection baselines
+      - name: Verify approved offline layout inspection limits
         if: matrix.python-version == '3.12'
         run: >-
           python -m regshape.tests.benchmark_layout_inspection
+          --thresholds src/regshape/tests/fixtures/layout-inspection/linux-thresholds.json
           --output "${{ runner.temp }}/layout-inspection-baseline.json"
       - name: Retain Linux layout inspection evidence
         if: always() && matrix.python-version == '3.12'
