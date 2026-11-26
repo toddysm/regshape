@@ -254,6 +254,11 @@ It permits one Python file wrapper per native metadata open and rejects extra
 raw/buffered descriptor wrappers or descriptor duplication that could hide reads.
 Negative sampler regressions verify the open/byte-budget or wrapper gates, using
 injections that otherwise preserve the SDK output.
+Binary metadata streams are observed at factory return, before caller
+constructors or the `SafeDirectory` context can read them; the context reuses
+that observer rather than double counting. Text metadata factories are rejected
+because these counters require exact binary bytes. Standard output and in-memory
+streams retain their normal behavior.
 
 A baseline report says `performance_gate: not-approved; measurements only`.
 It does **not** pass the release gate. After the owner approves quantitative

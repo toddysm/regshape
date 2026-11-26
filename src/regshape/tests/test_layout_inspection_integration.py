@@ -22,6 +22,7 @@ from jsonschema import Draft202012Validator
 
 from regshape.cli.layout_inspect import render_inspection
 from regshape.cli.main import regshape
+from regshape.libs.artifacts.storage import SafeFile
 from regshape.libs.layout import (
     IndexNode,
     InspectionLimits,
@@ -530,6 +531,7 @@ print(json.dumps({'parent': peak_rss_bytes(), 'child': child}))
         "io-open-fd",
         "fileio-fd",
         "buffered-fd",
+        "constructor-read",
     ],
 )
 def test_resource_harness_rejects_duplicate_native_metadata_reads(
@@ -550,6 +552,17 @@ def test_resource_harness_rejects_duplicate_native_metadata_reads(
             return original_json(*args, **kwargs)
 
         injection = patch.object(inspection, "_json", duplicate_json)
+    elif operation == "constructor-read":
+        original_init = SafeFile.__init__
+
+        def duplicate_constructor(file: SafeFile, fd: int, mode: str) -> None:
+            """Read and rewind before the SafeDirectory context can attach a late observer."""
+            original_init(file, fd, mode)
+            if mode == "rb":
+                file.file.read(1)
+                file.file.seek(0)
+
+        injection = patch.object(SafeFile, "__init__", duplicate_constructor)
     else:
         original_read = _Stream.read
 

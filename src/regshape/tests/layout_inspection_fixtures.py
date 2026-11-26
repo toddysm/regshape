@@ -236,22 +236,43 @@ class IOFacts:
 
 
 class _Stream:
-    """Borrow a real binary stream while counting only returned metadata bytes."""
+    """Observe binary reads from factory return onward; preserve the caller's close/context ownership."""
 
     def __init__(self, stream: BinaryIO, name: str, facts: IOFacts) -> None:
-        """Keep ownership with the surrounding SafeFile context."""
+        """Retain the real binary stream and its metadata address without changing ownership."""
         self.stream, self.name, self.facts = stream, name, facts
 
     def fileno(self) -> int:
         """Expose the unchanged file descriptor for production identity checks."""
         return self.stream.fileno()
 
-    def read(self, size: int) -> bytes:
+    def read(self, size: int = -1) -> bytes:
         """Record bounded calls including EOF; propagate original read failures."""
         self.facts.reads[self.name] += 1
         value = self.stream.read(size)
         self.facts.metadata_bytes += len(value)
         return value
+
+    def seek(self, offset: int, whence: int = os.SEEK_SET) -> int:
+        """Preserve positioning without resetting cumulative observed read bytes."""
+        return self.stream.seek(offset, whence)
+
+    def tell(self) -> int:
+        """Expose the real stream position for existing binary-reader callers."""
+        return self.stream.tell()
+
+    def close(self) -> None:
+        """Delegate close and failures to the owning caller, including SafeFile's cleanup."""
+        self.stream.close()
+
+    def __enter__(self) -> _Stream:  # noqa: PYI034 -- Python 3.10 has no typing.Self.
+        """Retain the underlying context's closed-stream checks while yielding this observer."""
+        self.stream.__enter__()
+        return self
+
+    def __exit__(self, *args) -> None:
+        """Preserve the underlying context's close and exception semantics."""
+        return self.stream.__exit__(*args)
 
 
 @contextmanager
@@ -301,6 +322,7 @@ def observe_io(metadata: dict[str, int]) -> Iterator[IOFacts]:
 
     def guarded_file_open(factory):
         """Guard Python factories and allow one wrapper per native open, including cached pathlib."""
+        raw_factory = factory is io.FileIO
 
         def file_open(file, mode="r", *args, **kwargs):
             """Permit metadata reads or standard output wrappers, rejecting payload/unlisted files."""
@@ -310,16 +332,20 @@ def observe_io(metadata: dict[str, int]) -> Iterator[IOFacts]:
             if isinstance(file, int):
                 assert file in metadata_fds, "Forbidden unobserved file descriptor"
                 assert file not in wrapped_fds, "Forbidden metadata descriptor wrapper"
+                assert "b" in mode or raw_factory, "Forbidden text metadata stream"
                 wrapped_fds.add(file)
-                return factory(file, mode, *args, **kwargs)
+                return _Stream(
+                    factory(file, mode, *args, **kwargs), metadata_fds[file], facts
+                )
             name = Path(file).name
             assert name in metadata, f"Forbidden payload open: {file}"
+            assert "b" in mode or raw_factory, "Forbidden text metadata stream"
             stream = factory(file, mode, *args, **kwargs)
             metadata_fds[stream.fileno()] = name
             wrapped_fds.add(stream.fileno())
             facts.opens += 1
             facts.metadata_opens[name] += 1
-            return stream
+            return _Stream(stream, name, facts)
 
         return file_open
 
@@ -351,10 +377,11 @@ def observe_io(metadata: dict[str, int]) -> Iterator[IOFacts]:
 
     @contextmanager
     def read(directory, name):
-        """Allow only known reachable metadata and retain SafeFile close semantics."""
+        """Require factory-time observation and retain SafeFile close semantics without double counting."""
         assert name in metadata, f"Forbidden payload read: {name}"
         with real_read(directory, name) as stream:
-            yield _Stream(stream, name, facts)
+            assert isinstance(stream, _Stream), "Forbidden unobserved metadata stream"
+            yield stream
 
     def parsed(value, limits, source):
         """Count actual strict parser invocations, including the marker/entry point."""
