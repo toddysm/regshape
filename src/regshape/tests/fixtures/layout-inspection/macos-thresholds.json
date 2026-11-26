@@ -1,7 +1,7 @@
 {
-  "fixture_revision": "0c47f20017f30b010e2c2369f3a84c5d293ade630e32fffea2033b026367e6b6",
+  "fixture_revision": "e21b9d538f100c972f508595cb7cab5526b583f42401204ebc126e5c799700a2",
   "platform": "darwin-arm64",
-  "approval": "https://github.com/toddysm/regshape/issues/216#issuecomment-7178921584",
+  "approval": "https://github.com/toddysm/regshape/issues/216#issuecomment-7179330712",
   "limits": {
     "busybox/expanded-text": {"elapsed_seconds": 0.1, "peak_rss_bytes": 81788928},
     "busybox/expanded-json": {"elapsed_seconds": 0.1, "peak_rss_bytes": 80740352},
