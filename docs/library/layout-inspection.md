@@ -283,7 +283,7 @@ final comparisons.
 
 The committed [Linux limits](../../src/regshape/tests/fixtures/layout-inspection/linux-thresholds.json)
 and [local Mac limits](../../src/regshape/tests/fixtures/layout-inspection/macos-thresholds.json)
-reference the [owner's renewed approval](https://github.com/toddysm/regshape/issues/216#issuecomment-7180329437).
+reference the [owner's renewed approval](https://github.com/toddysm/regshape/issues/216#issuecomment-7204970937).
 Linux CI enforces its approved limits and retains the full report even on failure.
 The resource gate runs after pytest, even if pytest fails; a resource failure
 cannot prevent the full test suite from running. Evidence upload stays last.
