@@ -248,6 +248,11 @@ Reads use stable, warm-cache files, not a cold-cache claim.
 Linux CI evidence and local Mac evidence are separate measurements, not a
 cross-machine ranking.
 
+The I/O guard counts actual native metadata opens and observes direct
+`os.read` bytes, including rereads on an existing descriptor. Negative sampler
+regressions verify that duplicate native opens or same-handle rereads fail the
+open/byte-budget gates even when the SDK output is unchanged.
+
 A baseline report says `performance_gate: not-approved; measurements only`.
 It does **not** pass the release gate. After the owner approves quantitative
 limits on #216, rerun with `--thresholds approved-limits.json`. This caller-supplied
@@ -260,7 +265,7 @@ Fixture/platform drift or missing limits is an error, never an implicit pass.
 
 The committed [Linux limits](../../src/regshape/tests/fixtures/layout-inspection/linux-thresholds.json)
 and [local Mac limits](../../src/regshape/tests/fixtures/layout-inspection/macos-thresholds.json)
-reference the [owner's recorded approval](https://github.com/toddysm/regshape/issues/216#issuecomment-7178337127).
+reference the [owner's renewed approval](https://github.com/toddysm/regshape/issues/216#issuecomment-7178921584).
 Linux CI enforces its approved limits and retains the full report even on failure.
 Run the Mac rerun locally, not on a hosted Mac runner:
 
@@ -268,5 +273,6 @@ Run the Mac rerun locally, not on a hosted Mac runner:
 python -m regshape.tests.benchmark_layout_inspection --thresholds src/regshape/tests/fixtures/layout-inspection/macos-thresholds.json --output macos-inspection-approved.json
 ```
 
-Both files bind a specific fixture revision; fixture-builder or pinned metadata
-changes require updated evidence and renewed owner approval, not silently relaxed caps.
+Both files bind a specific fixture/instrumentation revision; fixture-builder,
+I/O guard or pinned metadata changes require updated evidence and renewed owner
+approval, not silently relaxed caps.
