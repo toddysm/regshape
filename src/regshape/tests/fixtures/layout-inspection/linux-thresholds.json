@@ -1,7 +1,7 @@
 {
-  "fixture_revision": "c7e3c8e49d6901d51cea64dea36257d48998db87795f99113c0b242e7f521105",
+  "fixture_revision": "20f1293a2a4a3cd715f4bbf2d89b2d1213138831da1a306e41da03f045fad75c",
   "platform": "linux-x86_64",
-  "approval": "https://github.com/toddysm/regshape/issues/216#issuecomment-7179703954",
+  "approval": "https://github.com/toddysm/regshape/issues/216#issuecomment-7180329437",
   "limits": {
     "busybox/expanded-text": {"elapsed_seconds": 0.1, "peak_rss_bytes": 67108864},
     "busybox/expanded-json": {"elapsed_seconds": 0.1, "peak_rss_bytes": 67108864},
