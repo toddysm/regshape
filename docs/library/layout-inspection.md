@@ -259,6 +259,10 @@ constructors or the `SafeDirectory` context can read them; the context reuses
 that observer rather than double counting. Text metadata factories are rejected
 because these counters require exact binary bytes. Standard output and in-memory
 streams retain their normal behavior.
+Opaque-target stat/lstat counts include relative basenames, full text/byte paths
+and path-like values. Pathlib methods use one observed native call, including
+Python 3.10's cached accessors, so alternate APIs or pathname representations
+cannot hide repeated observations from the per-address cache check.
 If a worker fails, the report records its case/iteration, exit status, captured
 stdout/stderr and completed measured samples for that case, alongside earlier
 completed cases. The CLI surfaces those diagnostics and exits nonzero; an

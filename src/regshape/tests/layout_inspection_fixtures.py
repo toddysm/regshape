@@ -368,12 +368,30 @@ def observe_io(metadata: dict[str, int]) -> Iterator[IOFacts]:
 
         return buffered
 
-    def stated(name, *args, **kwargs):
-        """Keep actual no-follow stats, including cached opaque target observations."""
-        facts.stats += 1
-        if isinstance(name, str) and len(name) in (64, 128):
-            facts.target_stats[name] += 1
-        return real_stat(name, *args, **kwargs)
+    def guarded_stat(factory):
+        """Share pathname-normalized accounting across native stat and no-follow lstat."""
+
+        def stated(name, *args, **kwargs):
+            """Count digest-target observations once while retaining the native factory's semantics."""
+            facts.stats += 1
+            if isinstance(name, (str, bytes, os.PathLike)):
+                address = os.path.basename(os.fsdecode(name))
+                if len(address) in (64, 128):
+                    facts.target_stats[address] += 1
+            return factory(name, *args, **kwargs)
+
+        return stated
+
+    stat = guarded_stat(real_stat)
+    lstat = guarded_stat(os.lstat)
+
+    def path_stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        """Use one observed native call instead of pathlib's cached Python 3.10 accessor."""
+        return stat(path, follow_symlinks=follow_symlinks)
+
+    def path_lstat(path: Path) -> os.stat_result:
+        """Preserve pathlib's no-follow result without cached accessors or double counting."""
+        return lstat(path)
 
     @contextmanager
     def read(directory, name):
@@ -427,13 +445,18 @@ def observe_io(metadata: dict[str, int]) -> Iterator[IOFacts]:
             stack.enter_context(
                 patch.object(io, name, guarded_buffer(getattr(io, name)))
             )
-        stack.enter_context(patch.object(os, "stat", stated))
+        stack.enter_context(patch.object(os, "stat", stat))
+        stack.enter_context(patch.object(os, "lstat", lstat))
+        stack.enter_context(patch.object(Path, "stat", path_stat))
+        stack.enter_context(patch.object(Path, "lstat", path_lstat))
         stack.enter_context(
-            patch.object(os, "supports_dir_fd", os.supports_dir_fd | {opened, stated})
+            patch.object(
+                os, "supports_dir_fd", os.supports_dir_fd | {opened, stat, lstat}
+            )
         )
         stack.enter_context(
             patch.object(
-                os, "supports_follow_symlinks", os.supports_follow_symlinks | {stated}
+                os, "supports_follow_symlinks", os.supports_follow_symlinks | {stat}
             )
         )
         stack.enter_context(patch.object(SafeDirectory, "read_file", read))

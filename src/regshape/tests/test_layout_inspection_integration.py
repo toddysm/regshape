@@ -639,3 +639,53 @@ def test_resource_harness_retains_failed_worker_diagnostics(tmp_path: Path) -> N
         "partial_samples": [measured],
     }
     assert report["measurements"] == {}
+
+
+@pytest.mark.parametrize(
+    ("operation", "pathname"),
+    [
+        ("stat", "path"),
+        ("stat", "text"),
+        ("stat", "bytes"),
+        ("lstat", "path"),
+        ("lstat", "text"),
+        ("lstat", "bytes"),
+        ("path-stat", "path"),
+        ("path-lstat", "path"),
+    ],
+)
+def test_resource_harness_rejects_duplicate_full_path_stats(
+    tmp_path: Path, operation: str, pathname: str
+) -> None:
+    """Reject repeated opaque-target stat/lstat calls, including pathlib's cached accessors."""
+    path = build_layout(tmp_path / "layout", "simple")
+    metadata = benchmark.metadata_files(path)
+    payload = next(
+        blob
+        for blob in (path / "blobs" / "sha256").iterdir()
+        if blob.name not in metadata
+    )
+    target: Path | str | bytes = payload
+    if pathname == "bytes":
+        target = os.fsencode(payload)
+    elif pathname == "text":
+        target = str(payload)
+    original_json = inspection._json
+
+    def duplicate_stats(*args, **kwargs):
+        """Stat the same full-path opaque target twice without changing the strict parser's result."""
+        for _ in range(2):
+            if operation == "path-stat":
+                payload.stat()
+            elif operation == "path-lstat":
+                payload.lstat()
+            else:
+                factory = os.stat if operation == "stat" else os.lstat
+                factory(target)
+        return original_json(*args, **kwargs)
+
+    with (
+        patch.object(inspection, "_json", duplicate_stats),
+        pytest.raises(AssertionError, match="Opaque target stats"),
+    ):
+        sample(path, "expanded-json")

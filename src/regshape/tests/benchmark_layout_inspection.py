@@ -154,7 +154,7 @@ def sample(path: Path, view: str) -> dict:
     )
     assert all(
         count == 1 for name, count in facts.target_stats.items() if name not in metadata
-    )
+    ), f"Opaque target stats must occur exactly once per address ({view})"
     return {
         "elapsed_seconds": elapsed,
         "peak_rss_bytes": peak_rss_bytes(),
