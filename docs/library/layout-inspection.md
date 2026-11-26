@@ -217,3 +217,86 @@ Summary JSON adds root statistics and, only on recognized tagged index
 occurrences, an `association` block with source/tag/status and either a full
 resolved digest or unresolved SHA-512 algorithm/prefix. This does not invent
 an OCI subject, reverse subject direction or imply complete registry discovery.
+
+## Offline regression and resource evidence
+
+The [integrated tests](../../src/regshape/tests/test_layout_inspection_integration.py)
+exercise stored simple, nested/multi-root, subject-linked, shared, mixed/unknown
+and incomplete layouts through both SDK views and all four CLI forms. The
+[fixture builder](../../src/regshape/tests/layout_inspection_fixtures.py) also
+retains the digest-pinned BusyBox metadata reference and reproduces the locked
+human tree. Its local copy replaces opaque content with two-byte stand-ins and
+adjusts descriptor sizes; it is not a digest-valid downloaded image. No image
+layers are downloaded or committed, and inspection must not open those stand-ins.
+
+Run the [resource harness](../../src/regshape/tests/benchmark_layout_inspection.py)
+from the checkout with installed development dependencies:
+
+```shell
+python -m regshape.tests.benchmark_layout_inspection --output layout-baseline.json
+```
+
+It verifies the exact wide/reused-index counts, then records one warm-up and
+five fresh-process samples per view for BusyBox and both stress shapes. Reports
+retain metadata/output bytes, native open/stat/read/parse counts, runtime,
+hardware, filesystem, elapsed median/maximum and peak RSS in bytes. Elapsed
+time covers the instrumented CLI invocation, excluding interpreter startup and
+fixture discovery; RSS covers the entire fresh process, including imports and
+output capture. Linux uses post-exec `VmHWM` rather than a potentially inherited
+`getrusage` high-water mark; macOS uses `getrusage` in byte units.
+Reads use stable, warm-cache files, not a cold-cache claim.
+Linux CI evidence and local Mac evidence are separate measurements, not a
+cross-machine ranking.
+
+The I/O guard counts actual native metadata opens and observes direct ordinary,
+positional and vectored read bytes, including rereads on an existing descriptor.
+It permits one Python file wrapper per native metadata open and rejects extra
+raw/buffered descriptor wrappers or descriptor duplication that could hide reads.
+Negative sampler regressions verify the open/byte-budget or wrapper gates, using
+injections that otherwise preserve the SDK output.
+Binary metadata streams are observed at factory return, before caller
+constructors or the `SafeDirectory` context can read them; the context reuses
+that observer rather than double counting. Text metadata factories are rejected
+because these counters require exact binary bytes. Standard output and in-memory
+streams retain their normal behavior.
+Opaque-target stat/lstat counts include relative basenames, full text/byte paths
+and path-like values. Pathlib methods use one observed native call, including
+Python 3.10's cached accessors, so alternate APIs or pathname representations
+cannot hide repeated observations from the per-address cache check.
+If a worker fails, the report records its case/iteration, exit status, captured
+stdout/stderr and completed measured samples for that case, alongside earlier
+completed cases. The CLI surfaces those diagnostics and exits nonzero; an
+incomplete report is explicitly failed, never approved performance evidence.
+
+A baseline report says `performance_gate: not-approved; measurements only`.
+It does **not** pass the release gate. After the owner approves quantitative
+limits on #216, rerun with `--thresholds approved-limits.json`. This caller-supplied
+JSON must contain the matching `fixture_revision`, `platform` (from the report's
+environment), canonical #216 `approval` comment URL, and `limits` covering
+every `shape/view` pair. Each pair requires positive finite `elapsed_seconds`
+and `peak_rss_bytes` caps. Equality passes; an exceeded maximum exits 1.
+The caller must verify the approval's authenticity and scope before using it.
+Fixture/platform drift or missing limits is an error, never an implicit pass.
+The threshold JSON, revision/platform/approval identity and all caps are validated
+before fixture setup or the first worker. The same loaded limits are used for
+final comparisons.
+
+The committed [Linux limits](../../src/regshape/tests/fixtures/layout-inspection/linux-thresholds.json)
+and [local Mac limits](../../src/regshape/tests/fixtures/layout-inspection/macos-thresholds.json)
+reference the [owner's renewed approval](https://github.com/toddysm/regshape/issues/216#issuecomment-7205440161).
+That approval applies only to its recorded revision; a mismatched checkout must
+obtain renewed approval before an approved-threshold rerun.
+Linux CI enforces its approved limits and retains the full report even on failure.
+The resource gate runs after pytest, even if pytest fails; a resource failure
+cannot prevent the full test suite from running. Evidence upload stays last.
+Run the Mac rerun locally, not on a hosted Mac runner:
+
+```shell
+python -m regshape.tests.benchmark_layout_inspection --thresholds src/regshape/tests/fixtures/layout-inspection/macos-thresholds.json --output macos-inspection-approved.json
+```
+
+The approval fingerprint covers the complete benchmark driver,
+fixture-builder/I/O guard, [shared descriptor/address helpers](../../src/regshape/tests/artifact_fixtures.py)
+and pinned metadata bytes. Changes to timing scope,
+sample counts, RSS collection, fixtures or observation require updated evidence
+and renewed owner approval, not silently relaxed caps.
