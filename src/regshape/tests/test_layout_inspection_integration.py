@@ -8,6 +8,7 @@ the actual SDK and Click entry point against the same stored bytes.
 import hashlib
 import inspect
 import json
+import os
 import subprocess
 import sys
 from dataclasses import replace
@@ -28,18 +29,20 @@ from regshape.libs.layout import (
     SummaryGroup,
     SummaryIndexNode,
     inspect_layout,
+    inspection,
     read_index,
     read_stage,
     summarize_layout,
     validate_layout,
 )
 from regshape.libs.transport import client
-from regshape.tests.benchmark_layout_inspection import SHAPES, VIEWS, evaluate
+from regshape.tests.benchmark_layout_inspection import SHAPES, VIEWS, evaluate, sample
 from regshape.tests.layout_inspection_fixtures import (
     FAMILY,
     FIXTURES,
     PAYLOAD,
     STRESS_COUNTS,
+    _Stream,
     build_layout,
     metadata_files,
     observe_io,
@@ -514,3 +517,40 @@ print(json.dumps({'parent': peak_rss_bytes(), 'child': child}))
     assert (
         0 <= evidence["child"]["actual"] - evidence["child"]["measured"] < 1024 * 1024
     )
+
+
+@pytest.mark.parametrize("operation", ["native-reopen", "native-reread"])
+def test_resource_harness_rejects_duplicate_native_metadata_reads(
+    tmp_path: Path, operation: str
+) -> None:
+    """Native reopens and seek/reread on an existing metadata handle must fail actual sampler gates."""
+    path = build_layout(tmp_path / "layout", "simple")
+    if operation == "native-reopen":
+        original_json = inspection._json
+
+        def duplicate_json(*args, **kwargs):
+            """Read entry metadata again while preserving the real parser's result."""
+            fd = os.open(path / "index.json", os.O_RDONLY)
+            try:
+                os.read(fd, 1)
+            finally:
+                os.close(fd)
+            return original_json(*args, **kwargs)
+
+        injection = patch.object(inspection, "_json", duplicate_json)
+    else:
+        original_read = _Stream.read
+
+        def duplicate_read(stream: _Stream, size: int) -> bytes:
+            """Read and rewind the same native handle without changing the SDK's bytes."""
+            if stream.name == "index.json" and stream.stream.tell() == 0:
+                os.read(stream.fileno(), 1)
+                os.lseek(stream.fileno(), 0, os.SEEK_SET)
+            return original_read(stream, size)
+
+        injection = patch.object(_Stream, "read", duplicate_read)
+    failure = (
+        "Metadata opens" if operation == "native-reopen" else "Metadata read bytes"
+    )
+    with injection, pytest.raises(AssertionError, match=failure):
+        sample(path, "expanded-json")

@@ -264,8 +264,9 @@ def observe_io(metadata: dict[str, int]) -> Iterator[IOFacts]:
     """
     facts = IOFacts()
     real_open, real_stat, real_read = os.open, os.stat, SafeDirectory.read_file
+    real_native_read = os.read
     real_json = inspection._json
-    metadata_fds: set[int] = set()
+    metadata_fds: dict[int, str] = {}
 
     def opened(name, flags, *args, **kwargs):
         """Refuse write flags and non-directory opaque/unlisted file opens."""
@@ -277,8 +278,19 @@ def observe_io(metadata: dict[str, int]) -> Iterator[IOFacts]:
         facts.opens += 1
         fd = real_open(name, flags, *args, **kwargs)
         if not flags & os.O_DIRECTORY:
-            metadata_fds.add(fd)
+            filename = Path(name).name
+            metadata_fds[fd] = filename
+            facts.metadata_opens[filename] += 1
         return fd
+
+    def native_read(fd: int, size: int) -> bytes:
+        """Charge direct native reads to their observed metadata address, rejecting unlisted descriptors."""
+        name = metadata_fds.get(fd)
+        assert name is not None, "Forbidden unobserved native read"
+        value = real_native_read(fd, size)
+        facts.reads[name] += 1
+        facts.metadata_bytes += len(value)
+        return value
 
     def guarded_file_open(factory):
         """Guard Python factories, including pathlib's cached opener on Python 3.10."""
@@ -290,12 +302,14 @@ def observe_io(metadata: dict[str, int]) -> Iterator[IOFacts]:
             assert not any(flag in mode for flag in "wax+"), "Forbidden file write"
             if isinstance(file, int):
                 assert file in metadata_fds, "Forbidden unobserved file descriptor"
-            else:
-                name = Path(file).name
-                assert name in metadata, f"Forbidden payload open: {file}"
-                facts.opens += 1
-                facts.metadata_opens[name] += 1
-            return factory(file, mode, *args, **kwargs)
+                return factory(file, mode, *args, **kwargs)
+            name = Path(file).name
+            assert name in metadata, f"Forbidden payload open: {file}"
+            stream = factory(file, mode, *args, **kwargs)
+            metadata_fds[stream.fileno()] = name
+            facts.opens += 1
+            facts.metadata_opens[name] += 1
+            return stream
 
         return file_open
 
@@ -310,7 +324,6 @@ def observe_io(metadata: dict[str, int]) -> Iterator[IOFacts]:
     def read(directory, name):
         """Allow only known reachable metadata and retain SafeFile close semantics."""
         assert name in metadata, f"Forbidden payload read: {name}"
-        facts.metadata_opens[name] += 1
         with real_read(directory, name) as stream:
             yield _Stream(stream, name, facts)
 
@@ -340,6 +353,7 @@ def observe_io(metadata: dict[str, int]) -> Iterator[IOFacts]:
                 patch(target, side_effect=AssertionError(f"Forbidden: {target}"))
             )
         stack.enter_context(patch.object(os, "open", opened))
+        stack.enter_context(patch.object(os, "read", native_read))
         stack.enter_context(
             patch.object(builtins, "open", guarded_file_open(builtins.open))
         )

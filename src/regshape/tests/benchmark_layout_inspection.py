@@ -142,11 +142,16 @@ def sample(path: Path, view: str) -> dict:
         result.exception,
         result.stderr,
     )
-    assert facts.metadata_opens == {name: 1 for name in metadata}
+    assert facts.metadata_opens == {name: 1 for name in metadata}, (
+        f"Metadata opens must occur exactly once per address ({view})"
+    )
     assert len(facts.parses) == len(metadata) and all(
         count == 1 for count in facts.parses.values()
     )
-    assert facts.metadata_bytes == sum(metadata.values())
+    expected_bytes = sum(metadata.values())
+    assert facts.metadata_bytes == expected_bytes, (
+        f"Metadata read bytes {facts.metadata_bytes} != {expected_bytes} ({view})"
+    )
     assert all(
         count == 1 for name, count in facts.target_stats.items() if name not in metadata
     )
