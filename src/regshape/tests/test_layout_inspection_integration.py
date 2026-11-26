@@ -470,6 +470,60 @@ def test_metadata_inventory_rejects_descriptor_path_traversal(tmp_path: Path) ->
         metadata_files(path)
 
 
+@pytest.mark.parametrize("changed", ["driver", "builder", "metadata"])
+def test_resource_revision_covers_all_measurement_inputs(
+    tmp_path: Path, changed: str
+) -> None:
+    """Changing measurement logic, IO observation or metadata invalidates the approval fingerprint."""
+    files = {
+        "driver": tmp_path / "benchmark_layout_inspection.py",
+        "builder": tmp_path / "layout_inspection_fixtures.py",
+        "metadata": tmp_path / "busybox-metadata.json",
+    }
+    for name, path in files.items():
+        path.write_text(name)
+    with (
+        patch.object(benchmark, "__file__", str(files["driver"])),
+        patch.object(benchmark, "FIXTURES", tmp_path),
+    ):
+        before = benchmark.revision()
+        files[changed].write_text("changed measurement input")
+        assert benchmark.revision() != before
+
+
+@pytest.mark.parametrize(
+    "invalid", ["json", "fixture_revision", "platform", "approval", "limits"]
+)
+def test_resource_harness_preflights_thresholds_before_workers(
+    tmp_path: Path, invalid: str
+) -> None:
+    """Reject malformed or mismatched approval inputs before setup or any child process."""
+    thresholds = {
+        "fixture_revision": benchmark.revision(),
+        "platform": f"{sys.platform}-{benchmark.platform.machine()}",
+        "approval": "https://github.com/toddysm/regshape/issues/216#issuecomment-123",
+        "limits": {
+            f"{shape}/{view}": {"elapsed_seconds": 1.0, "peak_rss_bytes": 100}
+            for shape in SHAPES
+            for view in VIEWS
+        },
+    }
+    if invalid != "json":
+        thresholds[invalid] = "invalid"
+    source = tmp_path / "thresholds.json"
+    source.write_text("{" if invalid == "json" else json.dumps(thresholds))
+    with (
+        patch.object(subprocess, "run") as worker,
+        patch.object(subprocess, "check_output") as discovery,
+        patch.object(benchmark, "build_layout") as fixture,
+        pytest.raises(ValueError),
+    ):
+        benchmark.measure(tmp_path / "report.json", source)
+    worker.assert_not_called()
+    discovery.assert_not_called()
+    fixture.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "operation", ["builtin-open", "path-read", "client-credentials"]
 )

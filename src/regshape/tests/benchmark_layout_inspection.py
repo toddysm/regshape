@@ -79,10 +79,12 @@ def filesystem(path: Path) -> str:
 
 
 def revision() -> str:
-    """Identify the fixture builder and public metadata bytes independently of the commit."""
+    """Bind the driver, fixture/IO builder and pinned metadata bytes independently of the commit."""
     builder = Path(__file__).with_name("layout_inspection_fixtures.py")
     return hashlib.sha256(
-        builder.read_bytes() + (FIXTURES / "busybox-metadata.json").read_bytes()
+        Path(__file__).read_bytes()
+        + builder.read_bytes()
+        + (FIXTURES / "busybox-metadata.json").read_bytes()
     ).hexdigest()
 
 
@@ -171,40 +173,34 @@ def sample(path: Path, view: str) -> dict:
     }
 
 
-def evaluate(report: dict, thresholds: dict) -> list[dict]:
-    """Compare every measured maximum with caller-supplied, recorded owner-approved limits.
+def _validate_thresholds(
+    thresholds: dict, fixture_revision: str, target_platform: str
+) -> dict:
+    """Validate approval identity and every resource cap before expensive measurement.
 
-    Thresholds must identify the fixture revision, platform and approval URL and
-    cover every shape/view with finite positive time/RSS caps. Missing/invalid
-    evidence is rejected, not reported as a performance pass. Approval authenticity
-    remains the workflow caller's responsibility.
-    :returns: Every comparison, including failures; caller sets the process exit.
-    :raises ValueError: For mismatched, incomplete or invalid threshold evidence.
+    :returns: Complete finite positive caps keyed by shape/view.
+    :raises ValueError: For invalid identity, missing cases or malformed resource caps.
+    Approval authenticity remains the workflow caller's responsibility.
     """
     if (
-        thresholds.get("fixture_revision") != report["fixture_revision"]
-        or thresholds.get("platform") != report["environment"]["platform"]
+        not isinstance(thresholds, dict)
+        or thresholds.get("fixture_revision") != fixture_revision
+        or thresholds.get("platform") != target_platform
         or not isinstance(thresholds.get("approval"), str)
         or not thresholds["approval"].startswith(
             "https://github.com/toddysm/regshape/issues/216#issuecomment-"
         )
+        or not thresholds["approval"].rsplit("-", 1)[-1].isascii()
+        or not thresholds["approval"].rsplit("-", 1)[-1].isdecimal()
     ):
         raise ValueError(
             "Thresholds require matching fixture/platform and recorded #216 approval"
         )
     limits = thresholds.get("limits")
     expected = {f"{shape}/{view}" for shape in SHAPES for view in VIEWS}
-    if (
-        not isinstance(limits, dict)
-        or set(limits) != expected
-        or set(report["measurements"]) != expected
-    ):
-        raise ValueError(
-            "Thresholds and measurements must cover every shape/view exactly"
-        )
-    checks = []
-    for key, measured in report["measurements"].items():
-        cap = limits[key]
+    if not isinstance(limits, dict) or set(limits) != expected:
+        raise ValueError("Thresholds must cover every shape/view exactly")
+    for key, cap in limits.items():
         if not isinstance(cap, dict) or set(cap) != {
             "elapsed_seconds",
             "peak_rss_bytes",
@@ -219,6 +215,24 @@ def evaluate(report: dict, thresholds: dict) -> list[dict]:
                 raise ValueError(
                     f"Resource caps must be finite positive numbers: {key}/{metric}"
                 )
+    return limits
+
+
+def evaluate(report: dict, thresholds: dict) -> list[dict]:
+    """Compare every measured maximum with validated owner-approved limits.
+
+    :returns: Every comparison, including failures; caller sets the process exit.
+    :raises ValueError: For mismatched, incomplete or invalid thresholds/measurements.
+    Approval authenticity remains the workflow caller's responsibility.
+    """
+    limits = _validate_thresholds(
+        thresholds, report["fixture_revision"], report["environment"]["platform"]
+    )
+    if set(report["measurements"]) != set(limits):
+        raise ValueError("Measurements must cover every shape/view exactly")
+    checks = []
+    for key, measured in report["measurements"].items():
+        for metric, maximum in limits[key].items():
             actual = (
                 measured["elapsed_max_seconds"]
                 if metric == "elapsed_seconds"
@@ -246,15 +260,22 @@ def measure(output: Path, thresholds: Path | None) -> bool:
     """Create stable fixtures, precheck structure, then retain every fresh-process sample.
 
     :returns: True for a recorded baseline, or the actual approved-threshold rerun result.
+    :raises ValueError: For invalid threshold JSON, identity or caps, before any worker starts.
     :raises RuntimeError: If a worker fails; captured diagnostics and partial samples are retained.
     """
+    fixture_revision = revision()
+    target_platform = f"{sys.platform}-{platform.machine()}"
+    approved = None
+    if thresholds is not None:
+        approved = json.loads(thresholds.read_text())
+        _validate_thresholds(approved, fixture_revision, target_platform)
     report: dict = {
-        "fixture_revision": revision(),
+        "fixture_revision": fixture_revision,
         "commit": subprocess.check_output(
             ["git", "rev-parse", "HEAD"], text=True
         ).strip(),
         "environment": {
-            "platform": f"{sys.platform}-{platform.machine()}",
+            "platform": target_platform,
             "python": sys.version,
             "os": platform.platform(),
             "hardware": hardware(),
@@ -344,8 +365,7 @@ def measure(output: Path, thresholds: Path | None) -> bool:
                 }
                 output.write_text(json.dumps(report, indent=2) + "\n")
     passed = True
-    if thresholds is not None:
-        approved = json.loads(thresholds.read_text())
+    if approved is not None:
         report["checks"] = evaluate(report, approved)
         passed = all(check["passed"] for check in report["checks"])
         report["performance_gate"] = "passed" if passed else "failed"

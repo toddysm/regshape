@@ -56,8 +56,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install package and test dependencies
         run: python -m pip install -e ".[dev]"
+      - name: Run tests
+        run: python -m pytest -q
       - name: Verify approved offline layout inspection limits
-        if: matrix.python-version == '3.12'
+        if: always() && matrix.python-version == '3.12'
         run: >-
           python -m regshape.tests.benchmark_layout_inspection
           --thresholds src/regshape/tests/fixtures/layout-inspection/linux-thresholds.json
@@ -70,9 +72,6 @@ jobs:
           path: ${{ runner.temp }}/layout-inspection-baseline.json
           if-no-files-found: error
           retention-days: 90
-      - name: Run tests
-        run: python -m pytest -q
-
   urllib3-legacy:
     runs-on: ubuntu-latest
     steps:

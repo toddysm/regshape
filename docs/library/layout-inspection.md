@@ -277,17 +277,23 @@ every `shape/view` pair. Each pair requires positive finite `elapsed_seconds`
 and `peak_rss_bytes` caps. Equality passes; an exceeded maximum exits 1.
 The caller must verify the approval's authenticity and scope before using it.
 Fixture/platform drift or missing limits is an error, never an implicit pass.
+The threshold JSON, revision/platform/approval identity and all caps are validated
+before fixture setup or the first worker. The same loaded limits are used for
+final comparisons.
 
 The committed [Linux limits](../../src/regshape/tests/fixtures/layout-inspection/linux-thresholds.json)
 and [local Mac limits](../../src/regshape/tests/fixtures/layout-inspection/macos-thresholds.json)
 reference the [owner's renewed approval](https://github.com/toddysm/regshape/issues/216#issuecomment-7180329437).
 Linux CI enforces its approved limits and retains the full report even on failure.
+The resource gate runs after pytest, even if pytest fails; a resource failure
+cannot prevent the full test suite from running. Evidence upload stays last.
 Run the Mac rerun locally, not on a hosted Mac runner:
 
 ```shell
 python -m regshape.tests.benchmark_layout_inspection --thresholds src/regshape/tests/fixtures/layout-inspection/macos-thresholds.json --output macos-inspection-approved.json
 ```
 
-Both files bind a specific fixture/instrumentation revision; fixture-builder,
-I/O guard or pinned metadata changes require updated evidence and renewed owner
-approval, not silently relaxed caps.
+Both files bind a SHA-256 revision of the complete benchmark driver,
+fixture-builder/I/O guard and pinned metadata bytes. Changes to timing scope,
+sample counts, RSS collection, fixtures or observation require updated evidence
+and renewed owner approval, not silently relaxed caps.
