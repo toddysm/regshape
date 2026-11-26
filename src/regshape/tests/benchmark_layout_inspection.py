@@ -79,11 +79,13 @@ def filesystem(path: Path) -> str:
 
 
 def revision() -> str:
-    """Bind the driver, fixture/IO builder and pinned metadata bytes independently of the commit."""
+    """Bind measurement and fixture source bytes, including shared descriptor helpers, independently of the commit."""
     builder = Path(__file__).with_name("layout_inspection_fixtures.py")
+    helpers = Path(__file__).with_name("artifact_fixtures.py")
     return hashlib.sha256(
         Path(__file__).read_bytes()
         + builder.read_bytes()
+        + helpers.read_bytes()
         + (FIXTURES / "busybox-metadata.json").read_bytes()
     ).hexdigest()
 

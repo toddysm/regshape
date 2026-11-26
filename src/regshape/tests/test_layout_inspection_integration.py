@@ -470,14 +470,15 @@ def test_metadata_inventory_rejects_descriptor_path_traversal(tmp_path: Path) ->
         metadata_files(path)
 
 
-@pytest.mark.parametrize("changed", ["driver", "builder", "metadata"])
+@pytest.mark.parametrize("changed", ["driver", "builder", "helpers", "metadata"])
 def test_resource_revision_covers_all_measurement_inputs(
     tmp_path: Path, changed: str
 ) -> None:
-    """Changing measurement logic, IO observation or metadata invalidates the approval fingerprint."""
+    """Changing measurement logic, fixture/descriptor helpers or metadata invalidates the approval fingerprint."""
     files = {
         "driver": tmp_path / "benchmark_layout_inspection.py",
         "builder": tmp_path / "layout_inspection_fixtures.py",
+        "helpers": tmp_path / "artifact_fixtures.py",
         "metadata": tmp_path / "busybox-metadata.json",
     }
     for name, path in files.items():
