@@ -1,6 +1,15 @@
 # Local layout inspection: product requirements and engineering design
 
-- **Status:** Design merge authorized after review/checks; not implemented.
+- **Status:** Approved design, merged through [#219](https://github.com/toddysm/regshape/pull/219).
+  SDK inspection/summary, CLI views, 0.2 show warning and offline regression
+  delivery are merged through [#221](https://github.com/toddysm/regshape/pull/221),
+  [#222](https://github.com/toddysm/regshape/pull/222),
+  [#223](https://github.com/toddysm/regshape/pull/223),
+  [#224](https://github.com/toddysm/regshape/pull/224),
+  [#225](https://github.com/toddysm/regshape/pull/225) and
+  [#226](https://github.com/toddysm/regshape/pull/226), targeting unreleased 0.2.
+  Final documentation is [#217](https://github.com/toddysm/regshape/issues/217);
+  overall inventory close-out and release are separate gates.
 - **Tracking:** [#130](https://github.com/toddysm/regshape/issues/130).
 - **Design item:** [#211](https://github.com/toddysm/regshape/issues/211).
 - **Updated:** 2026-11-24.
@@ -27,11 +36,17 @@ design PR once review/checks pass. Review also confirmed owner-driven demand,
 a readiness-based release without a fixed date, and measured/owner-approved
 performance thresholds before release. The concrete types, schema,
 classification rules, limits, platform policy and examples below are the
-contracts for that gated design merge, not implemented capabilities.
-Implementation requires separate Build authorization; no release is authorized.
+contracts for that gated design merge. Subsequent authorized Builds delivered
+the runtime slices listed above; the historical phase/estimate sections below
+describe the planning gate, not current work-item state. No release is authorized.
 The existing human-output document and its complete real BusyBox baseline are
 unchanged. This document supplies its remaining contracts, not a replacement
 expanded display.
+
+For delivered interfaces and recovery examples, use the
+[SDK reference](../../docs/library/layout-inspection.md),
+[CLI command reference](../cli/layout.md#layout-inspect) and
+[local inspection guide](../../docs/guides/inspect-oci-layout.md).
 
 ## Part I: Product requirements
 

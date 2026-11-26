@@ -18,14 +18,17 @@ from regshape.libs.layout import InspectionLimits, LayoutInspectionError, inspec
 
 try:
     result = inspect_layout("./layout", limits=InspectionLimits())
+    document = result.to_json(encoding=sys.stdout.encoding)
 except LayoutInspectionError as error:
     for diagnostic in error.diagnostics:
         print(diagnostic.code, diagnostic.message, diagnostic.source, file=sys.stderr)
+    raise SystemExit(1)
 else:
     # Incomplete descendants still have a trustworthy partial hierarchy.
-    print(result.to_json(), end="")
+    print(document, end="")
     for diagnostic in result.diagnostics:
         print(diagnostic.code, diagnostic.message, diagnostic.source, file=sys.stderr)
+    raise SystemExit(0 if result.complete else 1)
 ```
 
 Signature: `inspect_layout(path: str | pathlib.Path, *, limits:
@@ -51,6 +54,15 @@ Post-read directory/ancestor renames are likewise detected association changes.
 `read_index`, authoring and recursive verification APIs remain unchanged.
 
 ## Results and source ownership
+
+| Result member | Contract |
+| --- | --- |
+| `root: LayoutNode` | Ordered immutable occurrence hierarchy; no open filesystem handles escape. |
+| `diagnostics: tuple[InspectionDiagnostic, ...]` | Traversal-ordered failures also attached to their owning nodes/descriptors. |
+| `limits: InspectionLimits` | Effective inclusive inspection/serialization budgets. |
+| `complete: bool` | True only when diagnostics are empty; structural success, not verification. |
+| `to_dict() -> dict[str, object]` | Independent recursive display copy after output preflight. |
+| `to_json(*, encoding: str = "ascii") -> str` | ASCII-safe two-space JSON plus LF; codec affects byte accounting only. |
 
 `LayoutInspectionResult.root` is an immutable `LayoutNode` with exactly one
 entry-point `IndexNode`. Its descendants are `IndexNode`, `ManifestNode`,
@@ -101,6 +113,30 @@ cause when applicable; no tree is returned. Descendant failures return
 documents, invalid descriptors, unsupported required types, conflicting
 descriptors, containment cycles, detected mutation and limits.
 
+Each `InspectionDiagnostic` exposes `code`, `message`, `source:
+SourceLocation` and optional `location`. `source.document` is relative to the
+layout and `source.pointer` is an RFC 6901 JSON pointer; string conversion
+produces `document#pointer`. `location` is the affected file when known.
+`LayoutInspectionError.diagnostics` is a nonempty tuple of these same typed
+causes; the exception returns no result or partial serialized document.
+
+| Code | Meaning |
+| --- | --- |
+| `INVALID_LAYOUT` | Invalid root/marker/entry point; other causes may accompany it. |
+| `UNSUPPORTED_PLATFORM` | Required safe read-only primitives are unavailable. |
+| `MISSING_OBJECT` / `UNREADABLE_OBJECT` | Absent target versus a target that cannot be safely read/observed. |
+| `MALFORMED_DOCUMENT` / `INVALID_DESCRIPTOR` | Rejected JSON/document structure versus a bad source descriptor slot. |
+| `UNSUPPORTED_TYPE` / `CONFLICTING_DESCRIPTOR` | Unsupported required object type versus inconsistent descriptor/document/size evidence. |
+| `CYCLE` | Containment cycle; subjects are not traversed as children. |
+| `CHANGED_DURING_READ` | Detected file or directory-association change during observation. |
+| `LIMIT_REACHED` | Inspection budget prevents further complete traversal or diagnostics. |
+| `OUTPUT_LIMIT` | Selected serialized output exceeds its encoded byte budget. |
+
+The CLI additionally reports delivery errors such as `OUTPUT_WRITE_FAILED`;
+these are not an SDK inspection diagnostic code or an empty-success result.
+
+### `InspectionLimits`
+
 `InspectionLimits` is frozen and accepts only positive non-boolean integers.
 `None` selects defaults, not unlimited operation. All caps are inclusive:
 raw marker bytes, per-document bytes, aggregate distinct metadata bytes,
@@ -120,6 +156,21 @@ pass a reviewed larger named budget, for example
 `InspectionLimits(max_occurrences=200_000)`. There is no unlimited mode,
 automatic retry, repair, or network fallback.
 
+These defaults match the public `InspectionLimits()` constructor:
+
+| Field | Default | Accounting |
+| --- | --- | --- |
+| `max_layout_marker_bytes` | 65,536 | Raw `oci-layout` bytes. |
+| `max_document_bytes` | 16,777,216 | Each index/manifest metadata document. |
+| `max_total_metadata_bytes` | 67,108,864 | Distinct raw metadata plus marker, including returned bytes before read failure. |
+| `max_json_depth` | 128 | JSON container depth, including ignored extensions. |
+| `max_objects` | 100,000 | Distinct attempted contained digest addresses, including failed observations. |
+| `max_descriptors` | 500,000 | Source descriptor slots, including subjects. |
+| `max_depth` | 64 | Display depth, starting with the layout at zero. |
+| `max_occurrences` | 100,000 | Layout, entry point and all repeated displayed occurrences. |
+| `max_diagnostics` | 1,000 | Includes the reserved final limit marker. |
+| `max_output_bytes` | 67,108,864 | Selected encoded text/JSON, including escapes, indentation, LF and generated ANSI. |
+
 ## Serialization
 
 `result.to_dict()` returns an independent JSON-compatible recursive copy.
@@ -138,6 +189,9 @@ fit. Inspection itself does not materialize expanded output.
 The top-level JSON value is the layout node, with no envelope, format field,
 node/edge tables or second diagnostics collection. Optional absent fields are
 omitted, not null; present allowed empty maps/arrays/strings remain present.
+`complete` and `limits` are SDK result members, not top-level JSON fields.
+Expanded JSON retains source-local `errors`; summary additionally exposes
+`statisticsComplete`. CLI consumers must also check the command's exit status.
 Unsupported descriptor fields are not dumped. Raw logical annotation values
 are preserved with standard JSON escaping, not terminal presentation escaping.
 Output implements the expanded branch of the
@@ -146,7 +200,9 @@ Output implements the expanded branch of the
 
 The API does not print or log metadata; the example explicitly chooses to print.
 Annotations can be sensitive, so choose output retention deliberately.
-The inspect CLI is a separate delivery item.
+The [inspect CLI reference](../../specs/cli/layout.md#layout-inspect) and
+[local inspection guide](../guides/inspect-oci-layout.md) explain the delivered
+text/summary/JSON forms and failure recovery.
 
 ## `summarize_layout`
 
@@ -160,6 +216,8 @@ print(summary.to_json(), end="")
 
 Signature: `summarize_layout(result: LayoutInspectionResult) ->
 LayoutSummaryResult`. Invalid argument types raise `ValueError`.
+Handle inspection/serialization exceptions and `summary.complete` as in the
+expanded example above; grouping does not convert partial results into success.
 This is a pure in-memory operation over inspection facts: no filesystem
 rescan, config/layer decoding, registry discovery, printing or Click imports.
 It does not first materialize expanded output.
@@ -183,6 +241,9 @@ require a compatible OCI/Docker image-manifest/config pair and source platform
 with nonempty, non-`unknown` OS/architecture. Unknown/unknown alone is **not**
 attestation evidence; absent platform fields are never invented.
 Classification asserts neither authenticity nor payload validity.
+When an attestation annotation conflicts with another own artifact type,
+classification is `unclassified`, not a promoted attestation or literal
+artifact group.
 
 Groups expose `positions`, `references`, `unique_manifests`,
 `config_references`, `layer_references`, `layer_count_distribution`,
@@ -217,6 +278,28 @@ Summary JSON adds root statistics and, only on recognized tagged index
 occurrences, an `association` block with source/tag/status and either a full
 resolved digest or unresolved SHA-512 algorithm/prefix. This does not invent
 an OCI subject, reverse subject direction or imply complete registry discovery.
+
+## `read_index`
+
+The existing public signature is `read_index(layout_path: str | pathlib.Path)
+-> ImageIndex`, imported from `regshape.libs.layout`. It parses only the
+entry-point `index.json`, not the connected inspection hierarchy:
+
+```python
+from regshape.libs.layout import read_index
+
+index = read_index("./layout")
+print(index.to_json())
+```
+
+`ImageIndex` is the existing model from `regshape.libs.models.manifest`.
+Invalid/uninitialized layouts or missing/malformed index documents raise
+`LayoutError`; filesystem failures can also propagate `OSError`.
+This API is unchanged and **not deprecated**. Only the CLI `layout show`
+emits the 0.2 warning and is scheduled for removal in 0.3. Inspection JSON is
+not a drop-in replacement for that entry-point-only model JSON. For exact
+source bytes/fields instead of model serialization, read `index.json` directly;
+a direct file read is not layout validation.
 
 ## Offline regression and resource evidence
 

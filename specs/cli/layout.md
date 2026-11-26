@@ -117,6 +117,10 @@ Terminal output uses cyan labels, default-foreground values,
 gray connectors and bold type-colored headings. Redirected output, JSON and a
 nonempty `NO_COLOR` suppress ANSI.
 
+Heading colors are magenta for indexes, cyan for manifests/groups, yellow for
+configs and blue for layers/content. Error labels are bold red but remain
+explicit without color. There is no color-control or digest-shortening flag.
+
 The shared `--time-scenarios` option reports one `layout inspect` timing through
 library telemetry on stderr, including failed inspections, without modifying
 tree/JSON stdout. `--telemetry-format json` selects a JSON telemetry event;
@@ -157,7 +161,8 @@ reviewed named limits; do not modify the inspected original. For `OUTPUT_LIMIT`,
 explicitly selecting `--summary` may fit the output budget; only the selected view
 is preflighted, not expanded output first. Otherwise use a reviewed SDK
 `max_output_bytes` increase. Summary never bypasses traversal limits or repairs
-partial results. The legacy-show migration warning remains a separate work item.
+partial results. See the [pinned BusyBox/referrer walkthrough and recovery examples](../../docs/guides/inspect-oci-layout.md)
+and the [delivered show migration](#migrating-from-layout-show).
 
 ---
 

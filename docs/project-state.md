@@ -98,22 +98,30 @@ requires compatible Linux/macOS filesystems; Windows fails closed. This close-ou
 records delivery on main, not release publication.
 Both capabilities target the open 0.2 milestone.
 
-Local OCI layout inspection is **In progress** under
-[#130](https://github.com/toddysm/regshape/issues/130). Both design items are
-approved and merged through [#218](https://github.com/toddysm/regshape/pull/218)
-and [#219](https://github.com/toddysm/regshape/pull/219). On 2026-11-24 (UTC),
-the owner authorized the SDK inspection item
-[#212](https://github.com/toddysm/regshape/issues/212) and this inventory
-transition, using GitHub-hosted testing. The
-[SDK inspection API](library/layout-inspection.md) delivers the bounded local
-tree, typed partial diagnostics, occurrence-local tag evidence and expanded
-JSON under #212. The [SDK summary API](library/layout-inspection.md#summarize_layout)
-under [#213](https://github.com/toddysm/regshape/issues/213) adds in-memory
-classification, contiguous manifest groups and observed storage/source-slot
-counts while retaining every index. Neither SDK slice introduces a CLI command.
-CLI display, migration, end-to-end validation and final user
-documentation remain incomplete. No overall capability landing date,
-automatic merge or release is claimed.
+Local OCI layout inspection remains **In progress** under
+[#130](https://github.com/toddysm/regshape/issues/130), reconciled on
+2026-11-26 (UTC) against runtime delivery on
+[main at 17f82710](https://github.com/toddysm/regshape/commit/17f82710c155e3a5f052c7cfbd2c5975daadd057).
+The approved designs merged through [#218](https://github.com/toddysm/regshape/pull/218)
+and [#219](https://github.com/toddysm/regshape/pull/219); the In progress
+transition merged through [#220](https://github.com/toddysm/regshape/pull/220).
+SDK inspection/summary, expanded/summary CLI forms, the 0.2 `show` warning and
+offline compatibility/resource validation are delivered through
+[#221](https://github.com/toddysm/regshape/pull/221),
+[#222](https://github.com/toddysm/regshape/pull/222),
+[#223](https://github.com/toddysm/regshape/pull/223),
+[#224](https://github.com/toddysm/regshape/pull/224),
+[#225](https://github.com/toddysm/regshape/pull/225) and
+[#226](https://github.com/toddysm/regshape/pull/226).
+The [SDK reference](library/layout-inspection.md),
+[CLI reference](../specs/cli/layout.md#layout-inspect) and
+[inspection/how-to and migration guide](guides/inspect-oci-layout.md) document
+those contracts. Final documentation delivery under
+[#217](https://github.com/toddysm/regshape/issues/217) and the separately
+authorized Implemented close-out are not asserted here. The
+[0.3 `show` removal](https://github.com/toddysm/regshape/issues/209) stays deferred;
+SDK `read_index` is not deprecated. No overall landing date, automatic merge
+or release is claimed.
 
 Tracking is **issues-only** because Project access is unavailable in this
 workspace. The linked issues and pull requests remain authoritative for newer
@@ -170,7 +178,7 @@ the first version of every operation in that row.
 | Live progress for manifest/index GET | Implemented | [Feature #90](https://github.com/toddysm/regshape/issues/90), merged [library #108](https://github.com/toddysm/regshape/pull/108), [command #109](https://github.com/toddysm/regshape/pull/109) and [final docs #110](https://github.com/toddysm/regshape/pull/110) | [Approved functional requirements](../specs/cli/manifest-progress.md#part-i-functional-requirements) | [Approved engineering design](../specs/cli/manifest-progress.md#part-ii-engineering-design), [Callback reference](library/transfer-progress.md#manifest-receive-observations), [API reference](../specs/operations/manifests.md#get_manifest) | [How-to: manifest/index download](guides/live-transfer-progress.md#download-a-manifest-or-index), [Command reference](../specs/cli/manifest.md#manifest-get) | 2026-11-05 |
 | Complete artifact download, compressed OCI layout and recursive index push | Implemented | [Feature #91](https://github.com/toddysm/regshape/issues/91), [runtime merged through #126](https://github.com/toddysm/regshape/pull/126), [final docs #127](https://github.com/toddysm/regshape/pull/127) | [Approved functional requirements](../specs/cli/artifact-pull.md#part-i-functional-requirements) | [Approved engineering design](../specs/cli/artifact-pull.md#part-ii-engineering-design), [API reference](../specs/operations/artifacts.md) | [How-to: complete-artifact workflow](guides/artifact-pull.md), [command reference](../specs/cli/artifact.md) | 2026-11-06 |
 | Config and zero-based layer-content selection from artifact manifests | Implemented | [Feature #112](https://github.com/toddysm/regshape/issues/112), [design #198](https://github.com/toddysm/regshape/issues/198) ([#202](https://github.com/toddysm/regshape/pull/202)), [SDK #199](https://github.com/toddysm/regshape/issues/199) ([#204](https://github.com/toddysm/regshape/pull/204)), [CLI #200](https://github.com/toddysm/regshape/issues/200) ([#205](https://github.com/toddysm/regshape/pull/205)), [final docs #201](https://github.com/toddysm/regshape/issues/201) ([#206](https://github.com/toddysm/regshape/pull/206)) | [Approved requirements and engineering design](../specs/operations/artifact-components.md) | [SDK reference](library/components.md) | [How-to: component downloads](guides/artifact-components.md), [command reference](../specs/cli/components.md) | 2026-11-23 |
-| Local OCI layout graph display with per-index metadata | In progress | [#130](https://github.com/toddysm/regshape/issues/130), [SDK inspection #212](https://github.com/toddysm/regshape/issues/212) | [Approved requirements and contracts](../specs/layout/layout-inspect.md) | [Locked hierarchy, metadata and colors](../specs/cli/layout-inspect.md), [approved recursive JSON schema](../specs/layout/layout-inspect.schema.json), [SDK inspection reference](library/layout-inspection.md) | - | - |
+| Local OCI layout graph display with per-index metadata | In progress | [#130](https://github.com/toddysm/regshape/issues/130), [final documentation #217](https://github.com/toddysm/regshape/issues/217) | [Approved requirements and contracts](../specs/layout/layout-inspect.md) | [Locked hierarchy, metadata and colors](../specs/cli/layout-inspect.md), [approved recursive JSON schema](../specs/layout/layout-inspect.schema.json) | [SDK inspection/summary reference](library/layout-inspection.md), [command reference](../specs/cli/layout.md#layout-inspect), [how-to and show migration](guides/inspect-oci-layout.md) | - |
 | Parallel artifact blobs and ranged blob downloads | Implemented | [Feature #131](https://github.com/toddysm/regshape/issues/131), [merged design #140](https://github.com/toddysm/regshape/pull/140), [interleaved renderer #154](https://github.com/toddysm/regshape/pull/154), [ranged blobs #155](https://github.com/toddysm/regshape/pull/155), [parallel graph #156](https://github.com/toddysm/regshape/pull/156), [validation #159](https://github.com/toddysm/regshape/pull/159), [final docs #160](https://github.com/toddysm/regshape/pull/160); target 0.2 | [Approved requirements and engineering design](../specs/operations/parallel-downloads.md) | [Download policy, pooled transport and batch/status reference](library/downloads.md), [artifact API](../specs/operations/artifacts.md), [blob API](../specs/operations/blobs.md), [validation evidence and limitations](library/download-validation.md) | [How-to: parallel and ranged downloads](guides/parallel-downloads.md), [artifact command](../specs/cli/artifact.md), [blob command](../specs/cli/blob.md) | 2026-11-19 |
 | Download progress colors, aligned columns and 20-cell bars | Implemented | [#141](https://github.com/toddysm/regshape/issues/141), [merged #157](https://github.com/toddysm/regshape/pull/157) | [Visual requirements and acceptance criteria](https://github.com/toddysm/regshape/issues/141) | [Shared renderer contract](library/transfer-progress.md#shared-cli-renderer-contract) | [How-to: live transfer progress](guides/live-transfer-progress.md), [artifact workflow](guides/artifact-pull.md) | 2026-11-18 |
 | Persistent resume for interrupted blob and artifact downloads | Deferred | [Follow-up #142](https://github.com/toddysm/regshape/issues/142); release unassigned | [Captured future scope](https://github.com/toddysm/regshape/issues/142) | - | - | - |
