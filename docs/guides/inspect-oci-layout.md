@@ -7,6 +7,14 @@ Container Initiative (OCI) image-layout directory. This guide describes
 unreleased **0.2 development builds**, not the published 0.1.1 package.
 Check `regshape layout inspect --help` in your installation.
 
+To obtain these development commands, follow the README's
+[From source installation steps](../../README.md#installation), rather than
+installing the older PyPI/Homebrew release. In an existing checkout, fetch the
+approved development version, activate your intended virtual environment and
+run `python -m pip install -e .` from the checkout root. Run the help check again
+with that environment's `regshape`; `No such command 'inspect'` means the command
+is still using an older installation or a different environment.
+
 ## Before you start
 
 - Use Linux or macOS with the required handle-relative, no-follow filesystem
@@ -171,7 +179,7 @@ files are not added to containment storage totals.
 
 ### Reproduce the tree offline
 
-In a source checkout with its runtime dependencies installed, use the existing
+In the [source checkout installed above](../../README.md#installation), use the existing
 [fixture builder](../../src/regshape/tests/layout_inspection_fixtures.py).
 Choose a nonexistent output directory:
 
@@ -196,7 +204,12 @@ tree, not a digest-valid downloaded image. Its observed stored total is
 **5,522 bytes**; the real assembled baseline has **11,277,619 bytes**.
 Both have the same 15/21/4 object/reference/subject counts. Structural success
 for the stand-in fixture must not be described as successful verification.
-Remove only these explicitly created demo directories when finished.
+When finished, remove only the demo directories you created
+(`inspection-demo` and, if used below, `inspection-incomplete`) and the report
+files you created (`inspection.json` and `partial-inspection.json`). Reports can
+contain sensitive metadata; retain them only in an appropriate protected
+location if needed. Do not delete the original inspected layout or unrelated
+files.
 
 ### Local tag-schema associations are not discovery
 
@@ -229,7 +242,7 @@ build_layout(Path.cwd() / "inspection-incomplete", "incomplete")
 regshape layout inspect -p ./inspection-incomplete --json > partial-inspection.json
 # This command exits 1; the JSON contains source-local errors.
 regshape layout inspect -p ./inspection-incomplete --summary
-# This also exits 1; statisticsComplete is false in summary JSON.
+# This also exits 1; the text shows Statistics complete: false.
 ```
 
 For this fixture, the first stderr diagnostic is:

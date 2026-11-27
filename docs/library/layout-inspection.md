@@ -297,8 +297,12 @@ print(index.to_json())
 ```
 
 `ImageIndex` is the existing model from `regshape.libs.models.manifest`.
-Invalid/uninitialized layouts or missing/malformed index documents raise
-`LayoutError`; filesystem failures can also propagate `OSError`.
+Invalid/uninitialized layouts, missing indexes and malformed UTF-8 JSON raise
+`LayoutError`. A non-UTF-8 `index.json` instead propagates `UnicodeDecodeError`
+from the existing reader's UTF-8 decoding; filesystem failures can also
+propagate `OSError`. Callers handling malformed input should account for the
+decode exception as well as `LayoutError`; inspection's typed diagnostics are
+a separate API contract.
 This API is unchanged and **not deprecated**. Only the CLI `layout show`
 emits the 0.2 warning and is scheduled for removal in 0.3. Inspection JSON is
 not a drop-in replacement for that entry-point-only model JSON. For exact
