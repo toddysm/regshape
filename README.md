@@ -131,6 +131,7 @@ a release announcement. For just one config or layer, use the
 - [Config and Zero-based Layer Downloads](docs/guides/artifact-components.md)
 - [Parallel Downloads, Ranges and Throttling Recovery](docs/guides/parallel-downloads.md)
 - [Creating OCI Layouts](docs/guides/create-oci-layout.md)
+- [Inspecting Local OCI Layouts, Summaries and Show Migration](docs/guides/inspect-oci-layout.md)
 - [Docker Desktop Integration](docs/guides/docker-desktop-integration.md)
 - [Live Transfer Progress](docs/guides/live-transfer-progress.md)
 - [Manifest/Index Download Progress](docs/guides/live-transfer-progress.md#download-a-manifest-or-index)
@@ -166,6 +167,7 @@ a release announcement. For just one config or layer, use the
 - [Operations](specs/operations/) — Blobs, Catalog, Manifests, Referrers, Tags
 - [Complete Artifact Library](specs/operations/artifacts.md) — pull, observations, limits, and snapshots
 - [Component Download SDK](docs/library/components.md) — config/layer receipt, publication, callbacks and errors
+- [Local Layout Inspection SDK](docs/library/layout-inspection.md) — typed inspection, summaries, limits and diagnostics (unreleased 0.2 development API)
 - [Download Policy, Batch API and Typed Status](docs/library/downloads.md) — pooled defaults, retries, rollback and statistics
 - [Library Telemetry](docs/library/telemetry.md) — framework-neutral configuration, scoped logs and cleanup (unreleased 0.2 development API)
 - [Library Authentication](docs/library/auth.md) — verify credentials or verify and persist a registry login (unreleased 0.2 development API)

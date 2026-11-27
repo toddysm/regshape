@@ -4,14 +4,25 @@
 
 **Decision date:** 2026-11-23
 
-**Status:** Approved human-output design; not implemented. The complete feature
-design and delivery breakdown are not yet approved.
+**Status:** Approved human-output design, delivered in unreleased 0.2 development
+builds. The companion [SDK/JSON/summary design](../layout/layout-inspect.md)
+merged through [#219](https://github.com/toddysm/regshape/pull/219).
+SDK, CLI, show-warning and regression delivery merged through
+[#221](https://github.com/toddysm/regshape/pull/221),
+[#222](https://github.com/toddysm/regshape/pull/222),
+[#223](https://github.com/toddysm/regshape/pull/223),
+[#224](https://github.com/toddysm/regshape/pull/224),
+[#225](https://github.com/toddysm/regshape/pull/225) and
+[#226](https://github.com/toddysm/regshape/pull/226).
+Final documentation is [#217](https://github.com/toddysm/regshape/issues/217);
+overall inventory close-out and release publication are separate gates.
 
 **Approval record (2026-11-24):** The owner confirmed this design and authorized
 its commit/PR plus creation of a dependency-aware work breakdown. The locked
-scope is the human-output contract below. The remaining contracts are tracked
-in [#211](https://github.com/toddysm/regshape/issues/211); their answers, the new
-breakdown, implementation, merge, and release still require their own gates.
+scope was the human-output contract below. The remaining contracts were tracked
+in [#211](https://github.com/toddysm/regshape/issues/211) and subsequently
+approved/merged separately. That original display approval alone did not
+authorize implementation, merge or release.
 Publication of this document is tracked by
 [#210](https://github.com/toddysm/regshape/issues/210).
 
@@ -32,21 +43,23 @@ The complete real-image example below is the baseline for this presentation.
 | CLI / SDK terminology | `regshape layout inspect` / `inspect_layout` |
 | Input | Explicit local layout directory, `--path` / `-p` |
 | Default output | Human-readable tree, colored when appropriate |
-| Machine-readable output | `--json`; exact schema still open |
+| Machine-readable output | `--json`; [version-1 expanded/summary schema](../layout/layout-inspect.schema.json) |
 | Human display | Approved in this document |
-| Summary, failures, limits, exact SDK types | Require separate design completion |
-| Implementation, releases, merge | Not authorized by this approval |
+| Summary, failures, limits, exact SDK types | Resolved by the separately approved [companion design](../layout/layout-inspect.md) |
+| Implementation, releases, merge | Require their own authorization; this historical display approval is not a release |
 
 This is a focused display specification, not a claim that the full PRD/EDD or
 all acceptance criteria in #130 have been completed.
 
 ## Usage and compatibility
 
-Planned command forms, not commands currently delivered by this document:
+Delivered command forms in development builds targeting 0.2:
 
 ```shell
 regshape layout inspect --path ./my-layout
 regshape layout inspect -p ./my-layout --json
+regshape layout inspect -p ./my-layout --summary
+regshape layout inspect -p ./my-layout --summary --json
 ```
 
 In 0.2, introduce `inspect` and preserve legacy `layout show`'s entry-point-only
@@ -66,10 +79,11 @@ the CLI `show` command. Keep the SDK's distinct `read_index` operation.
 All inspection capabilities belong in the Python SDK and must be usable without
 the CLI. The SDK owns bounded filesystem reads, graph discovery, metadata and
 descriptor provenance, source ordering, relationships, unique-object accounting,
-and structured diagnostics. Exact API signatures and result types remain open.
+and structured diagnostics. Exact signatures and result types are defined in
+the [SDK reference](../../docs/library/layout-inspection.md).
 
 The CLI calls the SDK and owns text/JSON rendering, connectors, safe terminal
-escaping, color, output streams, and adaptation to the eventual exit policy.
+escaping, color, output streams, and adaptation to the approved exit policy.
 It must not reopen layout files to reconstruct metadata or associations.
 The SDK must not import Click/the CLI, print, or exit.
 
@@ -106,7 +120,9 @@ silently turning display into payload hashing.
   remains distinct from edge occurrences in the SDK.
 
 The Unicode connectors in the baseline are the human-tree presentation.
-The exact ASCII fallback and traversal-limit rendering still need specification.
+ASCII fallback, escaping and traversal-limit rendering follow the
+[delivered command reference](layout.md#layout-inspect). `--ascii` forces ASCII
+connectors and value escapes; JSON already uses standard ASCII-safe escaping.
 
 ## Locations and metadata ownership
 
@@ -180,14 +196,16 @@ An ordinary container image need not identify another object as its subject.
 Do not print availability when a file exists. Missing files must retain their
 expected locations and an explicit red missing-file label. Unreadable files
 and malformed documents must remain explicit errors, not be silently presented
-as missing or successful empty metadata. Exact diagnostic wording, partial-view
-structure, and exit behavior remain open.
+as missing or successful empty metadata. The
+[SDK diagnostics](../../docs/library/layout-inspection.md#diagnostics-and-limits)
+and [CLI exit policy](layout.md#layout-inspect) distinguish no-tree root
+failures from source-local partial results; both fail with exit 1.
 
 The earlier discussion proposed `null` for missing optional values in a
-normalized JSON result. That is not an approved machine-readable contract:
-[#211](https://github.com/toddysm/regshape/issues/211) must resolve optional-field
-presence and null semantics along with the exact schema. This human-output
-decision does not authorize inserting nulls into stored OCI documents.
+normalized JSON result. The approved #211 contract instead omits absent optional
+properties, preserving permitted present empty values. The
+[version-1 schema](../layout/layout-inspect.schema.json) defines the selected
+hierarchy. Neither output view inserts nulls into stored OCI documents.
 
 ## Referrers and subject direction
 
@@ -205,9 +223,11 @@ the registry Referrers API, or imply that all possible referrers were found.
 Do not assume that a referrer targets a platform manifest: the real example
 below has four referrers targeting the multi-platform index.
 
-Recognition of older tag-schema referrer-list conventions is not approved by
-this display decision. The earlier synthetic OCI 1.0/1.1 signature/SBOM examples
-require revision and separate approval; do not substitute them for this fixture.
+Recognition of older local tag-schema referrer-list declarations was approved
+separately in #211 and delivered by the SDK; see
+[association interpretation](../../docs/guides/inspect-oci-layout.md#local-tag-schema-associations-are-not-discovery).
+It does not invent absent subjects or perform reverse discovery. The earlier
+synthetic signature/SBOM examples are not this real fixture.
 
 ## Color contract
 
@@ -455,23 +475,23 @@ or a promise that ordinary inspection performs that verification.
    Never shorten a digest or thumbprint to fit a terminal width.
 7. Respect `NO_COLOR`, nonterminal output, and JSON ANSI suppression.
 
-These are future implementation checks, not tests claiming an implemented
-`layout inspect` command exists.
+The [CLI tests](../../src/regshape/tests/test_layout_inspect_cli.py) and
+[offline integration tests](../../src/regshape/tests/test_layout_inspection_integration.py)
+exercise the delivered display, selected SDK/CLI parity and the normalized
+complete baseline above. The offline BusyBox fixture substitutes payloads and
+descriptor sizes; see the [real-versus-offline distinction](../../docs/guides/inspect-oci-layout.md#reproduce-the-tree-offline).
 
-## Remaining design decisions
+## Resolved companion contracts
 
-- Exact SDK signatures, result/diagnostic types, and normalized JSON graph
-  schema, including optional-field/null semantics and serialization versioning.
-- Summary grouping, counts, flags, and any summary/JSON combinations.
-- Partial results, unreadable/malformed/missing-object diagnostics, size/type
-  conflicts, cycles, traversal limits, and exit statuses.
-- Numeric resource limits, operating-system/filesystem support, exact ASCII
-  fallback, and handling of unusually large metadata without silent truncation.
-- Additional descriptor fields and optional/unknown extension-field display.
-- Eligibility and evidence rules for local tag-schema referrer associations.
-- Completion and approval of the full feature design, current work breakdown,
-  and review/release gates. The filed breakdown is listed below; it does not
-  resolve the unanswered contracts above.
+The separately approved [SDK/JSON/summary design](../layout/layout-inspect.md)
+resolves the original open signatures, schema, grouping, diagnostics, limits,
+platform/encoding support and local tag-schema evidence rules. Neither output
+view becomes an exhaustive descriptor dump. See the
+[SDK reference](../../docs/library/layout-inspection.md),
+[CLI reference](layout.md#layout-inspect) and
+[user workflow](../../docs/guides/inspect-oci-layout.md) for delivered contracts.
+Resource thresholds and their exact approval scope are recorded with
+[#216](https://github.com/toddysm/regshape/issues/216); release remains gated.
 
 Changes to the locked human-output contract require an explicit design revision;
 do not treat later metadata additions or implementation shortcuts as implicit
@@ -505,10 +525,11 @@ Retain #130 as an open tracking issue while its deferred native child remains
 open; distinguish completing 0.2 scope from closing the entire cross-release
 tracking issue.
 
-This breakdown is filed for review, not permission to start Build. #211 must
-resolve its questions without silently changing this locked display baseline.
-Every implementation branch still requires explicit authorization and the
-normal testing/review gate.
+The initial-state column above preserves planning history, not current delivery
+status. The breakdown and #211 contracts were approved; runtime prerequisites
+have merged. Final documentation and overall close-out remain separate from
+release. Every later Build/merge still requires its own authorization and the
+normal testing/review gate; this update does not change the locked baseline.
 
 ## References
 

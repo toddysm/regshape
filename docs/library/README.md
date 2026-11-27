@@ -49,6 +49,10 @@ then pass the caller-owned client to registry operations. See the
   `summarize_layout` produces pure in-memory
   [evidence-based groups and observed counts](layout-inspection.md#summarize_layout)
   without rescanning files or hiding individual indexes.
+  Follow the [local inspection walkthrough](../guides/inspect-oci-layout.md)
+  for CLI forms, the pinned BusyBox/referrer example and incomplete recovery.
+  [`read_index`](layout-inspection.md#read_index) remains an unchanged,
+  non-deprecated entry-point-only reader.
 - **Blob results:** `upload_blob_stream_result`, `upload_blob_chunked_result`
   and `mount_blob_result` in `regshape.libs.blobs` return library-owned
   [upload/mount result metadata](transfer-progress.md#upload-and-mount-results);
