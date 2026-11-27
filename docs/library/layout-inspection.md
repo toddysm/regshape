@@ -18,7 +18,7 @@ from regshape.libs.layout import InspectionLimits, LayoutInspectionError, inspec
 
 try:
     result = inspect_layout("./layout", limits=InspectionLimits())
-    document = result.to_json(encoding=sys.stdout.encoding)
+    document = result.to_json(encoding=sys.stdout.encoding or "utf-8")
 except LayoutInspectionError as error:
     for diagnostic in error.diagnostics:
         print(diagnostic.code, diagnostic.message, diagnostic.source, file=sys.stderr)
@@ -33,6 +33,10 @@ else:
 
 Signature: `inspect_layout(path: str | pathlib.Path, *, limits:
 InspectionLimits | None = None) -> LayoutInspectionResult`.
+
+The example uses stdout's encoding, or UTF-8 for an in-memory stream without
+a codec. If encoding a captured string later, preflight using that destination's
+actual encoding instead.
 
 The path must identify a directory with a valid `oci-layout` marker and
 `index.json`. Linux/macOS with handle-relative, no-follow regular-file opens
