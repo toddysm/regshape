@@ -310,7 +310,7 @@ Manifest 2          sha256:4f8254f069e3...  [■■■■■■■■■■■�
 Blob 1 (config)     sha256:99c78239400e...  [■■■■■■■■■■■■■■■■■■■■]              25 B / 25 B  Downloaded
 Blob 2 (layer)      sha256:59e5ca540bed...  [■■■■■■■■■■■■■■■■■■■■]              32 B / 32 B  Downloaded
 Packaging OCI archive ... done
-Publishing artifact ... done
+Finalizing local artifact ... done
 ```
 
 Index 2 is the explicit subject; Index 3 is nested. Shared references reuse
